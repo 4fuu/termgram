@@ -413,6 +413,13 @@ impl App {
         self.available_update.as_deref()
     }
 
+    #[must_use]
+    pub fn sync_target(&self) -> Option<ChatId> {
+        (self.terminal_focused && self.screen == Screen::Main && self.focus == Focus::Conversation)
+            .then_some(self.active_chat_id)
+            .flatten()
+    }
+
     pub fn update(&mut self, event: AppEvent) -> Vec<TelegramCommand> {
         match event {
             AppEvent::Key(key) => self.handle_key(&key),
@@ -629,8 +636,7 @@ impl App {
             | NetworkEvent::AccountIdentity { .. }
             | NetworkEvent::CacheMessage(_) => Vec::new(),
             NetworkEvent::CacheAccountReset { .. } => {
-                self.messages.clear();
-                self.replace_dialogs(Vec::new());
+                self.reset_for_account_switch(self.active_account());
                 Vec::new()
             }
             NetworkEvent::CacheInvalidated { chat_id } => {
@@ -639,7 +645,22 @@ impl App {
                 } else {
                     self.messages.clear();
                 }
-                self.request_dialog_refresh()
+                let mut commands = self.request_dialog_refresh();
+                if let Some(active) = self.active_chat_id
+                    && chat_id.is_none_or(|id| id == active)
+                {
+                    let request_id = self.next_history_request_id;
+                    self.next_history_request_id = request_id.wrapping_add(1).max(1);
+                    self.active_history_request = Some((active, request_id));
+                    self.history_changes.clear();
+                    self.history_read_max = 0;
+                    self.loading_history = true;
+                    commands.push(TelegramCommand::LoadHistory {
+                        chat_id: active,
+                        request_id,
+                    });
+                }
+                commands
             }
             NetworkEvent::Auth(prompt) => {
                 if self.auth_restart_pending && !matches!(&prompt, AuthPrompt::Phone) {

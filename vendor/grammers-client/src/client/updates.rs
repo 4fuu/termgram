@@ -17,7 +17,7 @@ use grammers_session::types::{PeerId, PeerInfo, UpdateState, UpdatesState};
 use grammers_session::updates::{MessageBoxes, PrematureEndReason, State, UpdatesLike};
 use grammers_tl_types as tl;
 use log::{trace, warn};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::timeout_at;
 
 use super::{Client, UpdatesConfiguration};
@@ -90,9 +90,17 @@ pub struct UpdateStream {
     updates: mpsc::UnboundedReceiver<UpdatesLike>,
     configuration: UpdatesConfiguration,
     should_get_state: bool,
+    active_channel: watch::Sender<Option<(i64, i32)>>,
+    active_changes: watch::Receiver<Option<(i64, i32)>>,
 }
 
 impl UpdateStream {
+    /// Latest viewed channel and its initial PTS. None stops active short polling.
+    /// Changing this handle does not cancel an in-flight update receive.
+    pub fn active_channel(&self) -> watch::Sender<Option<(i64, i32)>> {
+        self.active_channel.clone()
+    }
+
     /// Return one complete application batch and the cursor it covers.
     /// Persist every update before committing this cursor. In particular, a
     /// difference response can give several updates the same terminal PTS.
@@ -146,6 +154,14 @@ impl UpdateStream {
                         }))
                         .await?;
                     self.message_box.set_state(state);
+                    // A new application cache needs this initial checkpoint
+                    // even if no live message arrives during the session.
+                    // Signal that older content has no replayable coverage.
+                    let state = self.message_box.session_state();
+                    let peers = self.client.build_peer_map(Vec::new(), Vec::new()).await;
+                    self.buffer.push_back((tl::enums::Update::PtsChanged, State {
+                        date: state.date, seq: state.seq, message_box: None,
+                    }, peers));
                 }
                 Err(_err) => {
                     // The account may no longer actually be logged in, or it can rarely fail.
@@ -258,10 +274,16 @@ impl UpdateStream {
                 continue;
             }
 
-            match timeout_at(deadline.into(), self.updates.recv()).await {
-                Ok(Some(updates)) => self.process_socket_updates(updates).await?,
-                Ok(None) => break Err(InvocationError::Dropped),
-                Err(_) => {}
+            tokio::select! {
+                _ = self.active_changes.changed() => {
+                    let active = *self.active_changes.borrow_and_update();
+                    self.message_box.set_active_channel(active);
+                }
+                result = timeout_at(deadline.into(), self.updates.recv()) => match result {
+                    Ok(Some(updates)) => self.process_socket_updates(updates).await?,
+                    Ok(None) => break Err(InvocationError::Dropped),
+                    Err(_) => {}
+                }
             }
         }
     }
@@ -361,7 +383,10 @@ impl Client {
         let should_get_state =
             message_box.is_empty() && self.0.session.peer(PeerId::self_user()).await?.is_some();
 
+        let (active_channel, active_changes) = watch::channel(None);
         Ok(UpdateStream {
+            active_channel,
+            active_changes,
             client: self.clone(),
             message_box,
             last_update_limit_warn: None,

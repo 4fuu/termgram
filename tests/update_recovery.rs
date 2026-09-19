@@ -71,8 +71,39 @@ async fn sdk_delivers_the_whole_batch_before_its_checkpoint() {
             .into(),
         ))
         .unwrap();
-    let (updates, cursor) = stream.next_batch().await.unwrap();
+    let (updates, cursor) = Box::pin(stream.next_batch()).await.unwrap();
     assert_eq!(updates.len(), 2);
     assert_eq!(cursor.seq, 1);
     assert_eq!(cursor.date, 123);
+}
+
+#[test]
+fn active_group_uses_server_timeout_and_stops_when_closed() {
+    let mut boxes = MessageBoxes::new();
+    boxes.try_set_channel_state(42, 20);
+    boxes.set_active_channel(Some((42, 99)));
+    assert_eq!(boxes.get_channel_difference().unwrap().pts, 20);
+    boxes.apply_channel_difference(
+        tl::types::updates::ChannelDifferenceEmpty {
+            r#final: true,
+            pts: 21,
+            timeout: Some(3),
+        }
+        .into(),
+    );
+    assert!(boxes.get_channel_difference().is_none());
+    let delay = boxes
+        .check_deadlines()
+        .duration_since(std::time::Instant::now());
+    assert!(delay.as_secs() <= 3);
+    assert!(delay.as_secs() >= 2);
+    boxes.set_active_channel(None);
+    let delay = boxes
+        .check_deadlines()
+        .duration_since(std::time::Instant::now());
+    assert!(
+        delay.as_secs() > 60,
+        "closing the group stops short polling"
+    );
+    assert!(boxes.get_channel_difference().is_none());
 }

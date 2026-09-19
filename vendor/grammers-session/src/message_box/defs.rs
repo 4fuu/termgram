@@ -89,6 +89,7 @@ pub struct MessageBoxes {
 
     /// Optimization field holding the closest deadline instant.
     pub(super) next_deadline: Instant,
+    pub(super) active_channel: Option<i64>,
 }
 
 /// Represents the information needed to correctly handle a specific `tl::enums::Update`.

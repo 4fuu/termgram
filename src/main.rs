@@ -88,24 +88,32 @@ async fn main() -> Result<()> {
     let mut update_check = spawn_update_check(settings);
     let mut update_preferences = settings;
 
-    let (mut commands, mut events, mut worker, base_config) = match Config::load() {
+    let (mut commands, mut events, mut worker, base_config, mut active_chat) = match Config::load()
+    {
         Ok(config) => match config.for_account(settings.active_account) {
             Ok(selected) => {
                 let TelegramHandle {
                     commands,
                     events,
                     task,
+                    active_chat,
                 } = telegram::spawn(selected);
-                (Some(commands), Some(events), Some(task), Some(config))
+                (
+                    Some(commands),
+                    Some(events),
+                    Some(task),
+                    Some(config),
+                    Some(active_chat),
+                )
             }
             Err(error) => {
                 app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
-                (None, None, None, Some(config))
+                (None, None, None, Some(config), None)
             }
         },
         Err(error) => {
             app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
-            (None, None, None, None)
+            (None, None, None, None, None)
         }
     };
 
@@ -274,6 +282,7 @@ async fn main() -> Result<()> {
                 &mut events,
                 &mut worker,
                 &mut pending_commands,
+                &mut active_chat,
             )
             .await
             {
@@ -281,6 +290,17 @@ async fn main() -> Result<()> {
                     "Could not switch account: {error:#}"
                 )));
             }
+        }
+        if let Some(active_chat) = &active_chat {
+            let target = app.sync_target();
+            active_chat.send_if_modified(|current| {
+                if *current == target {
+                    false
+                } else {
+                    *current = target;
+                    true
+                }
+            });
         }
         synchronize_update_preferences(&mut app, &mut update_preferences, &mut update_check);
     }
@@ -533,103 +553,9 @@ fn dispatch(
 }
 
 fn reject_overflow(app: &mut AppState, command: TelegramCommand) {
-    let event = match command {
-        TelegramCommand::SendMessage {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-        } => NetworkEvent::SendFailed {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::SendAttachment {
-            chat_id,
-            local_id,
-            path,
-            caption,
-            as_photo,
-            reply_to,
-        } => NetworkEvent::AttachmentSendFailed {
-            chat_id,
-            local_id,
-            path,
-            caption,
-            as_photo,
-            reply_to,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::DownloadAttachment {
-            chat_id,
-            message_id,
-        } => NetworkEvent::AttachmentDownloadFailed {
-            chat_id,
-            message_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::DownloadPreview {
-            chat_id,
-            message_id,
-            request_id,
-            ..
-        } => NetworkEvent::PreviewDownloadFailed {
-            chat_id,
-            message_id,
-            request_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::ResolveTelegramLink { url } => NetworkEvent::LinkFailed {
-            url,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::ActivateButton {
-            chat_id,
-            message_id,
-            button_index: _,
-        } => NetworkEvent::ButtonFailed {
-            chat_id,
-            message_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::LoadHistory {
-            chat_id,
-            request_id,
-        } => NetworkEvent::HistoryFailed {
-            chat_id,
-            request_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::LoadMessage {
-            chat_id,
-            source_message_id: _,
-            message_id,
-            request_id,
-        } => NetworkEvent::MessageLoadFailed {
-            chat_id,
-            message_id,
-            request_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::MarkRead { chat_id } => NetworkEvent::ReadMarkFailed {
-            chat_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::RefreshDialogs => {
-            NetworkEvent::DialogsFailed("Telegram command queue is busy".to_owned())
-        }
-        TelegramCommand::SwitchAccount { .. } | TelegramCommand::Shutdown => return,
-        TelegramCommand::StartQrAuth
-        | TelegramCommand::SubmitPhone(_)
-        | TelegramCommand::SubmitCode(_)
-        | TelegramCommand::SubmitPassword(_)
-        | TelegramCommand::RestartAuth => {
-            NetworkEvent::Fatal("Telegram command queue is busy; restart sign-in".to_owned())
-        }
-    };
-    app.handle_network(event);
+    if let Some(event) = command.failure("Telegram command queue is busy".to_owned()) {
+        app.handle_network(event);
+    }
 }
 
 async fn restart_telegram_worker(
@@ -639,6 +565,7 @@ async fn restart_telegram_worker(
     events: &mut Option<mpsc::Receiver<NetworkEvent>>,
     worker: &mut Option<tokio::task::JoinHandle<()>>,
     pending: &mut VecDeque<TelegramCommand>,
+    active_chat: &mut Option<tokio::sync::watch::Sender<Option<termgram::model::ChatId>>>,
 ) -> Result<()> {
     pending.clear();
     if let Some(sender) = commands.take() {
@@ -657,7 +584,9 @@ async fn restart_telegram_worker(
         commands: next_commands,
         events: next_events,
         task,
+        active_chat: next_active,
     } = telegram::spawn(selected);
+    *active_chat = Some(next_active);
     *commands = Some(next_commands);
     *events = Some(next_events);
     *worker = Some(task);

@@ -66,3 +66,11 @@ retained. Only `src/client/updates.rs` is adapted:
 `src/telegram/local.rs` persists events before committing their cursor and reads
 that cursor on restart. Telegram's session peer cache remains separate: dialog
 iteration may advance its PTS without having cached any message content.
+
+Active-group polling uses the same message-box engine. `set_active_channel`
+seeds only unknown PTS, recovers the viewed group immediately, and schedules its
+next final difference using the server timeout (one second when absent). Leaving
+the group restores the normal recovery deadline. A watch channel wakes the
+existing update receive without cancellation or a second update consumer.
+The deadline helper also accounts for deadlines moved earlier than the current
+minimum. `tests/update_recovery.rs` covers activation, timeout and deactivation.

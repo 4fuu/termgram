@@ -174,12 +174,9 @@ pub(super) async fn complete(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
-            events
-                .send(failure(
-                    command,
-                    format!("Telegram request failed: {error:#}"),
-                ))
-                .await?;
+            if let Some(event) = command.failure(format!("Telegram request failed: {error:#}")) {
+                events.send(event).await?;
+            }
             return Ok(());
         }
     };
@@ -271,53 +268,4 @@ pub(super) async fn complete(
     };
     events.send(event).await?;
     Ok(())
-}
-
-fn failure(command: TelegramCommand, error: String) -> NetworkEvent {
-    match command {
-        TelegramCommand::RefreshDialogs => NetworkEvent::DialogsFailed(error),
-        TelegramCommand::LoadHistory {
-            chat_id,
-            request_id,
-        } => NetworkEvent::HistoryFailed {
-            chat_id,
-            request_id,
-            error,
-        },
-        TelegramCommand::LoadMessage {
-            chat_id,
-            message_id,
-            request_id,
-            ..
-        } => NetworkEvent::MessageLoadFailed {
-            chat_id,
-            message_id,
-            request_id,
-            error,
-        },
-        TelegramCommand::SendMessage {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-        } => NetworkEvent::SendFailed {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-            error,
-        },
-        TelegramCommand::ResolveTelegramLink { url } => NetworkEvent::LinkFailed { url, error },
-        TelegramCommand::ActivateButton {
-            chat_id,
-            message_id,
-            ..
-        } => NetworkEvent::ButtonFailed {
-            chat_id,
-            message_id,
-            error,
-        },
-        TelegramCommand::MarkRead { chat_id } => NetworkEvent::ReadMarkFailed { chat_id, error },
-        _ => unreachable!("only RPC commands are submitted to request tasks"),
-    }
 }

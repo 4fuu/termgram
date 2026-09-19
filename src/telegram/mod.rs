@@ -48,11 +48,13 @@ pub struct TelegramHandle {
     pub commands: mpsc::Sender<TelegramCommand>,
     pub events: mpsc::Receiver<NetworkEvent>,
     pub task: tokio::task::JoinHandle<()>,
+    pub active_chat: tokio::sync::watch::Sender<Option<ChatId>>,
 }
 
 #[derive(Default)]
 struct WorkerCache {
     dialogs_loading: bool,
+    channel_pts: HashMap<ChatId, i32>,
     peers: HashMap<ChatId, PeerRef>,
     /// Peers opened explicitly through supported Telegram links remain usable
     /// even when they are not part of the account's dialog snapshot.
@@ -165,16 +167,25 @@ impl Drop for PartialDownload {
 
 #[must_use]
 pub fn spawn(config: Config) -> TelegramHandle {
+    let (active_tx, active_rx) = tokio::sync::watch::channel(None);
     let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
     let task = tokio::spawn(async move {
-        if let Err(error) = Box::pin(local::serve(config, command_rx, event_tx.clone())).await {
+        if let Err(error) = Box::pin(local::serve(
+            config,
+            command_rx,
+            event_tx.clone(),
+            active_rx,
+        ))
+        .await
+        {
             let _ = event_tx
                 .send(NetworkEvent::Fatal(describe_worker_error(&error)))
                 .await;
         }
     });
     TelegramHandle {
+        active_chat: active_tx,
         commands: command_tx,
         events: event_rx,
         task,
@@ -196,6 +207,7 @@ async fn run(
     mut commands: mpsc::Receiver<TelegramCommand>,
     events: mpsc::Sender<NetworkEvent>,
     mut bootstrap: local::Bootstrap,
+    mut active_chat: tokio::sync::watch::Receiver<Option<ChatId>>,
 ) -> Result<()> {
     config.prepare_session_dir()?;
     events
@@ -274,6 +286,9 @@ async fn run(
             }
         }
         let cursor = bootstrap.cursor;
+        for &(id, pts) in &cursor.channels {
+            cache.channel_pts.insert(PeerId::channel_unchecked(id).bot_api_dialog_id_unchecked(), pts);
+        }
         events
             .send(NetworkEvent::Status(ConnectionStatus::Online))
             .await
@@ -295,6 +310,8 @@ async fn run(
             pts: cursor.pts, qts: cursor.qts, date: cursor.date, seq: cursor.seq,
             channels: cursor.channels.into_iter().map(|(id, pts)| grammers_session::types::ChannelState { id, pts }).collect(),
         });
+        let active_channel = updates.active_channel();
+        signal_active_channel(&cache, *active_chat.borrow_and_update(), &active_channel);
         let mut recovering = false;
         let mut transfers = JoinSet::new();
         let mut requests = JoinSet::new();
@@ -308,6 +325,10 @@ async fn run(
             let update = loop {
                 tokio::select! {
                     update = &mut next => break update,
+                    changed = active_chat.changed() => {
+                        if changed.is_err() { break 'worker; }
+                        signal_active_channel(&cache, *active_chat.borrow_and_update(), &active_channel);
+                    }
                     command = commands.recv(), if requests.len() < requests::MAX_REQUESTS => {
                         let Some(command) = command else { break 'worker; };
                         if handle_command(command, &client, &mut cache, &events,
@@ -317,7 +338,10 @@ async fn run(
                     }
                     completion = requests.join_next(), if !requests.is_empty() => {
                         match completion {
-                            Some(Ok(completion)) => requests::complete(completion, &mut cache, &events).await?,
+                            Some(Ok(completion)) => {
+                                requests::complete(completion, &mut cache, &events).await?;
+                                signal_active_channel(&cache, *active_chat.borrow(), &active_channel);
+                            }
                             Some(Err(error)) => bail!("Telegram request task failed: {error}"),
                             None => {}
                         }
@@ -362,6 +386,26 @@ async fn run(
     handle.quit();
     let _ = pool_tasks.join_next().await;
     result
+}
+
+fn signal_active_channel(
+    cache: &WorkerCache,
+    chat_id: Option<ChatId>,
+    sender: &tokio::sync::watch::Sender<Option<(i64, i32)>>,
+) {
+    let value = chat_id.and_then(|id| {
+        let pts = *cache.channel_pts.get(&id)?;
+        let peer = cache.peers.get(&id)?;
+        (peer.id.kind() == PeerKind::Channel).then(|| (peer.id.bare_id_unchecked(), pts))
+    });
+    sender.send_if_modified(|current| {
+        if *current == value {
+            false
+        } else {
+            *current = value;
+            true
+        }
+    });
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -1104,6 +1148,9 @@ fn apply_dialogs(dialogs: Vec<Dialog>, cache: &mut WorkerCache) -> Result<Vec<Ch
         let RawDialog::Dialog(raw) = &dialog.raw else {
             unreachable!("folder placeholders are filtered above")
         };
+        if let Some(pts) = raw.pts {
+            cache.channel_pts.insert(id, pts);
+        }
         let (unread, unread_mark, top_message, read_outbox) = (
             u32::try_from(raw.unread_count.max(0)).unwrap_or(u32::MAX),
             raw.unread_mark,

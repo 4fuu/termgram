@@ -137,6 +137,103 @@ pub enum TelegramCommand {
     Shutdown,
 }
 
+impl TelegramCommand {
+    /// Return the matching failure event so pending UI operations always settle.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn failure(self, error: String) -> Option<NetworkEvent> {
+        let event = match self {
+            TelegramCommand::SendMessage {
+                chat_id,
+                local_id,
+                text,
+                reply_to,
+            } => NetworkEvent::SendFailed {
+                chat_id,
+                local_id,
+                text,
+                reply_to,
+                error,
+            },
+            TelegramCommand::SendAttachment {
+                chat_id,
+                local_id,
+                path,
+                caption,
+                as_photo,
+                reply_to,
+            } => NetworkEvent::AttachmentSendFailed {
+                chat_id,
+                local_id,
+                path,
+                caption,
+                as_photo,
+                reply_to,
+                error,
+            },
+            TelegramCommand::DownloadAttachment {
+                chat_id,
+                message_id,
+            } => NetworkEvent::AttachmentDownloadFailed {
+                chat_id,
+                message_id,
+                error,
+            },
+            TelegramCommand::DownloadPreview {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => NetworkEvent::PreviewDownloadFailed {
+                chat_id,
+                message_id,
+                request_id,
+                error,
+            },
+            TelegramCommand::ResolveTelegramLink { url } => NetworkEvent::LinkFailed { url, error },
+            TelegramCommand::ActivateButton {
+                chat_id,
+                message_id,
+                button_index: _,
+            } => NetworkEvent::ButtonFailed {
+                chat_id,
+                message_id,
+                error,
+            },
+            TelegramCommand::LoadHistory {
+                chat_id,
+                request_id,
+            } => NetworkEvent::HistoryFailed {
+                chat_id,
+                request_id,
+                error,
+            },
+            TelegramCommand::LoadMessage {
+                chat_id,
+                source_message_id: _,
+                message_id,
+                request_id,
+            } => NetworkEvent::MessageLoadFailed {
+                chat_id,
+                message_id,
+                request_id,
+                error,
+            },
+            TelegramCommand::MarkRead { chat_id } => {
+                NetworkEvent::ReadMarkFailed { chat_id, error }
+            }
+            TelegramCommand::RefreshDialogs => NetworkEvent::DialogsFailed(error),
+            TelegramCommand::SwitchAccount { .. } | TelegramCommand::Shutdown => return None,
+            TelegramCommand::StartQrAuth
+            | TelegramCommand::SubmitPhone(_)
+            | TelegramCommand::SubmitCode(_)
+            | TelegramCommand::SubmitPassword(_)
+            | TelegramCommand::RestartAuth => NetworkEvent::Fatal(error),
+        };
+        Some(event)
+    }
+}
+
 impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -107,6 +107,7 @@ impl MessageBoxes {
             seq: NO_SEQ,
             getting_diff_for: Vec::new(),
             next_deadline: next_updates_deadline(),
+            active_channel: None,
         }
     }
 
@@ -156,6 +157,7 @@ impl MessageBoxes {
             seq: state.seq,
             getting_diff_for,
             next_deadline: deadline,
+            active_channel: None,
         }
     }
 
@@ -298,6 +300,7 @@ impl MessageBoxes {
                 .iter()
                 .fold(deadline, |d, entry| d.min(entry.effective_deadline()));
         }
+        self.next_deadline = self.next_deadline.min(deadline);
     }
 
     fn reset_timeout(&mut self, key: Key, timeout: Option<i32>) {
@@ -348,6 +351,21 @@ impl MessageBoxes {
                 deadline: next_updates_deadline(),
                 possible_gap: None,
             });
+        }
+    }
+
+    /// Poll only the channel the user is actively viewing. The supplied PTS
+    /// initializes an unknown channel, never advances a known local cursor.
+    pub fn set_active_channel(&mut self, channel: Option<(i64, i32)>) {
+        let next = channel.map(|(id, _)| id);
+        if self.active_channel == next { return; }
+        if let Some(previous) = self.active_channel {
+            self.reset_deadline(Key::Channel(previous), next_updates_deadline());
+        }
+        self.active_channel = next;
+        if let Some((id, pts)) = channel {
+            self.try_set_channel_state(id, pts);
+            self.try_begin_get_diff(Key::Channel(id));
         }
     }
 
@@ -851,7 +869,9 @@ impl MessageBoxes {
             )
         }));
 
-        self.reset_timeout(key, timeout);
+        self.reset_timeout(key, if self.active_channel == Some(channel_id) {
+            Some(timeout.unwrap_or(1).max(1))
+        } else { None });
 
         (result_updates, users, chats)
     }

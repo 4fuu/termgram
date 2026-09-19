@@ -45,6 +45,7 @@ struct Configuration {
     keymap: Vec<BindingSpec>,
     chats: BTreeMap<String, i64>,
     ghost_text: Option<String>,
+    colors: crate::appearance::Colors,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +61,7 @@ pub struct Keymap {
     bindings: Vec<Binding>,
     pub chats: BTreeMap<String, i64>,
     pub ghost_text: String,
+    pub colors: crate::appearance::Colors,
     pending: Vec<Key>,
     count: usize,
     context: Option<Context>,
@@ -111,6 +113,8 @@ const ACTIONS: &[&str] = &[
     "clear",
     "delete_word",
     "noop",
+    "chat_color",
+    "folder_color",
     "search",
     "search_scope",
     "search_more",
@@ -127,6 +131,7 @@ impl Default for Keymap {
         let mut result = Self {
             bindings: Vec::new(),
             chats: BTreeMap::new(),
+            colors: crate::appearance::Colors::default(),
             ghost_text: "{send} to send".to_owned(),
             pending: Vec::new(),
             count: 0,
@@ -153,6 +158,8 @@ impl Default for Keymap {
                     ("<Enter>", "open"),
                     ("<Right>", "open"),
                     ("<Tab>", "focus"),
+                    ("c", "chat_color"),
+                    ("C", "folder_color"),
                     ("/", "filter"),
                     ("<C-f>", "search"),
                     ("]", "folder_next"),
@@ -172,6 +179,7 @@ impl Default for Keymap {
             (
                 Context::Conversation,
                 &[
+                    ("c", "chat_color"),
                     ("/", "search"),
                     ("j", "message_down"),
                     ("k", "message_up"),
@@ -330,6 +338,7 @@ impl Keymap {
             lua.from_value(lua.load(source).set_name("config.lua").eval()?)?;
         let mut keymap = Self {
             chats: configuration.chats,
+            colors: configuration.colors,
             ..Self::default()
         };
         if let Some(text) = configuration.ghost_text {

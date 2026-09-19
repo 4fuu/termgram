@@ -1,4 +1,5 @@
 pub mod app;
+pub mod appearance;
 pub mod cache;
 pub mod config;
 pub mod event;

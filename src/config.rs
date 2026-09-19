@@ -183,73 +183,7 @@ impl Settings {
     /// Returns an error if the directory is unsafe, the destination is not a
     /// regular file, or an atomic write cannot be completed.
     pub fn save_to(self, path: &Path) -> Result<()> {
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let parent_created = !parent.exists();
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-        let parent_metadata = fs::symlink_metadata(parent)
-            .with_context(|| format!("failed to inspect {}", parent.display()))?;
-        if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-            bail!("settings directory must be a real directory");
-        }
-        protect_settings_directory(parent, parent_created)?;
-
-        match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                bail!("refusing to replace settings through a symbolic link");
-            }
-            Ok(metadata) if !metadata.is_file() => {
-                bail!("settings path is not a regular file");
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
-            }
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(SETTINGS_FILE_NAME);
-        let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
-        let result = (|| -> Result<()> {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options
-                .open(&temporary)
-                .with_context(|| format!("failed to create {}", temporary.display()))?;
-            file.write_all(self.serialize().as_bytes())
-                .with_context(|| format!("failed to write {}", temporary.display()))?;
-            file.sync_all()
-                .with_context(|| format!("failed to sync {}", temporary.display()))?;
-            drop(file);
-            replace_settings_file(&temporary, path, nonce)?;
-            protect_settings_file(path)?;
-            #[cfg(unix)]
-            OpenOptions::new()
-                .read(true)
-                .open(parent)
-                .and_then(|directory| directory.sync_all())
-                .with_context(|| format!("failed to sync {}", parent.display()))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            drop(fs::remove_file(&temporary));
-        }
-        result
+        write_preferences(path, self.serialize().as_bytes())
     }
 
     fn serialize(self) -> String {
@@ -263,6 +197,77 @@ impl Settings {
             self.account_count,
         )
     }
+}
+
+/// Shared atomic writer for managed preferences, with the same platform cleanup
+/// and path protections as settings.conf.
+pub(crate) fn write_preferences(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent_created = !parent.exists();
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let parent_metadata = fs::symlink_metadata(parent)
+        .with_context(|| format!("failed to inspect {}", parent.display()))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        bail!("settings directory must be a real directory");
+    }
+    protect_settings_directory(parent, parent_created)?;
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("refusing to replace settings through a symbolic link");
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            bail!("settings path is not a regular file");
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(SETTINGS_FILE_NAME);
+    let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .with_context(|| format!("failed to create {}", temporary.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("failed to write {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temporary.display()))?;
+        drop(file);
+        replace_settings_file(&temporary, path, nonce)?;
+        protect_settings_file(path)?;
+        #[cfg(unix)]
+        OpenOptions::new()
+            .read(true)
+            .open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("failed to sync {}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        drop(fs::remove_file(&temporary));
+    }
+    result
 }
 
 fn parse_settings(text: &str) -> Result<Settings> {

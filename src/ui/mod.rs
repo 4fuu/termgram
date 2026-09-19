@@ -1,3 +1,4 @@
+mod appearance;
 mod search;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
@@ -401,7 +402,9 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     render_composer(frame, rows[2], app, show_conversation_only || !narrow);
     render_footer(frame, rows[3], app, narrow);
 
-    if app.mode == Mode::Search {
+    if app.mode == Mode::Colors {
+        appearance::render_colors(frame, area, app);
+    } else if app.mode == Mode::Search {
         search::render_search(frame, area, app);
     } else if app.mode == Mode::Help {
         render_help(frame, area, app);
@@ -412,7 +415,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     if matches!(
         app.mode,
-        Mode::Search | Mode::Help | Mode::Settings | Mode::Accounts
+        Mode::Search | Mode::Colors | Mode::Help | Mode::Settings | Mode::Accounts
     ) {
         app.media_slots.clear();
     }
@@ -479,7 +482,9 @@ fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     app.set_chat_pane_region((area.x, area.right(), area.y, area.bottom()));
     let focused = app.focus == Focus::Chats && app.mode != Mode::Compose;
     let title = chat_list_title(app);
-    let block = pane_block(title, focused);
+    let block = pane_block(title, focused).title_style(
+        Style::default().fg(app.color(crate::appearance::Target::Folder(app.folder_id))),
+    );
     let visible = app.filtered_chat_indices();
     let viewport_height = usize::from(area.height.saturating_sub(2)).max(1);
     let selected = app.selected_chat.min(visible.len().saturating_sub(1));
@@ -511,12 +516,13 @@ fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
                 .saturating_sub(UnicodeWidthStr::width(title.as_str()))
                 .saturating_sub(suffix_width)
                 .max(1);
+            let style = Style::default().fg(app.color(crate::appearance::Target::Chat(chat.id)));
             let style = if selected {
-                Style::default().fg(Color::Black).bg(ACCENT).bold()
+                style.add_modifier(Modifier::REVERSED).bold()
             } else if chat.unread > 0 {
-                Style::default().bold()
+                style.bold()
             } else {
-                Style::default()
+                style
             };
             ListItem::new(Line::from(vec![
                 Span::styled(title, style),
@@ -555,7 +561,7 @@ fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         list.block(block)
             .highlight_symbol("› ")
             .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().fg(Color::Black).bg(ACCENT).bold()),
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED).bold()),
         area,
         &mut state,
     );
@@ -571,6 +577,11 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let block = pane_block(
         title,
         app.focus == Focus::Conversation || app.mode == Mode::Compose,
+    )
+    .title_style(
+        Style::default().fg(app.active_chat_id.map_or(Color::Reset, |id| {
+            app.color(crate::appearance::Target::Chat(id))
+        })),
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -937,7 +948,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::White)),
+            .style(Style::default()),
         popup,
     );
 }

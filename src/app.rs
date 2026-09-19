@@ -1,5 +1,6 @@
 //! Pure, single-owner application state and transitions.
 
+mod appearance;
 mod search;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -151,6 +152,7 @@ pub enum Mode {
     Compose,
     Filter,
     Search,
+    Colors,
     Help,
     Settings,
     Accounts,
@@ -191,6 +193,9 @@ pub struct App {
     pub focus: Focus,
     pub connection: ConnectionStatus,
     pub user_name: Option<String>,
+    pub account_user_id: Option<i64>,
+    pub appearance: crate::appearance::Preferences,
+    pub color_picker: Option<appearance::Picker>,
     pub chats: Vec<Chat>,
     pub folders: Vec<crate::folders::Folder>,
     pub folder_id: i32,
@@ -290,6 +295,9 @@ impl Default for App {
             focus: Focus::Chats,
             connection: ConnectionStatus::Connecting,
             user_name: None,
+            account_user_id: None,
+            appearance: crate::appearance::Preferences::default(),
+            color_picker: None,
             chats: Vec::new(),
             folders: vec![crate::folders::Folder::all()],
             folder_id: 0,
@@ -497,7 +505,7 @@ impl App {
                 Mode::Compose => Context::Compose,
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
-                Mode::Help | Mode::Settings | Mode::Accounts => Context::Overlay,
+                Mode::Help | Mode::Settings | Mode::Accounts | Mode::Colors => Context::Overlay,
                 Mode::Navigate if self.focus == Focus::Chats => Context::Chats,
                 Mode::Navigate => Context::Conversation,
             }
@@ -558,6 +566,8 @@ impl App {
         }
         match run {
             "search" => return self.open_search(),
+            "chat_color" => return self.begin_color_picker(false),
+            "folder_color" => return self.begin_color_picker(true),
             "folder_next" | "folder_previous" => {
                 let current = self
                     .folders
@@ -587,8 +597,12 @@ impl App {
                         .iter()
                         .find(|chat| Some(chat.id) == self.active_chat_id)
                 };
-                self.status_message =
-                    chat.map(|chat| format!("{} · chat ID {}", chat.title, chat.id));
+                self.status_message = chat.map(|chat| {
+                    format!(
+                        "{} · chat ID {} · folder ID {}",
+                        chat.title, chat.id, self.folder_id
+                    )
+                });
                 return Vec::new();
             }
             "help" | "settings" | "accounts" if self.screen == Screen::Main => {
@@ -774,7 +788,7 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
-        if matches!(self.mode, Mode::Help | Mode::Search) {
+        if matches!(self.mode, Mode::Help | Mode::Search | Mode::Colors) {
             return Vec::new();
         }
         if self.mode == Mode::Settings {
@@ -906,6 +920,10 @@ impl App {
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.track_snapshot_changes(&event);
         match event {
+            NetworkEvent::AccountIdentity { user_id } => {
+                self.account_user_id = Some(user_id);
+                Vec::new()
+            }
             NetworkEvent::SearchResults { request_id, page } => {
                 self.finish_search(request_id, Ok(page));
                 Vec::new()
@@ -981,7 +999,6 @@ impl App {
             }
             NetworkEvent::HistoryLoading { .. }
             | NetworkEvent::SyncCheckpoint(_)
-            | NetworkEvent::AccountIdentity { .. }
             | NetworkEvent::CacheMessage(_) => Vec::new(),
             NetworkEvent::CacheAccountReset { .. } => {
                 self.reset_for_account_switch(self.active_account());
@@ -1694,6 +1711,7 @@ impl App {
             Mode::Compose => self.handle_compose(action),
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
+            Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
             Mode::Accounts => self.handle_accounts(action),
@@ -2086,9 +2104,11 @@ impl App {
         let available_update = self.available_update.clone();
         let terminal_focused = self.terminal_focused;
         let qr_render_mode = self.qr_render_mode;
+        let appearance = self.appearance.clone();
         let mut keymap = self.keymap.clone();
         keymap.reset();
         *self = Self {
+            appearance,
             keymap,
             settings,
             settings_path,
@@ -6058,5 +6078,36 @@ mod tests {
         app.run_binding("search", 1);
         assert_eq!(app.search.query.value(), "error.*");
         assert_eq!(app.drafts.get(&1).unwrap().value(), "unsent");
+    }
+    #[test]
+    fn colors_follow_configuration_and_isolate_accounts_and_cancel_edits() {
+        use crate::appearance::{Target, TerminalColor};
+        use ratatui::style::Color;
+        let mut app = ready_app();
+        app.handle_network(NetworkEvent::AccountIdentity { user_id: 101 });
+        assert_eq!(app.color(Target::Chat(1)), Color::Reset);
+        assert_eq!(
+            app.color(Target::Folder(7)),
+            TerminalColor::folder_default(7).color()
+        );
+        app.keymap =
+            crate::keymap::Keymap::parse("return { colors = { chats = { [1] = 'cyan' } } }")
+                .unwrap();
+        assert_eq!(app.color(Target::Chat(1)), Color::Cyan);
+        app.run_binding("chat_color", 1);
+        app.color_picker.as_mut().unwrap().selection = 3; // Red, after follow/default/black.
+        app.handle_colors(KeyAction::Enter);
+        assert_eq!(app.color(Target::Chat(1)), Color::Red);
+        app.handle_network(NetworkEvent::AccountIdentity { user_id: 102 });
+        assert_eq!(app.color(Target::Chat(1)), Color::Cyan);
+        app.handle_network(NetworkEvent::AccountIdentity { user_id: 101 });
+        app.run_binding("chat_color", 1);
+        app.color_picker.as_mut().unwrap().selection = 0;
+        app.handle_colors(KeyAction::Escape);
+        assert_eq!(app.color(Target::Chat(1)), Color::Red);
+        app.run_binding("chat_color", 1);
+        app.color_picker.as_mut().unwrap().selection = 0;
+        app.handle_colors(KeyAction::Enter);
+        assert_eq!(app.color(Target::Chat(1)), Color::Cyan);
     }
 }

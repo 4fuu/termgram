@@ -30,6 +30,11 @@ pub(super) async fn serve(
     cache_path.push(".cache.sqlite3");
     let mut store = Store::open(std::path::Path::new(&cache_path)).await?;
     let (user_name, chats) = store.snapshot().await?;
+    if let Some(user_id) = store.account_id().await? {
+        events
+            .send(NetworkEvent::AccountIdentity { user_id })
+            .await?;
+    }
     if !chats.is_empty() {
         events
             .send(NetworkEvent::CachedSnapshot {

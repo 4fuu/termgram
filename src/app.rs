@@ -2683,6 +2683,19 @@ impl App {
     fn remove_deleted_messages(&mut self, channel_id: Option<ChatId>, message_ids: &[i32]) {
         let affected_chat =
             |id: ChatId| channel_id.map_or(id > -1_000_000_000_000, |channel| channel == id);
+        for chat in &mut self.chats {
+            if affected_chat(chat.id)
+                && chat
+                    .last_message_id
+                    .is_some_and(|id| message_ids.contains(&id))
+            {
+                chat.last_message.clear();
+                chat.last_message_id = None;
+                if self.refresh_dialogs_pending {
+                    self.changed_dialogs.insert(chat.id);
+                }
+            }
+        }
         self.media_previews.retain(|&(chat_id, message_id), _| {
             !affected_chat(chat_id) || !message_ids.contains(&message_id)
         });
@@ -3082,6 +3095,7 @@ impl App {
                 if let Some(current) = self.chats.iter().find(|current| current.id == chat.id) {
                     chat.last_message.clone_from(&current.last_message);
                     chat.last_activity = current.last_activity;
+                    chat.last_message_id = current.last_message_id;
                     chat.unread = current.unread;
                 } else if let Some(message) = self
                     .messages
@@ -3092,6 +3106,7 @@ impl App {
                         .is_none_or(|timestamp| message.timestamp >= timestamp)
                 {
                     chat.last_message.clone_from(&message.text);
+                    chat.last_message_id = Some(message.id);
                     chat.last_activity = Some(message.timestamp);
                 }
             }
@@ -3197,6 +3212,9 @@ impl App {
         {
             let chat = &mut self.chats[chat_index];
             chat.last_message = text;
+            if message_id > 0 {
+                chat.last_message_id = Some(message_id);
+            }
             chat.last_activity = Some(timestamp);
             if genuinely_new
                 && count_as_new
@@ -3512,6 +3530,7 @@ impl App {
             self.reveal_after_download.remove(&(chat_id, message_id));
         }
         let preview = message.text.clone();
+        let timestamp = message.timestamp;
         let reply_to = message.reply_to.as_ref().map(|reply| reply.message_id);
         let reconciled_local_id = {
             let messages = self.messages.entry(chat_id).or_default();
@@ -3532,10 +3551,15 @@ impl App {
         } else {
             upsert_message(messages, message);
         }
-        let is_latest = messages
-            .last()
-            .is_some_and(|latest| latest.id == message_id);
-        if is_latest && let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+        if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id)
+            && chat.last_message_id.map_or_else(
+                || {
+                    chat.last_activity
+                        .is_none_or(|activity| timestamp >= activity)
+                },
+                |id| message_id == id,
+            )
+        {
             chat.last_message = preview;
         }
         self.prune_message_cache();
@@ -4138,6 +4162,7 @@ mod tests {
             title: title.to_owned(),
             kind: ChatKind::Direct,
             unread: 3,
+            last_message_id: None,
             last_message: format!("from {title}"),
             last_activity: None,
         }
@@ -5359,6 +5384,7 @@ mod tests {
             title: "Linked group".to_owned(),
             kind: ChatKind::Group,
             unread: 0,
+            last_message_id: None,
             last_message: "linked target".to_owned(),
             last_activity: None,
         };
@@ -6255,5 +6281,37 @@ mod tests {
         });
         assert!(app.reveal_after_download.is_empty());
         assert!(app.downloading_attachments.is_empty());
+    }
+    #[test]
+    fn old_message_edits_and_latest_deletions_do_not_leave_stale_dialog_previews() {
+        let mut app = ready_app();
+        app.chats[0].last_message_id = Some(100);
+        app.chats[0].last_activity = Some(Utc.timestamp_opt(100, 0).unwrap());
+        app.chats[0].last_message = "latest".to_owned();
+        app.messages.insert(1, vec![message(21, 1, "old", false)]);
+        app.handle_network(NetworkEvent::MessageUpdated(message(
+            21,
+            1,
+            "edited old",
+            false,
+        )));
+        assert_eq!(app.chats[0].last_message, "latest");
+        app.handle_network(NetworkEvent::DialogsLoading);
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![100],
+        });
+        assert!(app.chats[0].last_message.is_empty());
+        let mut stale = app.chats[0].clone();
+        stale.last_message_id = Some(100);
+        stale.last_message = "deleted".to_owned();
+        app.handle_network(NetworkEvent::Dialogs(vec![stale]));
+        assert!(app.chats[0].last_message.is_empty());
+        app.handle_network(NetworkEvent::DialogsLoading);
+        let mut fresh = app.chats[0].clone();
+        fresh.last_message_id = Some(99);
+        fresh.last_message = "previous live message".to_owned();
+        app.handle_network(NetworkEvent::Dialogs(vec![fresh]));
+        assert_eq!(app.chats[0].last_message, "previous live message");
     }
 }

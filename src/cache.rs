@@ -12,7 +12,7 @@ use crate::{
     model::{Chat, ChatId, Delivery, Message},
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const MAX_MESSAGES: i64 = 100_000;
 const MAX_CHAT_MESSAGES: i64 = 5_000;
 
@@ -90,6 +90,9 @@ impl Store {
         }
         if version < 4 {
             transaction.execute_batch("ALTER TABLE attachments ADD COLUMN source_id INTEGER; DELETE FROM attachments; PRAGMA user_version=4;").await?;
+        }
+        if version < 5 {
+            transaction.execute_batch("ALTER TABLE chats ADD COLUMN last_message_id INTEGER; CREATE INDEX chats_last_message ON chats(last_message_id); PRAGMA user_version=5;").await?;
         }
         transaction.commit().await?;
         let revision = metadata(&connection, "revision")
@@ -297,6 +300,7 @@ impl Store {
                         {
                             chat.last_message = current.last_message;
                             chat.last_activity = current.last_activity;
+                            chat.last_message_id = current.last_message_id;
                             chat.unread = current.unread;
                         }
                         write_chat(&transaction, &chat, revision).await?;
@@ -385,21 +389,58 @@ impl Store {
                                 .await?;
                         }
                     }
+                    let existed = transaction
+                        .query(
+                            "SELECT 1 FROM messages WHERE chat_id=?1 AND id=?2",
+                            params![message.chat_id, message.id],
+                        )
+                        .await?
+                        .next()
+                        .await?
+                        .is_some();
                     write_message(&transaction, message, revision, revision).await?;
-                    if let Some((mut chat, _)) = load_chat(&transaction, message.chat_id).await?
-                        && chat
-                            .last_activity
-                            .is_none_or(|date| message.timestamp >= date)
-                    {
-                        chat.last_message.clone_from(&message.text);
-                        chat.last_activity = Some(message.timestamp);
+                    if let Some((mut chat, _)) = load_chat(&transaction, message.chat_id).await? {
+                        let latest = chat.last_message_id.map_or_else(
+                            || {
+                                chat.last_activity
+                                    .is_none_or(|date| message.timestamp >= date)
+                            },
+                            |id| message.id >= id,
+                        );
+                        if matches!(event, NetworkEvent::NewMessage(_))
+                            && !message.outgoing
+                            && !existed
+                            && latest
+                        {
+                            chat.unread = chat.unread.saturating_add(1);
+                        }
+                        if latest {
+                            chat.last_message.clone_from(&message.text);
+                            chat.last_message_id = Some(message.id);
+                            chat.last_activity = Some(message.timestamp);
+                        }
                         write_chat(&transaction, &chat, revision).await?;
                     }
                 }
+
                 NetworkEvent::MessagesDeleted {
                     channel_id,
                     message_ids,
                 } => {
+                    for message_id in message_ids {
+                        let mut rows = transaction.query("SELECT data FROM chats WHERE last_message_id=?1 AND ((?2 IS NULL AND id>-1000000000000) OR id=?2)", params![*message_id, *channel_id]).await?;
+                        let mut affected = Vec::new();
+                        while let Some(row) = rows.next().await? {
+                            let mut chat: Chat = serde_json::from_str(&row.get::<String>(0)?)?;
+                            chat.last_message.clear();
+                            chat.last_message_id = None;
+                            affected.push(chat);
+                        }
+                        drop(rows);
+                        for chat in affected {
+                            write_chat(&transaction, &chat, revision).await?;
+                        }
+                    }
                     self.downloads.retain(|(chat_id, id), _| {
                         !(message_ids.contains(id)
                             && channel_id.map_or(*chat_id > -1_000_000_000_000, |channel| {
@@ -577,8 +618,13 @@ async fn load_chat(connection: &Connection, id: ChatId) -> Result<Option<(Chat, 
 async fn write_chat(connection: &Connection, chat: &Chat, revision: i64) -> Result<()> {
     connection
         .execute(
-            "INSERT OR REPLACE INTO chats VALUES(?1,?2,?3)",
-            params![chat.id, serde_json::to_string(chat)?, revision],
+            "INSERT OR REPLACE INTO chats VALUES(?1,?2,?3,?4)",
+            params![
+                chat.id,
+                serde_json::to_string(chat)?,
+                revision,
+                chat.last_message_id
+            ],
         )
         .await?;
     Ok(())
@@ -665,6 +711,7 @@ mod tests {
             title: "Group".to_owned(),
             kind: ChatKind::Group,
             unread: 0,
+            last_message_id: None,
             last_message: String::new(),
             last_activity: None,
         };
@@ -882,5 +929,54 @@ mod tests {
         assert!(Store::open(&path).await.is_err());
         drop(transfer_owner);
         assert!(Store::open(&path).await.is_ok());
+    }
+    #[tokio::test]
+    async fn cached_dialogs_count_new_messages_once_and_clear_deleted_previews() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.sqlite3");
+        let mut store = Store::open(&path).await.unwrap();
+        let chat = Chat {
+            id: 42,
+            title: "Group".to_owned(),
+            kind: ChatKind::Group,
+            unread: 0,
+            membership: crate::folders::ChatMembership::default(),
+            last_message: "first".to_owned(),
+            last_message_id: Some(1),
+            last_activity: Some(message(1, "first").timestamp),
+        };
+        store
+            .apply(&[
+                NetworkEvent::DialogsLoading,
+                NetworkEvent::Dialogs(vec![chat]),
+                NetworkEvent::NewMessage(message(2, "second")),
+                NetworkEvent::NewMessage(message(2, "second")),
+                NetworkEvent::MessageUpdated(message(1, "edited first")),
+            ])
+            .await
+            .unwrap();
+        let chats = store.snapshot().await.unwrap().1;
+        assert_eq!(chats[0].unread, 1);
+        assert_eq!(chats[0].last_message_id, Some(2));
+        assert_eq!(chats[0].last_message, "second");
+        store
+            .apply(&[
+                NetworkEvent::MessagesDeleted {
+                    channel_id: None,
+                    message_ids: vec![2],
+                },
+                NetworkEvent::UnreadChanged {
+                    chat_id: 42,
+                    unread: 0,
+                },
+            ])
+            .await
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).await.unwrap();
+        let chats = store.snapshot().await.unwrap().1;
+        assert!(chats[0].last_message.is_empty());
+        assert_eq!(chats[0].unread, 0);
+        assert_eq!(chats[0].last_message_id, None);
     }
 }

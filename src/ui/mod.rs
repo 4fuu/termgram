@@ -1726,6 +1726,7 @@ mod tests {
             title: "Alice 東京".to_owned(),
             kind: ChatKind::Direct,
             unread: 2,
+            last_message_id: None,
             last_message: "hello from the terminal".to_owned(),
             last_activity: Some(Utc::now()),
         });
@@ -2272,6 +2273,7 @@ mod tests {
                 title: format!("Overflow chat {index:02}"),
                 kind: ChatKind::Direct,
                 unread: 0,
+                last_message_id: None,
                 last_message: String::new(),
                 last_activity: None,
             });

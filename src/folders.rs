@@ -83,6 +83,7 @@ mod tests {
             title: String::new(),
             kind: ChatKind::Group,
             unread: 0,
+            last_message_id: None,
             last_message: String::new(),
             last_activity: None,
             membership: ChatMembership {

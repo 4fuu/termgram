@@ -196,6 +196,7 @@ mod tests {
             title: format!("Chat {id}"),
             kind: ChatKind::Group,
             unread: 0,
+            last_message_id: None,
             last_message: String::new(),
             last_activity: None,
             membership: crate::folders::ChatMembership::default(),

@@ -267,6 +267,7 @@ async fn run(
         for chat in bootstrap.chats {
             if let Some(id) = PeerId::from_bot_api_dialog_id(chat.id) {
                 if let Some(peer) = session.peer_ref(id).await? { cache.peers.insert(chat.id, peer); }
+                if let Some(top) = chat.last_message_id { cache.top_messages.insert(chat.id, top); }
                 cache.names.insert(id, chat.title);
                 if chat.kind == ChatKind::Group && id.kind() == PeerKind::Channel {
                     cache.visible_channel_groups.insert(chat.id);
@@ -429,6 +430,9 @@ async fn process_update(
                 return Ok(());
             }
             let chat_id = peer_id(&message)?;
+            if !cache.peers.contains_key(&chat_id) {
+                cache.dialogs.dirty = true;
+            }
             if let Some(peer) = message
                 .peer_ref()
                 .await
@@ -470,6 +474,7 @@ async fn process_update(
                 .ok();
         }
         Ok(Update::MessageDeleted(update)) => {
+            cache.dialogs.dirty = true;
             restore_online_status(events, recovering).await;
             let channel_id = update
                 .channel_id()
@@ -1213,6 +1218,7 @@ fn apply_dialogs(
                 Peer::Channel(_) => unreachable!("broadcast channels are filtered above"),
             },
             unread: unread.max(u32::from(unread_mark)),
+            last_message_id: (top_message > 0).then_some(top_message),
             last_message: last_message.map(message_preview).unwrap_or_default(),
             last_activity: last_message.map(TelegramMessage::date),
         });
@@ -1936,6 +1942,7 @@ async fn resolve_telegram_link(
                     Peer::Channel(_) => unreachable!("broadcast channels are rejected above"),
                 },
                 unread: 0,
+                last_message_id: None,
                 last_message: String::new(),
                 last_activity: None,
             };
@@ -1954,6 +1961,7 @@ async fn resolve_telegram_link(
                 title,
                 kind: ChatKind::Group,
                 unread: 0,
+                last_message_id: None,
                 last_message: String::new(),
                 last_activity: None,
             };

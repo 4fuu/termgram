@@ -14,6 +14,8 @@ pub struct Chat {
     pub membership: crate::folders::ChatMembership,
     pub unread: u32,
     pub last_message: String,
+    #[serde(default)]
+    pub last_message_id: Option<i32>,
     pub last_activity: Option<DateTime<Utc>>,
 }
 

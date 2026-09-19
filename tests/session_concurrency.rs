@@ -8,27 +8,38 @@ fn concurrent_session_processes() {
     let directory = std::env::temp_dir().join(format!("termgram-session-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("shared.session");
-    let mut children = (0..4)
+    let children = (0..4)
         .map(|_| {
             Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "session_writer", "--nocapture"])
                 .env("TERMGRAM_TEST_SESSION", &path)
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    let success = children
-        .iter_mut()
-        .all(|child| child.wait().unwrap().success());
-    // Reap every child even if an earlier writer failed.
-    for child in &mut children {
-        let _ = child.wait();
-    }
+    // Reap every child and retain its diagnostics, including native exit codes.
+    let failures = children
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, child)| {
+            let output = child.wait_with_output().unwrap();
+            (!output.status.success()).then(|| {
+                format!(
+                    "writer {index}: {}\nstdout:\n{}\nstderr:\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
     std::fs::remove_dir_all(directory).unwrap();
     assert!(
-        success,
-        "all processes must initialize and update the shared session"
+        failures.is_empty(),
+        "all processes must initialize and update the shared session:\n{}",
+        failures.join("\n")
     );
 }
 

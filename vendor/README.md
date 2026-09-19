@@ -74,3 +74,30 @@ the group restores the normal recovery deadline. A watch channel wakes the
 existing update receive without cancellation or a second update consumer.
 The deadline helper also accounts for deadlines moved earlier than the current
 minimum. `tests/update_recovery.rs` covers activation, timeout and deactivation.
+
+`libsql/` vendors the published libSQL 0.9.30 Rust crate from
+https://github.com/tursodatabase/libsql at
+`0653c5788d77ef16a97c56ff3e9fdc11717a72d9` (`libsql/`), with the upstream
+repository's `LICENSE.md`. The published standalone manifest, lockfile and original
+source, examples and tests are retained; Cargo download metadata is omitted. An
+empty workspace table allows the upstream tests to run independently of Termgram.
+The root lockfile resolves the application dependency.
+
+The only source changes backport upstream PR #2282 at
+`0070ff3331cd6d09425b812e1cd3ebe32e1d4206`, including its regression test:
+https://github.com/tursodatabase/libsql/pull/2282.
+`src/local/connection.rs` makes disconnect idempotent, and `src/local/impls.rs`
+removes the redundant connection destructor. This prevents a second
+`sqlite3_close_v2` call on freed memory, reported in upstream issue #2251 and
+consistent with Termgram's Windows ARM64 session-writer access violations.
+The native SQLite engine and session format are unchanged. Directly using that
+upstream Git revision would also require its 0.10.0-pre.4 engine upgrade; this
+backport keeps the fix bounded to connection ownership. Remove this patch when
+a stable release includes the fix. Keep upstream formatting and use its focused
+`drop_closes_the_handle_exactly_once` test to validate the ownership boundary.
+
+```sh
+cargo test --locked --manifest-path vendor/libsql/Cargo.toml \
+  --no-default-features --features core --lib \
+  drop_closes_the_handle_exactly_once --target-dir target/libsql-regression
+```

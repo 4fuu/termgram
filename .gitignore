@@ -8,3 +8,5 @@
 /dev-notes/
 *.cache.sqlite3
 *.cache.sqlite3-*
+
+*.media/

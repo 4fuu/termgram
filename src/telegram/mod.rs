@@ -1,5 +1,6 @@
 mod folders;
 mod local;
+mod media_cache;
 mod requests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -90,8 +91,10 @@ struct WorkerCache {
     /// triggering a complete dialog scan. Once it expires, any unresolved peer
     /// can retry the refresh.
     last_unresolved_refresh: Option<Instant>,
-    /// Created lazily so text-only sessions never touch the temporary folder.
+    /// Created lazily so text-only sessions never create a media directory.
     download_dir: Option<PathBuf>,
+    media_root: PathBuf,
+    cache_owner: Option<Arc<std::fs::File>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,37 +144,11 @@ enum TransferCompletion {
         result: Result<PathBuf, String>,
     },
     Download {
+        request_id: u64,
         chat_id: ChatId,
         message_id: i32,
         result: Result<PathBuf, String>,
     },
-}
-
-struct PartialDownload {
-    path: PathBuf,
-    complete: bool,
-}
-
-impl PartialDownload {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            complete: false,
-        }
-    }
-
-    fn finish(mut self) -> PathBuf {
-        self.complete = true;
-        self.path.clone()
-    }
-}
-
-impl Drop for PartialDownload {
-    fn drop(&mut self) {
-        if !self.complete {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
 }
 
 #[must_use]
@@ -284,7 +261,9 @@ async fn run(
         let user_name = safe_name(me.first_name(), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
 
-        let mut cache = WorkerCache { self_id: user_id, folders: MetadataRefresh { dirty: true, ..MetadataRefresh::default() }, ..WorkerCache::default() };
+        let mut media_root = config.session_path.as_os_str().to_os_string();
+        media_root.push(".media");
+        let mut cache = WorkerCache { cache_owner: Some(bootstrap.cache_owner.clone()), media_root: PathBuf::from(media_root), self_id: user_id, folders: MetadataRefresh { dirty: true, ..MetadataRefresh::default() }, ..WorkerCache::default() };
         for chat in bootstrap.chats {
             if let Some(id) = PeerId::from_bot_api_dialog_id(chat.id) {
                 if let Some(peer) = session.peer_ref(id).await? { cache.peers.insert(chat.id, peer); }
@@ -1358,7 +1337,9 @@ async fn handle_command(
                 return Ok(false);
             }
             let client = client.clone();
+            let cache_owner = cache.cache_owner.clone();
             transfers.spawn(async move {
+                let _cache_owner = cache_owner.clone();
                 let result = upload_attachment(&client, peer, &path, &caption, as_photo, reply_to)
                     .await
                     .map_err(|error| format!("{error:#}"));
@@ -1395,14 +1376,30 @@ async fn handle_command(
             match preparation {
                 Ok((peer, directory)) => {
                     let client = client.clone();
+                    let cache_owner = cache.cache_owner.clone();
                     transfers.spawn(async move {
+                        let _cache_owner = cache_owner.clone();
                         let result = if thumbnail {
                             download_preview_thumbnail(
-                                &client, peer, chat_id, message_id, directory,
+                                &client,
+                                peer,
+                                chat_id,
+                                message_id,
+                                directory,
+                                cache_owner,
                             )
                             .await
                         } else {
-                            download_attachment(&client, peer, chat_id, message_id, directory).await
+                            download_attachment(
+                                &client,
+                                peer,
+                                chat_id,
+                                message_id,
+                                directory,
+                                None,
+                                cache_owner,
+                            )
+                            .await
                         }
                         .map_err(|error| format!("{error:#}"));
                         TransferCompletion::Preview {
@@ -1428,10 +1425,13 @@ async fn handle_command(
         TelegramCommand::DownloadAttachment {
             chat_id,
             message_id,
+            request_id,
+            media_id,
         } => {
             let Some(peer) = cache.peers.get(&chat_id).copied() else {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
+                        request_id,
                         chat_id,
                         message_id,
                         error: "conversation is missing its Telegram peer reference".to_owned(),
@@ -1442,6 +1442,7 @@ async fn handle_command(
             if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
+                        request_id,
                         chat_id,
                         message_id,
                         error: "too many Telegram transfers are already running".to_owned(),
@@ -1451,11 +1452,22 @@ async fn handle_command(
             }
             let directory = ensure_download_dir(cache).await?;
             let client = client.clone();
+            let cache_owner = cache.cache_owner.clone();
             transfers.spawn(async move {
-                let result = download_attachment(&client, peer, chat_id, message_id, directory)
-                    .await
-                    .map_err(|error| format!("{error:#}"));
+                let _cache_owner = cache_owner.clone();
+                let result = download_attachment(
+                    &client,
+                    peer,
+                    chat_id,
+                    message_id,
+                    directory,
+                    media_id,
+                    cache_owner,
+                )
+                .await
+                .map_err(|error| format!("{error:#}"));
                 TransferCompletion::Download {
+                    request_id,
                     chat_id,
                     message_id,
                     result,
@@ -1639,6 +1651,7 @@ async fn process_transfer_completion(
             }
         },
         TransferCompletion::Download {
+            request_id,
             chat_id,
             message_id,
             result,
@@ -1646,6 +1659,7 @@ async fn process_transfer_completion(
             Ok(path) => {
                 events
                     .send(NetworkEvent::AttachmentDownloaded {
+                        request_id,
                         chat_id,
                         message_id,
                         path,
@@ -1655,6 +1669,7 @@ async fn process_transfer_completion(
             Err(error) => {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
+                        request_id,
                         chat_id,
                         message_id,
                         error: format!("Could not download attachment: {error}"),
@@ -1672,6 +1687,8 @@ async fn download_attachment(
     chat_id: ChatId,
     message_id: i32,
     directory: PathBuf,
+    expected_media_id: Option<i64>,
+    cache_owner: Option<Arc<std::fs::File>>,
 ) -> Result<PathBuf> {
     let mut messages = client
         .get_messages_by_id(peer, &[message_id])
@@ -1691,17 +1708,30 @@ async fn download_attachment(
         bail!("this type of Telegram media is not downloadable")
     }
 
+    if expected_media_id.is_some()
+        && attachment_from_media(&media).and_then(|attachment| attachment.source_id)
+            != expected_media_id
+    {
+        bail!("Attachment changed; refresh the message before opening it");
+    }
     let suggested_name = attachment_from_media(&media).map_or_else(
         || "attachment".to_owned(),
         |attachment| attachment.display_name().to_owned(),
     );
-    let path = unique_download_path(&directory, chat_id, message_id, &suggested_name).await?;
-    let partial = PartialDownload::new(path);
+    let partial = media_cache::temporary(&directory)?;
     client
-        .download_media(&media, &partial.path)
+        .download_media(&media, partial.as_ref() as &Path)
         .await
         .context("Telegram media transfer failed")?;
-    Ok(partial.finish())
+    media_cache::finish(
+        partial,
+        directory,
+        chat_id,
+        message_id,
+        &suggested_name,
+        cache_owner,
+    )
+    .await
 }
 
 /// Use the SDK's Downloadable thumbnail implementation, including cached and
@@ -1712,6 +1742,7 @@ async fn download_preview_thumbnail(
     chat_id: ChatId,
     message_id: i32,
     directory: PathBuf,
+    cache_owner: Option<Arc<std::fs::File>>,
 ) -> Result<PathBuf> {
     let message = client
         .get_messages_by_id(peer, &[message_id])
@@ -1732,44 +1763,34 @@ async fn download_preview_thumbnail(
         .filter(|thumb| thumb.size() > 0)
         .max_by_key(PhotoSize::size)
         .context("Telegram did not provide a static thumbnail for this sticker")?;
-    let path = unique_download_path(&directory, chat_id, message_id, "preview.jpg").await?;
-    let partial = PartialDownload::new(path);
+    let partial = media_cache::temporary(&directory)?;
     client
-        .download_media(&thumbnail, &partial.path)
+        .download_media(&thumbnail, partial.as_ref() as &Path)
         .await
         .context("Telegram preview transfer failed")?;
-    Ok(partial.finish())
+    media_cache::finish(
+        partial,
+        directory,
+        chat_id,
+        message_id,
+        "preview.jpg",
+        cache_owner,
+    )
+    .await
 }
 
 async fn ensure_download_dir(cache: &mut WorkerCache) -> Result<PathBuf> {
     if let Some(path) = &cache.download_dir {
         return Ok(path.clone());
     }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("termgram-{}-{nonce}", std::process::id()));
-    tokio::fs::create_dir(&root)
-        .await
-        .with_context(|| format!("could not create temporary directory {}", root.display()))?;
-    protect_download_dir(&root).await?;
+    let root = media_cache::prepare(
+        cache.media_root.clone(),
+        cache.self_id,
+        cache.cache_owner.clone(),
+    )
+    .await?;
     cache.download_dir = Some(root.clone());
     Ok(root)
-}
-
-#[cfg(unix)]
-async fn protect_download_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .await
-        .with_context(|| format!("could not protect temporary directory {}", path.display()))
-}
-
-#[cfg(not(unix))]
-async fn protect_download_dir(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 async fn unique_download_path(
@@ -2447,6 +2468,7 @@ fn message_preview_with_media(text: &str, media: Option<&Media>) -> String {
 fn attachment_from_media(media: &Media) -> Option<Attachment> {
     match media {
         Media::Photo(photo) => Some(Attachment {
+            source_id: Some(photo.id()),
             kind: AttachmentKind::Photo,
             file_name: Some("photo.jpg".to_owned()),
             mime_type: Some("image/jpeg".to_owned()),
@@ -2461,6 +2483,7 @@ fn attachment_from_media(media: &Media) -> Option<Attachment> {
                 _ => AttachmentKind::File,
             };
             Some(Attachment {
+                source_id: Some(document.id()),
                 kind,
                 file_name: safe_media_name(document.name()),
                 mime_type,
@@ -2469,6 +2492,7 @@ fn attachment_from_media(media: &Media) -> Option<Attachment> {
             })
         }
         Media::Sticker(sticker) => Some(Attachment {
+            source_id: Some(sticker.document.id()),
             kind: AttachmentKind::Sticker,
             file_name: safe_media_name(sticker.document.name())
                 .or_else(|| Some(default_sticker_name(sticker.document.mime_type()).to_owned())),

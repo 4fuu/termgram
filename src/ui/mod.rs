@@ -1017,7 +1017,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         if index == 2 {
             lines.push(Line::from(Span::styled(
                 match settings.download_behavior {
-                    DownloadBehavior::TempOnly => {
+                    DownloadBehavior::CacheOnly => {
                         "  Temp download only; Termgram never reveals files."
                     }
                     DownloadBehavior::RevealOnActivation => {
@@ -1480,7 +1480,7 @@ fn message_body(
             AttachmentState::Ready => "click/Enter to download",
             AttachmentState::Downloading => "downloading…",
             AttachmentState::Downloaded => match download_behavior {
-                DownloadBehavior::TempOnly => "downloaded to temp",
+                DownloadBehavior::CacheOnly => "downloaded to cache",
                 DownloadBehavior::RevealOnActivation => "click/Enter to reveal",
             },
         }
@@ -1937,12 +1937,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_overlay_reflects_prerelease_and_temp_only() {
+    fn settings_overlay_reflects_prerelease_and_cache_only() {
         let mut app = AppState::with_settings(
             Settings {
                 automatic_update_checks: false,
                 release_channel: ReleaseChannel::Prerelease,
-                download_behavior: DownloadBehavior::TempOnly,
+                download_behavior: DownloadBehavior::CacheOnly,
                 show_message_ids: false,
                 ..Settings::default()
             },
@@ -1954,7 +1954,7 @@ mod tests {
 
         assert!(output.contains("Off"));
         assert!(output.contains("Prerelease"));
-        assert!(output.contains("Temp only"));
+        assert!(output.contains("Keep in cache"));
         assert!(output.contains("never reveals files"));
     }
 
@@ -2034,6 +2034,7 @@ mod tests {
                 outgoing: false,
                 delivery: Delivery::Read,
                 attachment: Some(Attachment {
+                    source_id: None,
                     kind: AttachmentKind::Photo,
                     file_name: Some("image.jpg".to_owned()),
                     mime_type: Some("image/jpeg".to_owned()),
@@ -2053,6 +2054,7 @@ mod tests {
                 outgoing: false,
                 delivery: Delivery::Read,
                 attachment: Some(Attachment {
+                    source_id: None,
                     kind: AttachmentKind::Sticker,
                     file_name: None,
                     mime_type: None,
@@ -2238,6 +2240,7 @@ mod tests {
         let mut photo = app.messages.get(&7).unwrap()[0].clone();
         photo.id = 12;
         photo.attachment = Some(Attachment {
+            source_id: None,
             kind: AttachmentKind::Photo,
             file_name: Some("photo.jpg".to_owned()),
             mime_type: Some("image/jpeg".to_owned()),

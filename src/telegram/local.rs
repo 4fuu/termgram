@@ -13,6 +13,7 @@ pub(super) struct Bootstrap {
     pub cursor: SyncCursor,
     pub chats: Vec<Chat>,
     pub account_id: Option<i64>,
+    pub cache_owner: std::sync::Arc<std::fs::File>,
 }
 use tokio::{
     task::JoinSet,
@@ -47,6 +48,7 @@ pub(super) async fn serve(
         .send(NetworkEvent::Folders(store.folders().await?))
         .await?;
     let bootstrap = Bootstrap {
+        cache_owner: store.owner(),
         cursor: store.cursor().await?,
         chats,
         account_id: store.account_id().await?,
@@ -80,6 +82,7 @@ pub(super) async fn serve(
                 } else if pending.len() < COMMAND_QUEUE_CAPACITY {
                     pending.push_back(command);
                 } else if let Some(event) = command.failure("Telegram command queue is busy".to_owned()) {
+                    store.apply(std::slice::from_ref(&event)).await?;
                     events.send(event).await?;
                 }
             }
@@ -118,6 +121,7 @@ pub(super) async fn serve(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn serve_cached(
     command: &TelegramCommand,
     store: &mut Store,
@@ -130,12 +134,39 @@ async fn serve_cached(
         TelegramCommand::LoadHistory { .. }
             | TelegramCommand::LoadOlder { .. }
             | TelegramCommand::LoadCachedContext { .. }
+            | TelegramCommand::DownloadAttachment { .. }
             | TelegramCommand::SearchCached(_)
     ) {
         store.apply(changes).await?;
         changes.clear();
     }
     match command {
+        TelegramCommand::DownloadAttachment {
+            chat_id,
+            message_id,
+            request_id,
+            media_id,
+        } => {
+            if let Some(path) = store.attachment(*chat_id, *message_id, *media_id).await? {
+                events
+                    .send(NetworkEvent::AttachmentDownloaded {
+                        chat_id: *chat_id,
+                        message_id: *message_id,
+                        request_id: *request_id,
+                        path,
+                    })
+                    .await?;
+                return Ok(true);
+            }
+            store
+                .apply(&[NetworkEvent::AttachmentDownloadStarted {
+                    chat_id: *chat_id,
+                    message_id: *message_id,
+                    request_id: *request_id,
+                    media_id: *media_id,
+                }])
+                .await?;
+        }
         TelegramCommand::SearchCached(request) => {
             search.queue(request.clone());
             return Ok(true);

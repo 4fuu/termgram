@@ -48,9 +48,9 @@ impl ReleaseChannel {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DownloadBehavior {
-    /// Download to Termgram's private temporary directory, but never ask the
-    /// operating system to reveal the file.
-    TempOnly,
+    /// Enter/click keeps the file in Termgram's managed cache. The separate
+    /// explicit reveal action remains available.
+    CacheOnly,
     /// A second explicit activation reveals the containing folder or selects
     /// the file; downloaded content is never executed directly.
     #[default]
@@ -61,7 +61,7 @@ impl DownloadBehavior {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::TempOnly => "Temp only",
+            Self::CacheOnly => "Keep in cache",
             Self::RevealOnActivation => "Reveal on activation",
         }
     }
@@ -69,14 +69,14 @@ impl DownloadBehavior {
     #[must_use]
     pub const fn toggled(self) -> Self {
         match self {
-            Self::TempOnly => Self::RevealOnActivation,
-            Self::RevealOnActivation => Self::TempOnly,
+            Self::CacheOnly => Self::RevealOnActivation,
+            Self::RevealOnActivation => Self::CacheOnly,
         }
     }
 
     const fn persisted(self) -> &'static str {
         match self {
-            Self::TempOnly => "temp_only",
+            Self::CacheOnly => "cache_only",
             Self::RevealOnActivation => "reveal_on_activation",
         }
     }
@@ -299,7 +299,7 @@ fn parse_settings(text: &str) -> Result<Settings> {
             }
             "download_behavior" => {
                 settings.download_behavior = match value.trim() {
-                    "temp_only" => DownloadBehavior::TempOnly,
+                    "cache_only" | "temp_only" => DownloadBehavior::CacheOnly,
                     "reveal_on_activation" => DownloadBehavior::RevealOnActivation,
                     _ => bail!("download_behavior has an unsupported value"),
                 };
@@ -696,7 +696,7 @@ mod tests {
         let second = Settings {
             automatic_update_checks: false,
             release_channel: ReleaseChannel::Prerelease,
-            download_behavior: DownloadBehavior::TempOnly,
+            download_behavior: DownloadBehavior::CacheOnly,
             show_message_ids: true,
             active_account: 2,
             account_count: 3,

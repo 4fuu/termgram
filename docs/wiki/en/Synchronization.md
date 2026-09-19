@@ -23,7 +23,9 @@ older records are discarded. An old gap that Telegram can no longer replay
 invalidates the affected local history, which is fetched again when viewed.
 
 To clear the cache, exit Termgram and remove that session's `.cache.sqlite3`
-file. Keep the `.session` file and settings to preserve login and preferences.
+file. Media can be cleared separately by removing its `.media` directory. Keep
+the `.session` file, `settings.conf` and `appearance.json` to preserve login and
+preferences. Only one process may own a given account cache at a time.
 The next launch reconnects and starts a fresh message cache.
 
 Full update batches and their covered cursor are committed in order. Restarting

@@ -1,6 +1,7 @@
 //! Pure, single-owner application state and transitions.
 
 mod appearance;
+mod attachments;
 mod search;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -266,7 +267,9 @@ pub struct App {
     history_target_message: Option<i32>,
     read_ack_pending: BTreeSet<ChatId>,
     refresh_dialogs_pending: bool,
-    downloading_attachments: BTreeSet<(ChatId, i32)>,
+    downloading_attachments: BTreeMap<(ChatId, i32), u64>,
+    next_download_request_id: u64,
+    reveal_after_download: BTreeSet<(ChatId, i32)>,
     downloaded_attachments: BTreeMap<(ChatId, i32), PathBuf>,
     pending_telegram_link: Option<String>,
     /// Chats reached through links are kept until a dialog snapshot contains
@@ -353,7 +356,9 @@ impl Default for App {
             history_target_message: None,
             read_ack_pending: BTreeSet::new(),
             refresh_dialogs_pending: false,
-            downloading_attachments: BTreeSet::new(),
+            downloading_attachments: BTreeMap::new(),
+            next_download_request_id: 1,
+            reveal_after_download: BTreeSet::new(),
             downloaded_attachments: BTreeMap::new(),
             pending_telegram_link: None,
             linked_chat_ids: BTreeSet::new(),
@@ -512,6 +517,9 @@ impl App {
         };
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
+                if run == "reveal" && key.kind == yazi_term::event::KeyEventKind::Repeat {
+                    return Vec::new();
+                }
                 if self
                     .status_message
                     .as_deref()
@@ -666,6 +674,7 @@ impl App {
             "open_link" => return self.activate_selected_link(),
             "next_action" => return self.select_actionable_message(true),
             "previous_action" => return self.select_actionable_message(false),
+            "reveal" => return self.reveal_selected_attachment(),
             "noop" => return Vec::new(),
             _ => {}
         }
@@ -999,12 +1008,19 @@ impl App {
             }
             NetworkEvent::HistoryLoading { .. }
             | NetworkEvent::SyncCheckpoint(_)
+            | NetworkEvent::AttachmentDownloadStarted { .. }
             | NetworkEvent::CacheMessage(_) => Vec::new(),
             NetworkEvent::CacheAccountReset { .. } => {
                 self.reset_for_account_switch(self.active_account());
                 Vec::new()
             }
             NetworkEvent::CacheInvalidated { chat_id } => {
+                self.downloading_attachments
+                    .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
+                self.reveal_after_download
+                    .retain(|(id, _)| chat_id.is_some_and(|chat_id| *id != chat_id));
+                self.downloaded_attachments
+                    .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                 if let Some(chat_id) = chat_id {
                     self.messages.remove(&chat_id);
                 } else {
@@ -1230,16 +1246,24 @@ impl App {
                 Vec::new()
             }
             NetworkEvent::AttachmentDownloaded {
+                request_id,
                 chat_id,
                 message_id,
                 path,
             } => {
+                if self.downloading_attachments.get(&(chat_id, message_id)) != Some(&request_id) {
+                    return Vec::new();
+                }
                 self.downloading_attachments.remove(&(chat_id, message_id));
                 self.downloaded_attachments
                     .insert((chat_id, message_id), path.clone());
+                if self.reveal_after_download.remove(&(chat_id, message_id)) {
+                    self.reveal_download(&path);
+                    return Vec::new();
+                }
                 let location = sanitize_terminal_line(&path.display().to_string());
                 self.status_message = Some(match self.settings.download_behavior {
-                    DownloadBehavior::TempOnly => format!("Downloaded to {location}"),
+                    DownloadBehavior::CacheOnly => format!("Downloaded to {location}"),
                     DownloadBehavior::RevealOnActivation => {
                         format!("Downloaded to {location} · activate again to reveal")
                     }
@@ -1247,11 +1271,16 @@ impl App {
                 Vec::new()
             }
             NetworkEvent::AttachmentDownloadFailed {
+                request_id,
                 chat_id,
                 message_id,
                 error,
             } => {
+                if self.downloading_attachments.get(&(chat_id, message_id)) != Some(&request_id) {
+                    return Vec::new();
+                }
                 self.downloading_attachments.remove(&(chat_id, message_id));
+                self.reveal_after_download.remove(&(chat_id, message_id));
                 self.status_message = Some(format!(
                     "Download failed: {}",
                     sanitize_terminal_line(&error)
@@ -1464,7 +1493,7 @@ impl App {
             AttachmentState::Downloaded
         } else if self
             .downloading_attachments
-            .contains(&(chat_id, message_id))
+            .contains_key(&(chat_id, message_id))
         {
             AttachmentState::Downloading
         } else {
@@ -2533,7 +2562,7 @@ impl App {
             {
                 if path.is_file() {
                     let location = sanitize_terminal_line(&path.display().to_string());
-                    if self.settings.download_behavior == DownloadBehavior::TempOnly {
+                    if self.settings.download_behavior == DownloadBehavior::CacheOnly {
                         self.status_message = Some(format!(
                             "Downloaded to {location} · reveal is disabled in settings"
                         ));
@@ -2549,15 +2578,14 @@ impl App {
                 }
                 self.downloaded_attachments.remove(&(chat_id, message_id));
             }
-            if !self.downloading_attachments.insert((chat_id, message_id)) {
-                self.status_message = Some("Attachment is downloading…".to_owned());
-                return Vec::new();
-            }
-            self.status_message = Some("Downloading attachment…".to_owned());
-            return vec![TelegramCommand::DownloadAttachment {
+            return self.queue_download(
                 chat_id,
                 message_id,
-            }];
+                message
+                    .attachment
+                    .as_ref()
+                    .and_then(|attachment| attachment.source_id),
+            );
         }
 
         Vec::new()
@@ -2668,9 +2696,12 @@ impl App {
                 !affected_chat(chat_id) || !message_ids.contains(&message_id)
             });
         self.downloading_attachments
-            .retain(|&(chat_id, message_id)| {
+            .retain(|&(chat_id, message_id), _| {
                 !affected_chat(chat_id) || !message_ids.contains(&message_id)
             });
+        self.reveal_after_download.retain(|&(chat_id, message_id)| {
+            !affected_chat(chat_id) || !message_ids.contains(&message_id)
+        });
         if self.active_chat_id.is_some_and(affected_chat)
             && self
                 .selected_message
@@ -3452,18 +3483,33 @@ impl App {
         sanitize_message(&mut message);
         let chat_id = message.chat_id;
         let message_id = message.id;
-        self.media_previews.remove(&(chat_id, message_id));
-        // Telegram can replace media while retaining its name, MIME type, and size.
-        self.downloaded_attachments.remove(&(chat_id, message_id));
-        let attachment_changed = self.messages.get(&chat_id).is_some_and(|messages| {
-            messages
-                .iter()
-                .find(|current| current.id == message_id)
-                .is_some_and(|current| current.attachment != message.attachment)
-        });
-        if attachment_changed {
+        let media_id = message
+            .attachment
+            .as_ref()
+            .and_then(|attachment| attachment.source_id);
+        let same_media = media_id.is_some()
+            && self
+                .messages
+                .get(&chat_id)
+                .and_then(|messages| messages.iter().find(|current| current.id == message_id))
+                .and_then(|current| current.attachment.as_ref())
+                .and_then(|attachment| attachment.source_id)
+                == media_id;
+        if !same_media {
+            self.media_previews.remove(&(chat_id, message_id));
             self.downloaded_attachments.remove(&(chat_id, message_id));
-            self.downloading_attachments.remove(&(chat_id, message_id));
+            if self
+                .downloading_attachments
+                .remove(&(chat_id, message_id))
+                .is_some()
+            {
+                self.status_message = Some(format!(
+                    "Attachment changed · {} to try again",
+                    self.keymap
+                        .hint(crate::keymap::Context::Conversation, "reveal")
+                ));
+            }
+            self.reveal_after_download.remove(&(chat_id, message_id));
         }
         let preview = message.text.clone();
         let reply_to = message.reply_to.as_ref().map(|reply| reply.message_id);
@@ -3618,11 +3664,13 @@ impl App {
                     .is_some_and(|messages| messages.iter().any(|message| message.id == message_id))
             });
         self.downloading_attachments
-            .retain(|&(chat_id, message_id)| {
+            .retain(|&(chat_id, message_id), _| {
                 self.messages
                     .get(&chat_id)
                     .is_some_and(|messages| messages.iter().any(|message| message.id == message_id))
             });
+        self.reveal_after_download
+            .retain(|key| self.downloading_attachments.contains_key(key));
         if self.messages.len() <= MAX_CACHED_CHATS {
             return;
         }
@@ -3878,6 +3926,7 @@ fn attachment_from_path(path: &Path) -> Attachment {
         _ => (AttachmentKind::File, None),
     };
     Attachment {
+        source_id: None,
         kind,
         file_name: path
             .file_name()
@@ -3896,7 +3945,11 @@ fn reveal_path(path: &Path) -> std::io::Result<()> {
             "downloaded file no longer exists",
         ));
     }
-    reveal_path_platform(path).map(|_| ())
+    let mut child = reveal_path_platform(path)?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -4905,7 +4958,7 @@ mod tests {
             Settings {
                 automatic_update_checks: false,
                 release_channel: ReleaseChannel::Prerelease,
-                download_behavior: DownloadBehavior::TempOnly,
+                download_behavior: DownloadBehavior::CacheOnly,
                 show_message_ids: true,
                 ..Settings::default()
             }
@@ -5023,10 +5076,11 @@ mod tests {
     #[test]
     fn temp_only_downloads_never_reveal_remote_files() {
         let mut app = ready_app();
-        app.settings.download_behavior = DownloadBehavior::TempOnly;
+        app.settings.download_behavior = DownloadBehavior::CacheOnly;
         open_first(&mut app);
         let mut attachment = message(21, 1, "", false);
         attachment.attachment = Some(Attachment {
+            source_id: None,
             kind: AttachmentKind::File,
             file_name: Some("remote.command".to_owned()),
             mime_type: None,
@@ -5036,7 +5090,9 @@ mod tests {
         app.messages.get_mut(&1).unwrap().push(attachment);
         let path = std::env::temp_dir().join(format!("termgram-temp-only-{}", std::process::id()));
         fs::write(&path, b"x").expect("download fixture");
+        app.downloading_attachments.insert((1, 21), 1);
         app.handle_network(NetworkEvent::AttachmentDownloaded {
+            request_id: 1,
             chat_id: 1,
             message_id: 21,
             path: path.clone(),
@@ -5236,6 +5292,7 @@ mod tests {
         open_first(&mut app);
         let mut photo = message(21, 1, "see https://t.me/rustlang/42", false);
         photo.attachment = Some(Attachment {
+            source_id: None,
             kind: AttachmentKind::Photo,
             file_name: Some("photo.jpg".to_owned()),
             mime_type: Some("image/jpeg".to_owned()),
@@ -5727,6 +5784,7 @@ mod tests {
             outgoing: true,
             delivery: Delivery::Pending,
             attachment: Some(Attachment {
+                source_id: None,
                 kind: AttachmentKind::File,
                 file_name: Some("first.txt".to_owned()),
                 mime_type: Some("text/plain".to_owned()),
@@ -5739,6 +5797,7 @@ mod tests {
         let second = Message {
             id: -2,
             attachment: Some(Attachment {
+                source_id: None,
                 file_name: Some("second.txt".to_owned()),
                 ..first.attachment.clone().unwrap()
             }),
@@ -5764,6 +5823,7 @@ mod tests {
         local.timestamp = Utc::now();
         local.delivery = Delivery::Pending;
         local.attachment = Some(Attachment {
+            source_id: None,
             kind: AttachmentKind::Photo,
             file_name: Some("holiday.png".to_owned()),
             mime_type: Some("image/png".to_owned()),
@@ -5790,6 +5850,7 @@ mod tests {
         let mut local = message(-1, 1, "", true);
         local.delivery = Delivery::Pending;
         local.attachment = Some(Attachment {
+            source_id: None,
             kind: AttachmentKind::File,
             file_name: Some("notes.txt".to_owned()),
             mime_type: Some("text/plain".to_owned()),
@@ -5814,6 +5875,7 @@ mod tests {
         open_first(&mut app);
         let mut original = message(21, 1, "", false);
         original.attachment = Some(Attachment {
+            source_id: None,
             kind: AttachmentKind::File,
             file_name: Some("before.txt".to_owned()),
             mime_type: Some("text/plain".to_owned()),
@@ -5821,7 +5883,9 @@ mod tests {
             fallback_emoji: None,
         });
         app.handle_network(NetworkEvent::NewMessage(original.clone()));
+        app.downloading_attachments.insert((1, 21), 1);
         app.handle_network(NetworkEvent::AttachmentDownloaded {
+            request_id: 1,
             chat_id: 1,
             message_id: 21,
             path: std::env::temp_dir().join("termgram-edited-fixture"),
@@ -5840,6 +5904,7 @@ mod tests {
         for id in 21..=23 {
             let mut photo = message(id, 1, "caption", false);
             photo.attachment = Some(Attachment {
+                source_id: None,
                 kind: AttachmentKind::Sticker,
                 file_name: Some("sticker.tgs".to_owned()),
                 mime_type: Some("application/x-tgsticker".to_owned()),
@@ -6109,5 +6174,86 @@ mod tests {
         app.color_picker.as_mut().unwrap().selection = 0;
         app.handle_colors(KeyAction::Enter);
         assert_eq!(app.color(Target::Chat(1)), Color::Cyan);
+    }
+    #[test]
+    fn reveal_downloads_once_and_rejects_stale_completion_after_media_edit() {
+        use yazi_term::event::{KeyCode, KeyEvent, KeyEventKind};
+        let mut app = ready_app();
+        open_first(&mut app);
+        let mut attached = message(21, 1, "photo", false);
+        attached.attachment = Some(Attachment {
+            source_id: Some(55),
+            kind: AttachmentKind::Photo,
+            file_name: None,
+            mime_type: Some("image/jpeg".to_owned()),
+            size: Some(4),
+            fallback_emoji: None,
+        });
+        app.messages.insert(1, vec![attached.clone()]);
+        app.selected_message = Some(21);
+        let mut key = KeyEvent {
+            code: KeyCode::Char('O'),
+            modifiers: Modifiers::SHIFT,
+            kind: KeyEventKind::Repeat,
+            ..KeyEvent::default()
+        };
+        assert!(app.handle_key(&key).is_empty());
+        key.kind = KeyEventKind::Press;
+        assert!(matches!(
+            app.handle_key(&key).as_slice(),
+            [TelegramCommand::DownloadAttachment {
+                request_id: 1,
+                media_id: Some(55),
+                ..
+            }]
+        ));
+        assert!(app.handle_key(&key).is_empty());
+        attached.text = "edited caption".to_owned();
+        app.handle_network(NetworkEvent::MessageUpdated(attached.clone()));
+        assert_eq!(app.downloading_attachments.get(&(1, 21)), Some(&1));
+        attached.attachment.as_mut().unwrap().source_id = Some(56);
+        app.handle_network(NetworkEvent::MessageUpdated(attached));
+        assert!(!app.reveal_after_download.contains(&(1, 21)));
+        assert!(matches!(
+            app.handle_key(&key).as_slice(),
+            [TelegramCommand::DownloadAttachment {
+                request_id: 2,
+                media_id: Some(56),
+                ..
+            }]
+        ));
+        let absent = std::env::temp_dir()
+            .join(format!("termgram-missing-{}", std::process::id()))
+            .join("photo.jpg");
+        app.handle_network(NetworkEvent::AttachmentDownloaded {
+            request_id: 1,
+            chat_id: 1,
+            message_id: 21,
+            path: absent.clone(),
+        });
+        assert_eq!(app.downloading_attachments.get(&(1, 21)), Some(&2));
+        assert!(!app.downloaded_attachments.contains_key(&(1, 21)));
+        app.handle_network(NetworkEvent::AttachmentDownloaded {
+            request_id: 2,
+            chat_id: 1,
+            message_id: 21,
+            path: absent,
+        });
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Could not reveal attachment")
+        );
+        assert!(matches!(
+            app.handle_key(&key).as_slice(),
+            [TelegramCommand::DownloadAttachment { request_id: 3, .. }]
+        ));
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![21],
+        });
+        assert!(app.reveal_after_download.is_empty());
+        assert!(app.downloading_attachments.is_empty());
     }
 }

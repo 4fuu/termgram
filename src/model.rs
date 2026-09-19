@@ -30,6 +30,8 @@ pub enum ChatKind {
 /// in the network layer and is refreshed on demand before a download.
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Attachment {
+    #[serde(default)]
+    pub source_id: Option<i64>,
     pub kind: AttachmentKind,
     pub file_name: Option<String>,
     pub mime_type: Option<String>,

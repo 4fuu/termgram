@@ -105,9 +105,11 @@ pub enum TelegramCommand {
         /// sent as a reply.
         reply_to: Option<i32>,
     },
-    /// Lazily download media from a known message into Termgram's temporary
-    /// download directory.
+    /// Lazily download media from a known message into Termgram's managed
+    /// media cache.
     DownloadAttachment {
+        request_id: u64,
+        media_id: Option<i64>,
         chat_id: ChatId,
         message_id: i32,
     },
@@ -196,7 +198,10 @@ impl TelegramCommand {
             TelegramCommand::DownloadAttachment {
                 chat_id,
                 message_id,
+                request_id,
+                ..
             } => NetworkEvent::AttachmentDownloadFailed {
+                request_id,
                 chat_id,
                 message_id,
                 error,
@@ -345,6 +350,7 @@ impl fmt::Debug for TelegramCommand {
             Self::DownloadAttachment {
                 chat_id,
                 message_id,
+                ..
             } => formatter
                 .debug_struct("DownloadAttachment")
                 .field("chat_id", chat_id)
@@ -409,6 +415,12 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    AttachmentDownloadStarted {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        media_id: Option<i64>,
+    },
     CachedContext {
         request_id: u64,
         chat_id: ChatId,
@@ -552,11 +564,13 @@ pub enum NetworkEvent {
         message_ids: Vec<i32>,
     },
     AttachmentDownloaded {
+        request_id: u64,
         chat_id: ChatId,
         message_id: i32,
         path: PathBuf,
     },
     AttachmentDownloadFailed {
+        request_id: u64,
         chat_id: ChatId,
         message_id: i32,
         error: String,

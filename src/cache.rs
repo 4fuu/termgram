@@ -12,7 +12,7 @@ use crate::{
     model::{Chat, ChatId, Delivery, Message},
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const MAX_MESSAGES: i64 = 100_000;
 const MAX_CHAT_MESSAGES: i64 = 5_000;
 
@@ -32,6 +32,8 @@ pub struct Store {
     revision: i64,
     dialog_revision: i64,
     history_revisions: BTreeMap<(ChatId, u64), i64>,
+    downloads: BTreeMap<(ChatId, i32), (u64, Option<i64>)>,
+    owner: std::sync::Arc<std::fs::File>,
 }
 
 impl Store {
@@ -39,6 +41,16 @@ impl Store {
     /// Returns filesystem, migration or SQLite errors; never discards a cache
     /// merely because it could not be read.
     pub async fn open(path: &Path) -> Result<Self> {
+        let mut lock_path = path.as_os_str().to_os_string();
+        lock_path.push("-lock");
+        prepare_file(Path::new(&lock_path))?;
+        let owner = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(Path::new(&lock_path))?;
+        owner
+            .try_lock()
+            .context("this account cache is already open in another Termgram process")?;
         prepare_file(path)?;
         let database = libsql::Builder::new_local(path).build().await?;
         let connection = database.connect()?;
@@ -76,6 +88,9 @@ impl Store {
         if version < 3 {
             transaction.execute_batch("CREATE INDEX messages_search ON messages(timestamp DESC,chat_id DESC,id DESC); PRAGMA user_version=3;").await?;
         }
+        if version < 4 {
+            transaction.execute_batch("ALTER TABLE attachments ADD COLUMN source_id INTEGER; DELETE FROM attachments; PRAGMA user_version=4;").await?;
+        }
         transaction.commit().await?;
         let revision = metadata(&connection, "revision")
             .await?
@@ -83,11 +98,17 @@ impl Store {
             .unwrap_or(0);
         Ok(Self {
             _database: database,
+            owner: std::sync::Arc::new(owner),
             connection,
             revision,
             dialog_revision: revision,
             history_revisions: BTreeMap::new(),
+            downloads: BTreeMap::new(),
         })
+    }
+
+    pub(crate) fn owner(&self) -> std::sync::Arc<std::fs::File> {
+        self.owner.clone()
     }
 
     /// # Errors
@@ -111,6 +132,21 @@ impl Store {
             .map(|value| serde_json::from_str(&value))
             .transpose()?
             .unwrap_or_else(|| vec![crate::folders::Folder::all()]))
+    }
+
+    /// # Errors
+    /// Returns database errors. Missing files are treated as cache misses.
+    pub async fn attachment(
+        &self,
+        chat_id: ChatId,
+        message_id: i32,
+        media_id: Option<i64>,
+    ) -> Result<Option<std::path::PathBuf>> {
+        let row = self.connection.query("SELECT path FROM attachments WHERE chat_id=?1 AND message_id=?2 AND source_id IS ?3", params![chat_id, message_id, media_id]).await?.next().await?;
+        let path = row
+            .map(|row| row.get::<String>(0).map(std::path::PathBuf::from))
+            .transpose()?;
+        Ok(path.filter(|path| path.is_file()))
     }
 
     /// Cached neighbors for a search hit, without triggering network reads.
@@ -223,6 +259,7 @@ impl Store {
             let revision = self.revision;
             match event {
                 NetworkEvent::CacheAccountReset { user_id } => {
+                    self.downloads.clear();
                     transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions; DELETE FROM history_pages;").await?;
                     set_metadata(&transaction, "account_id", &user_id.to_string()).await?;
                 }
@@ -326,6 +363,28 @@ impl Store {
                 | NetworkEvent::MessageUpdated(message)
                 | NetworkEvent::MessageSent { message, .. }
                 | NetworkEvent::MessageLoaded { message, .. } => {
+                    if matches!(event, NetworkEvent::MessageUpdated(_)) {
+                        let media_id = message
+                            .attachment
+                            .as_ref()
+                            .and_then(|attachment| attachment.source_id);
+                        if media_id.is_none()
+                            || self
+                                .downloads
+                                .get(&(message.chat_id, message.id))
+                                .is_some_and(|(_, expected)| *expected != media_id)
+                        {
+                            self.downloads.remove(&(message.chat_id, message.id));
+                        }
+                        if media_id.is_none() {
+                            transaction
+                                .execute(
+                                    "DELETE FROM attachments WHERE chat_id=?1 AND message_id=?2",
+                                    params![message.chat_id, message.id],
+                                )
+                                .await?;
+                        }
+                    }
                     write_message(&transaction, message, revision, revision).await?;
                     if let Some((mut chat, _)) = load_chat(&transaction, message.chat_id).await?
                         && chat
@@ -341,6 +400,12 @@ impl Store {
                     channel_id,
                     message_ids,
                 } => {
+                    self.downloads.retain(|(chat_id, id), _| {
+                        !(message_ids.contains(id)
+                            && channel_id.map_or(*chat_id > -1_000_000_000_000, |channel| {
+                                channel == *chat_id
+                            }))
+                    });
                     for id in message_ids {
                         if let Some(chat_id) = channel_id {
                             transaction.execute(
@@ -379,19 +444,59 @@ impl Store {
                         write_chat(&transaction, &chat, revision).await?;
                     }
                 }
+                NetworkEvent::AttachmentDownloadStarted {
+                    chat_id,
+                    message_id,
+                    request_id,
+                    media_id,
+                } => {
+                    self.downloads
+                        .insert((*chat_id, *message_id), (*request_id, *media_id));
+                }
+                NetworkEvent::AttachmentDownloadFailed {
+                    chat_id,
+                    message_id,
+                    request_id,
+                    ..
+                } => {
+                    if self
+                        .downloads
+                        .get(&(*chat_id, *message_id))
+                        .is_some_and(|(id, _)| *id == *request_id)
+                    {
+                        self.downloads.remove(&(*chat_id, *message_id));
+                    }
+                }
                 NetworkEvent::AttachmentDownloaded {
+                    request_id,
                     chat_id,
                     message_id,
                     path,
                 } => {
+                    let Some((id, media_id)) =
+                        self.downloads.get(&(*chat_id, *message_id)).copied()
+                    else {
+                        continue;
+                    };
+                    if id != *request_id {
+                        continue;
+                    }
+                    self.downloads.remove(&(*chat_id, *message_id));
                     transaction
                         .execute(
-                            "INSERT OR REPLACE INTO attachments VALUES(?1,?2,?3)",
-                            params![*chat_id, *message_id, path.to_string_lossy().as_ref()],
+                            "INSERT OR REPLACE INTO attachments VALUES(?1,?2,?3,?4)",
+                            params![
+                                *chat_id,
+                                *message_id,
+                                path.to_string_lossy().as_ref(),
+                                media_id
+                            ],
                         )
                         .await?;
                 }
                 NetworkEvent::CacheInvalidated { chat_id } => {
+                    self.downloads
+                        .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                     self.history_revisions
                         .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                     if let Some(chat_id) = chat_id {
@@ -410,6 +515,16 @@ impl Store {
             }
         }
         transaction.execute("DELETE FROM messages WHERE (chat_id,id) IN (SELECT chat_id,id FROM messages ORDER BY timestamp DESC LIMIT -1 OFFSET ?1)", [MAX_MESSAGES]).await?;
+        transaction.execute_batch("DELETE FROM attachments WHERE NOT EXISTS(SELECT 1 FROM messages WHERE messages.chat_id=attachments.chat_id AND messages.id=attachments.message_id AND messages.data IS NOT NULL);
+            DELETE FROM history_pages WHERE oldest_id>0 AND NOT EXISTS(SELECT 1 FROM messages WHERE messages.chat_id=history_pages.chat_id AND messages.id=history_pages.oldest_id);").await?;
+        transaction.execute("DELETE FROM history_pages WHERE rowid IN (SELECT rowid FROM history_pages ORDER BY rowid DESC LIMIT -1 OFFSET ?1)", [MAX_MESSAGES]).await?;
+        let oldest_in_flight = self
+            .history_revisions
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.revision);
+        transaction.execute("DELETE FROM global_deletions WHERE revision<?1 AND id IN (SELECT id FROM global_deletions ORDER BY revision DESC LIMIT -1 OFFSET ?2)", params![oldest_in_flight, MAX_MESSAGES]).await?;
         set_metadata(&transaction, "revision", &self.revision.to_string()).await?;
         transaction.commit().await?;
         Ok(())
@@ -425,6 +540,19 @@ async fn write_message(
     if message.id <= 0 {
         return Ok(());
     }
+    connection
+        .execute(
+            "DELETE FROM attachments WHERE chat_id=?1 AND message_id=?2 AND source_id IS NOT ?3",
+            params![
+                message.chat_id,
+                message.id,
+                message
+                    .attachment
+                    .as_ref()
+                    .and_then(|attachment| attachment.source_id)
+            ],
+        )
+        .await?;
     connection.execute(
         "INSERT INTO messages(chat_id,id,data,timestamp,revision)
          SELECT ?1,?2,?3,?4,?5 WHERE NOT EXISTS
@@ -659,5 +787,100 @@ mod tests {
 
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[tokio::test]
+    async fn attachment_mapping_survives_restart_but_not_media_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("cache.sqlite3");
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "file").unwrap();
+        let mut store = Store::open(&database).await.unwrap();
+        let mut media = message(1, "file");
+        media.attachment = Some(crate::model::Attachment {
+            source_id: Some(55),
+            kind: crate::model::AttachmentKind::File,
+            file_name: Some("file.txt".to_owned()),
+            mime_type: None,
+            size: Some(4),
+            fallback_emoji: None,
+        });
+        store
+            .apply(&[
+                NetworkEvent::NewMessage(media.clone()),
+                NetworkEvent::AttachmentDownloadStarted {
+                    chat_id: 42,
+                    message_id: 1,
+                    request_id: 1,
+                    media_id: Some(55),
+                },
+                NetworkEvent::AttachmentDownloaded {
+                    chat_id: 42,
+                    message_id: 1,
+                    request_id: 1,
+                    path: path.clone(),
+                },
+            ])
+            .await
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(&database).await.unwrap();
+        assert_eq!(
+            store.attachment(42, 1, Some(55)).await.unwrap(),
+            Some(path.clone())
+        );
+        assert!(store.attachment(42, 1, Some(56)).await.unwrap().is_none());
+        std::fs::remove_file(&path).unwrap();
+        assert!(store.attachment(42, 1, Some(55)).await.unwrap().is_none());
+        std::fs::write(&path, "file").unwrap();
+        media.attachment.as_mut().unwrap().source_id = Some(56);
+        store
+            .apply(&[
+                NetworkEvent::AttachmentDownloadStarted {
+                    chat_id: 42,
+                    message_id: 1,
+                    request_id: 2,
+                    media_id: Some(55),
+                },
+                NetworkEvent::MessageUpdated(media),
+                NetworkEvent::AttachmentDownloadStarted {
+                    chat_id: 42,
+                    message_id: 1,
+                    request_id: 3,
+                    media_id: Some(56),
+                },
+                NetworkEvent::AttachmentDownloaded {
+                    chat_id: 42,
+                    message_id: 1,
+                    request_id: 2,
+                    path: path.clone(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(store.attachment(42, 1, Some(55)).await.unwrap().is_none());
+        assert!(store.attachment(42, 1, Some(56)).await.unwrap().is_none());
+        store
+            .apply(&[NetworkEvent::AttachmentDownloaded {
+                chat_id: 42,
+                message_id: 1,
+                request_id: 3,
+                path: path.clone(),
+            }])
+            .await
+            .unwrap();
+        assert_eq!(store.attachment(42, 1, Some(56)).await.unwrap(), Some(path));
+    }
+
+    #[tokio::test]
+    async fn account_cache_has_one_owner_until_transfers_release_the_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.sqlite3");
+        let store = Store::open(&path).await.unwrap();
+        let transfer_owner = store.owner();
+        assert!(Store::open(&path).await.is_err());
+        drop(store);
+        assert!(Store::open(&path).await.is_err());
+        drop(transfer_owner);
+        assert!(Store::open(&path).await.is_ok());
     }
 }

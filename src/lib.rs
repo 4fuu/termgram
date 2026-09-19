@@ -3,6 +3,7 @@ pub mod cache;
 pub mod config;
 pub mod event;
 pub mod input;
+pub mod keymap;
 pub mod media;
 pub mod model;
 pub mod telegram;

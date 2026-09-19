@@ -1238,7 +1238,8 @@ async fn handle_command(
     requests: &mut JoinSet<requests::Completion>,
 ) -> Result<bool> {
     match command {
-        command @ (TelegramCommand::LoadHistory { .. }
+        command @ (TelegramCommand::LoadOlder { .. }
+        | TelegramCommand::LoadHistory { .. }
         | TelegramCommand::LoadMessage { .. }
         | TelegramCommand::SendMessage { .. }
         | TelegramCommand::ResolveTelegramLink { .. }
@@ -1247,6 +1248,11 @@ async fn handle_command(
             if let TelegramCommand::LoadHistory {
                 chat_id,
                 request_id,
+            }
+            | TelegramCommand::LoadOlder {
+                chat_id,
+                request_id,
+                ..
             } = &command
             {
                 events

@@ -12,7 +12,7 @@ use crate::{
     model::{Chat, ChatId, Delivery, Message},
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_MESSAGES: i64 = 100_000;
 const MAX_CHAT_MESSAGES: i64 = 5_000;
 
@@ -69,6 +69,9 @@ impl Store {
                     path TEXT NOT NULL, PRIMARY KEY(chat_id, message_id));
                  PRAGMA user_version = 1;"
             ).await?;
+        }
+        if version < 2 {
+            transaction.execute_batch("CREATE TABLE history_pages (chat_id INTEGER NOT NULL, before_id INTEGER NOT NULL, oldest_id INTEGER NOT NULL, PRIMARY KEY(chat_id,before_id)); PRAGMA user_version=2;").await?;
         }
         transaction.commit().await?;
         let revision = metadata(&connection, "revision")
@@ -138,6 +141,40 @@ impl Store {
         Ok(messages)
     }
 
+    /// A cache page is reusable only when this boundary was fetched completely.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn older_page(
+        &self,
+        chat_id: ChatId,
+        before_id: i32,
+    ) -> Result<Option<Vec<Message>>> {
+        let row = self
+            .connection
+            .query(
+                "SELECT oldest_id FROM history_pages WHERE chat_id=?1 AND before_id=?2",
+                params![chat_id, before_id],
+            )
+            .await?
+            .next()
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let oldest_id: i32 = row.get(0)?;
+        if oldest_id == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let messages = self.history(chat_id, Some(before_id), 80).await?;
+        if messages
+            .first()
+            .is_none_or(|message| message.id != oldest_id)
+        {
+            return Ok(None);
+        }
+        Ok(Some(messages))
+    }
+
     /// Commit events and any covered cursor together. Replay after an interrupted
     /// commit is idempotent, and snapshot writes cannot overwrite later updates.
     /// # Errors
@@ -156,7 +193,7 @@ impl Store {
             let revision = self.revision;
             match event {
                 NetworkEvent::CacheAccountReset { user_id } => {
-                    transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions;").await?;
+                    transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions; DELETE FROM history_pages;").await?;
                     set_metadata(&transaction, "account_id", &user_id.to_string()).await?;
                 }
                 NetworkEvent::AccountIdentity { user_id } => {
@@ -199,11 +236,29 @@ impl Store {
                     chat_id,
                     request_id,
                     messages,
+                }
+                | NetworkEvent::OlderHistory {
+                    chat_id,
+                    request_id,
+                    messages,
+                    ..
                 } => {
                     let Some(started) = self.history_revisions.remove(&(*chat_id, *request_id))
                     else {
                         continue;
                     };
+                    if let NetworkEvent::OlderHistory { before_id, .. } = event {
+                        transaction
+                            .execute(
+                                "INSERT OR REPLACE INTO history_pages VALUES(?1,?2,?3)",
+                                params![
+                                    *chat_id,
+                                    *before_id,
+                                    messages.first().map_or(0, |message| message.id)
+                                ],
+                            )
+                            .await?;
+                    }
                     for message in messages {
                         write_message(&transaction, message, revision, started).await?;
                     }
@@ -216,6 +271,11 @@ impl Store {
                         .await?;
                 }
                 NetworkEvent::HistoryFailed {
+                    chat_id,
+                    request_id,
+                    ..
+                }
+                | NetworkEvent::OlderHistoryFailed {
                     chat_id,
                     request_id,
                     ..
@@ -297,9 +357,13 @@ impl Store {
                         .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                     if let Some(chat_id) = chat_id {
                         transaction
+                            .execute("DELETE FROM history_pages WHERE chat_id=?1", [*chat_id])
+                            .await?;
+                        transaction
                             .execute("DELETE FROM messages WHERE chat_id=?1", [*chat_id])
                             .await?;
                     } else {
+                        transaction.execute("DELETE FROM history_pages", ()).await?;
                         transaction.execute("DELETE FROM messages", ()).await?;
                     }
                 }
@@ -509,6 +573,50 @@ mod tests {
         assert!(store.history(42, None, 80).await.unwrap().is_empty());
         assert!(store.snapshot().await.unwrap().1.is_empty());
         assert_eq!(store.cursor().await.unwrap(), SyncCursor::default());
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[tokio::test]
+    async fn cached_paging_requires_a_complete_boundary_and_keeps_tombstones() {
+        let directory =
+            std::env::temp_dir().join(format!("termgram-paging-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut store = Store::open(&directory.join("cache.sqlite3")).await.unwrap();
+        store
+            .apply(&[
+                NetworkEvent::NewMessage(message(3, "live")),
+                NetworkEvent::MessagesDeleted {
+                    channel_id: None,
+                    message_ids: vec![2],
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            store.older_page(42, 4).await.unwrap().is_none(),
+            "isolated cached messages are not a complete history page"
+        );
+        store
+            .apply(&[
+                NetworkEvent::HistoryLoading {
+                    chat_id: 42,
+                    request_id: 2,
+                },
+                NetworkEvent::OlderHistory {
+                    chat_id: 42,
+                    request_id: 2,
+                    before_id: 4,
+                    messages: vec![
+                        message(1, "edited"),
+                        message(2, "deleted"),
+                        message(3, "live"),
+                    ],
+                },
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.older_page(42, 4).await.unwrap().unwrap().len(), 2);
+
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }

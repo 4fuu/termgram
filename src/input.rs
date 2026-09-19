@@ -2,7 +2,6 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-use yazi_term::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 
@@ -34,64 +33,6 @@ pub enum KeyAction {
     Redraw,
     NextAccount,
     AddAccount,
-}
-
-/// Convert a Yazi key event into an action understood by the app.
-///
-/// Key releases and modified characters (except Ctrl-C) are deliberately
-/// ignored. This prevents shortcuts such as Ctrl-Q from unexpectedly entering
-/// text or triggering the plain `q` navigation shortcut.
-#[must_use]
-pub fn key_action(event: &KeyEvent) -> Option<KeyAction> {
-    if event.kind == KeyEventKind::Release {
-        return None;
-    }
-
-    if event.modifiers.contains(Modifiers::CONTROL)
-        && matches!(event.code, KeyCode::Char('c' | 'C'))
-    {
-        return Some(KeyAction::Quit);
-    }
-
-    if event.modifiers.contains(Modifiers::CONTROL) {
-        return match event.code {
-            KeyCode::Char('j' | 'J') => Some(KeyAction::Newline),
-            KeyCode::Char('a' | 'A') => Some(KeyAction::Home),
-            KeyCode::Char('e' | 'E') => Some(KeyAction::End),
-            KeyCode::Char('u' | 'U') => Some(KeyAction::Clear),
-            KeyCode::Char('w' | 'W') => Some(KeyAction::DeleteWord),
-            KeyCode::Char('l' | 'L') => Some(KeyAction::Redraw),
-            _ => None,
-        };
-    }
-
-    let unsupported_modifiers =
-        Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER | Modifiers::HYPER | Modifiers::META;
-    if event.modifiers.intersects(unsupported_modifiers) {
-        return None;
-    }
-
-    match event.shifted_code() {
-        KeyCode::Char(character) => Some(KeyAction::Character(character)),
-        KeyCode::Enter if event.modifiers.contains(Modifiers::SHIFT) => Some(KeyAction::Newline),
-        KeyCode::Enter => Some(KeyAction::Enter),
-        KeyCode::Escape => Some(KeyAction::Escape),
-        KeyCode::Tab if event.modifiers.contains(Modifiers::SHIFT) => Some(KeyAction::BackTab),
-        KeyCode::Tab => Some(KeyAction::Tab),
-        KeyCode::Backspace => Some(KeyAction::Backspace),
-        KeyCode::Delete => Some(KeyAction::Delete),
-        KeyCode::Left => Some(KeyAction::Left),
-        KeyCode::Right => Some(KeyAction::Right),
-        KeyCode::Up => Some(KeyAction::Up),
-        KeyCode::Down => Some(KeyAction::Down),
-        KeyCode::PageUp => Some(KeyAction::PageUp),
-        KeyCode::PageDown => Some(KeyAction::PageDown),
-        KeyCode::Home => Some(KeyAction::Home),
-        KeyCode::End => Some(KeyAction::End),
-        KeyCode::Fn(2) => Some(KeyAction::NextAccount),
-        KeyCode::Fn(3) => Some(KeyAction::AddAccount),
-        _ => None,
-    }
 }
 
 /// A UTF-8 text buffer whose cursor always rests on a grapheme boundary.
@@ -310,68 +251,7 @@ fn boundary_at_or_after(value: &str, offset: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use yazi_term::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, Modifiers};
-
-    use super::{KeyAction, TextInput, key_action};
-
-    #[test]
-    fn ctrl_c_is_quit_and_plain_q_remains_a_character() {
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL)),
-            Some(KeyAction::Quit)
-        );
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Char('q'), Modifiers::empty())),
-            Some(KeyAction::Character('q'))
-        );
-    }
-
-    #[test]
-    fn function_keys_select_account_actions() {
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Fn(2), Modifiers::empty())),
-            Some(KeyAction::NextAccount)
-        );
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Fn(3), Modifiers::empty())),
-            Some(KeyAction::AddAccount)
-        );
-    }
-
-    #[test]
-    fn enhanced_keys_preserve_shifted_shortcuts_and_newlines() {
-        let key = KeyEvent {
-            code: KeyCode::Char('/'),
-            shifted: Some('?'),
-            modifiers: Modifiers::SHIFT,
-            ..KeyEvent::default()
-        };
-        assert_eq!(key_action(&key), Some(KeyAction::Character('?')));
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Tab, Modifiers::SHIFT)),
-            Some(KeyAction::BackTab)
-        );
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Enter, Modifiers::SHIFT)),
-            Some(KeyAction::Newline)
-        );
-    }
-
-    #[test]
-    fn releases_and_other_control_combinations_are_ignored() {
-        let release = KeyEvent {
-            code: KeyCode::Enter,
-            modifiers: Modifiers::empty(),
-            kind: KeyEventKind::Release,
-            state: KeyEventState::empty(),
-            ..KeyEvent::default()
-        };
-        assert_eq!(key_action(&release), None);
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Char('x'), Modifiers::CONTROL)),
-            None
-        );
-    }
+    use super::TextInput;
 
     #[test]
     fn edits_combining_graphemes_as_one_character() {
@@ -422,18 +302,6 @@ mod tests {
         assert!(input.value().len() <= super::MAX_INPUT_BYTES);
         assert!(!input.value().contains(family));
         assert_eq!(input.cursor(), input.value().len());
-    }
-
-    #[test]
-    fn control_bindings_are_normalized() {
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Char('j'), Modifiers::CONTROL)),
-            Some(KeyAction::Newline)
-        );
-        assert_eq!(
-            key_action(&KeyEvent::new(KeyCode::Char('w'), Modifiers::CONTROL)),
-            Some(KeyAction::DeleteWord)
-        );
     }
 
     #[test]

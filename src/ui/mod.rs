@@ -401,7 +401,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     render_footer(frame, rows[3], app, narrow);
 
     if app.mode == Mode::Help {
-        render_help(frame, area);
+        render_help(frame, area, app);
     } else if app.mode == Mode::Settings {
         render_settings(frame, area, app);
     } else if app.mode == Mode::Accounts {
@@ -775,23 +775,13 @@ fn render_new_message_badge(frame: &mut Frame<'_>, area: Rect, count: usize) {
 
 fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &AppState, enabled: bool) {
     let active = app.mode == Mode::Compose;
-    let title = if !enabled || app.active_chat_id.is_none() {
-        " Message · select a chat ".to_owned()
-    } else if let Some(reply) = app.active_reply_target() {
-        let sender = reply.sender.as_deref().unwrap_or("unknown");
-        if active {
-            format!(
-                " Reply to #{} {sender} · Enter send · Esc cancel ",
-                reply.message_id
-            )
-        } else {
-            format!(" Reply draft to #{} {sender} · i resume ", reply.message_id)
-        }
-    } else if active {
-        " Message · Enter send · Esc keep draft ".to_owned()
-    } else {
-        " Message · i to compose ".to_owned()
-    };
+    let title = app.active_reply_target().map_or_else(String::new, |reply| {
+        format!(
+            " Reply to #{} {} ",
+            reply.message_id,
+            reply.sender.as_deref().unwrap_or("unknown")
+        )
+    });
     let block = pane_block(title, active);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -807,9 +797,24 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &AppState, enabled: b
     let input = app.active_draft().unwrap_or(&empty);
     let (row, column) = input_cursor(input, inner.width.max(1));
     let vertical_scroll = row.saturating_sub(inner.height.saturating_sub(1));
-    let placeholder = input.is_empty() && !active;
+    let placeholder = input.is_empty();
     let text = if placeholder {
-        Text::from("Write a message…")
+        use crate::keymap::Context;
+        let hint = if app.keymap.ghost_text.is_empty() {
+            String::new()
+        } else if active {
+            app.keymap
+                .ghost_text
+                .replace("{send}", &app.keymap.hint(Context::Compose, "send"))
+                .replace("{newline}", &app.keymap.hint(Context::Compose, "newline"))
+                .replace("{cancel}", &app.keymap.hint(Context::Compose, "cancel"))
+        } else {
+            format!(
+                "{} to compose",
+                app.keymap.hint(Context::Conversation, "compose")
+            )
+        };
+        Text::from(crate::model::sanitize_terminal_line(&hint))
     } else {
         Text::from(
             editor_lines(input.value(), inner.width.max(1))
@@ -853,20 +858,31 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState, narrow: bool
             Style::default().fg(SUCCESS),
         ))
     } else if app.mode == Mode::Compose {
-        let prefix = app.active_reply_target().map_or_else(String::new, |reply| {
-            format!(" Reply #{}  · ", reply.message_id)
-        });
+        Line::default()
+    } else if matches!(app.mode, Mode::Settings | Mode::Accounts) {
+        use crate::keymap::Context;
         Line::from(format!(
-            "{prefix} Enter send  ·  drop files to attach  ·  Ctrl+J newline  ·  Esc"
+            " {} select · {} activate · {} close",
+            app.keymap.hint(Context::Overlay, "down"),
+            app.keymap.hint(Context::Overlay, "open"),
+            app.keymap.hint(Context::Overlay, "cancel")
         ))
-    } else if app.mode == Mode::Settings {
-        Line::from(" ↑↓ select  ·  Enter toggle  ·  Esc close settings")
-    } else if app.mode == Mode::Accounts {
-        Line::from(" ↑↓ select  ·  Enter switch/add  ·  Esc close accounts")
-    } else if narrow && app.narrow_conversation {
-        Line::from(" [/ ] select · R reply · o/O action · r target · Esc chats")
     } else {
-        Line::from(" ↑↓/jk move · [/] select · R reply · o/O action · r target · ? help · q quit")
+        let context = if app.focus == Focus::Chats {
+            crate::keymap::Context::Chats
+        } else {
+            crate::keymap::Context::Conversation
+        };
+        let back = if narrow && app.narrow_conversation {
+            format!(
+                "{} chats · ",
+                app.keymap
+                    .hint(crate::keymap::Context::Conversation, "cancel")
+            )
+        } else {
+            String::new()
+        };
+        Line::from(format!(" {back}{} help", app.keymap.hint(context, "help")))
     };
     frame.render_widget(
         Paragraph::new(content).style(Style::default().fg(MUTED)),
@@ -874,43 +890,22 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState, narrow: bool
     );
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect) {
+fn render_help(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let popup = centered(area, area.width.min(72), area.height.min(27));
     frame.render_widget(Clear, popup);
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Keyboard shortcuts ");
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Navigation", Style::default().bold()),
-            Span::raw("  ↑↓ or j/k · Enter opens"),
-        ]),
-        Line::from("Tab             switch chats / conversation"),
-        Line::from("PgUp/PgDn/Home/End  scroll / oldest / latest"),
-        Line::from("o/O + Enter     select and activate message actions"),
-        Line::from("[ / ]           select older / newer message (latest first)"),
-        Line::from("R               compose a reply to selected/latest message"),
-        Line::from("r               jump to a selected reply's target"),
-        Line::from("Right click     reply to a message under the pointer"),
-        Line::from("l               follow selected/first link in a message"),
-        Line::from("/               filter chats (from chat list)"),
-        Line::from("s / a           settings / accounts"),
-        Line::from("F2 / F3         next / add account"),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Writing", Style::default().bold()),
-            Span::raw("     i or Enter starts"),
-        ]),
-        Line::from("Enter / Ctrl+J  send / insert a new line"),
-        Line::from("Ctrl+A/E/W/U    start / end / delete word / clear"),
-        Line::from("Esc             cancel reply, then keep draft and leave"),
-        Line::from("Drop / paste    send existing local file paths"),
-        Line::from(""),
-        Line::from("? / Esc         close help"),
-        Line::from("q / Ctrl+C      quit"),
-    ];
+        .title(" Keyboard shortcuts · ↑↓ scroll · Esc close ");
+    let lines = app
+        .keymap
+        .help()
+        .into_iter()
+        .skip(app.help_scroll)
+        .take(usize::from(popup.height.saturating_sub(2)))
+        .map(Line::from)
+        .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -1736,6 +1731,16 @@ mod tests {
     }
 
     #[test]
+    fn composer_hint_tracks_the_effective_send_binding() {
+        let mut app = populated_app();
+        app.mode = Mode::Compose;
+        app.keymap = crate::keymap::Keymap::parse("return { keymap={{context='compose',on={'<Enter>'},run='newline'}, {context='compose',on={'<C-s>'},run='send'}} }").unwrap();
+        let text = render_text(&app, 100, 24);
+        assert!(text.contains("<C-s> to send"));
+        assert!(!text.contains("Enter send"));
+    }
+
+    #[test]
     fn login_errors_wrap_and_grow_for_all_phone_auth_phases() {
         let error = "Could not request a login code: request error: rpc error 500: AUTH_RESTART";
         for prompt in [
@@ -1865,7 +1870,7 @@ mod tests {
 
         let output = render_text(&app, 100, 24);
         assert!(output.contains("Reply to #11 Alice"));
-        assert!(output.contains("Reply #11"));
+        assert_eq!(output.matches("Reply to #11 Alice").count(), 1);
     }
 
     #[test]
@@ -1876,7 +1881,7 @@ mod tests {
         assert!(output.contains("Termgram"));
         assert!(output.contains("Alice"));
         assert!(output.contains("hello from the terminal"));
-        assert!(output.contains("Message · i to compose"));
+        assert!(output.contains("i to compose"));
     }
 
     #[test]
@@ -2185,7 +2190,7 @@ mod tests {
         let conversation = render_text(&app, 70, 24);
         assert!(conversation.contains("Alice"));
         assert!(conversation.contains("hello from the terminal"));
-        assert!(conversation.contains("Esc chats"));
+        assert!(conversation.contains("<Esc> chats"));
     }
 
     #[test]

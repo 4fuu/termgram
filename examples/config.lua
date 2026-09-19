@@ -1,0 +1,13 @@
+-- Save as config.lua beside settings.conf, or set TERMGRAM_CONFIG.
+-- Settings are declarative: return a table. See docs/wiki/en/Configuration.md.
+return {
+  chats = {
+    -- work = -1001234567890, -- stable Telegram chat ID
+  },
+  ghost_text = "{send} to send",
+  keymap = {
+    -- { context = "conversation", on = { "g", "w" }, run = "jump work" },
+    -- { context = "compose", on = { "<Enter>" }, run = "newline" },
+    -- { context = "compose", on = { "<C-s>" }, run = "send" },
+  },
+}

@@ -82,6 +82,21 @@ async fn main() -> Result<()> {
     let mut preview = PreviewRenderer::new();
     let (mut app, settings) = load_app_settings();
     let mut startup_warning = replacement_warning;
+    let lua_path = std::env::var_os("TERMGRAM_CONFIG")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            Settings::path()
+                .ok()
+                .map(|path| path.with_file_name("config.lua"))
+        });
+    if let Some(path) = lua_path {
+        match termgram::keymap::Keymap::load(&path) {
+            Ok(keymap) => app.keymap = keymap,
+            Err(error) => {
+                startup_warning = Some(format!("{error:#}; using default bindings"));
+            }
+        }
+    }
     if let Some(warning) = &startup_warning {
         app.handle_network(NetworkEvent::Error(warning.clone()));
     }

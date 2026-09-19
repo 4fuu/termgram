@@ -10,7 +10,7 @@ use yazi_term::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crate::{
     config::{DownloadBehavior, MAX_ACCOUNTS, Settings},
     event::{AppEvent, AuthPrompt, ConnectionStatus, NetworkEvent, TelegramCommand},
-    input::{KeyAction, TextInput, key_action},
+    input::{KeyAction, TextInput},
     model::{
         Attachment, AttachmentKind, Chat, ChatId, Delivery, Message, MessageLink, ReplyInfo,
         sanitize_terminal_line, sanitize_terminal_text,
@@ -241,11 +241,15 @@ pub struct App {
     mode_before_settings: Mode,
     mode_before_accounts: Mode,
     force_redraw: bool,
+    pub keymap: crate::keymap::Keymap,
+    pub help_scroll: usize,
     next_pending_id: i32,
     next_history_request_id: u64,
     active_history_request: Option<(ChatId, u64)>,
     history_changes: BTreeMap<i32, Option<Message>>,
     history_read_max: i32,
+    older_motion: Option<(ChatId, u64, usize)>,
+    browsing_older: bool,
     changed_dialogs: BTreeSet<ChatId>,
     active_reply_request: Option<ReplyRequest>,
     history_target_message: Option<i32>,
@@ -318,11 +322,15 @@ impl Default for App {
             mode_before_settings: Mode::Navigate,
             mode_before_accounts: Mode::Navigate,
             force_redraw: false,
+            keymap: crate::keymap::Keymap::default(),
+            help_scroll: 0,
             next_pending_id: -1,
             next_history_request_id: 1,
             active_history_request: None,
             history_changes: BTreeMap::new(),
             history_read_max: 0,
+            older_motion: None,
+            browsing_older: false,
             changed_dialogs: BTreeSet::new(),
             active_reply_request: None,
             history_target_message: None,
@@ -435,6 +443,14 @@ impl App {
                 }
             }
             AppEvent::Tick => {
+                if self.keymap.expire()
+                    && self
+                        .status_message
+                        .as_deref()
+                        .is_some_and(|status| status.starts_with("Keys: "))
+                {
+                    self.status_message = None;
+                }
                 self.tick = self.tick.wrapping_add(1);
                 Vec::new()
             }
@@ -464,21 +480,253 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> Vec<TelegramCommand> {
-        let editing = matches!(self.screen, Screen::Auth(_))
-            || (self.screen == Screen::Main && matches!(self.mode, Mode::Compose | Mode::Filter));
-        if editing && let Some(text) = key.text(&mut [0; 4]) {
-            // Yazi resolves keyboard-layout modifiers and Kitty associated text.
-            // This is typed text, not a paste: never interpret it as an upload path.
+        use crate::keymap::{Context, Resolution};
+        let context = if matches!(self.screen, Screen::Auth(_)) {
+            Context::Input
+        } else {
+            match self.mode {
+                Mode::Compose => Context::Compose,
+                Mode::Filter => Context::Input,
+                Mode::Help | Mode::Settings | Mode::Accounts => Context::Overlay,
+                Mode::Navigate if self.focus == Focus::Chats => Context::Chats,
+                Mode::Navigate => Context::Conversation,
+            }
+        };
+        match self.keymap.feed(context, key) {
+            Resolution::Action { run, count } => {
+                if self
+                    .status_message
+                    .as_deref()
+                    .is_some_and(|status| status.starts_with("Keys: "))
+                {
+                    self.status_message = None;
+                }
+                return self.run_binding(&run, count);
+            }
+            Resolution::Pending(hint) => {
+                self.status_message = (!hint.is_empty()).then(|| format!("Keys: {hint}"));
+                return Vec::new();
+            }
+            Resolution::Unbound => {}
+        }
+        if matches!(context, Context::Compose | Context::Input)
+            && key.kind != yazi_term::event::KeyEventKind::Release
+            && let Some(text) = key.text(&mut [0; 4])
+        {
             return text
                 .chars()
                 .filter(|c| !c.is_control())
                 .flat_map(|c| self.handle_action(KeyAction::Character(c)))
                 .collect();
         }
-        key_action(key).map_or_else(Vec::new, |action| self.handle_action(action))
+        Vec::new()
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn run_binding(&mut self, run: &str, count: usize) -> Vec<TelegramCommand> {
+        self.older_motion = None;
+        if let Some(alias) = run.strip_prefix("jump ") {
+            if let Some(id) = self.keymap.chats.get(alias).copied() {
+                if let Some(index) = self.chats.iter().position(|chat| chat.id == id) {
+                    self.filter.clear();
+                    self.mode = Mode::Navigate;
+                    self.selected_chat = index;
+                    return self.open_selected_chat();
+                }
+                self.status_message = Some(format!(
+                    "Chat alias {alias} is not in cached conversations yet"
+                ));
+            }
+            return Vec::new();
+        }
+        match run {
+            "chat_info" => {
+                let chat = if self.focus == Focus::Chats {
+                    self.selected_chat_entry()
+                } else {
+                    self.chats
+                        .iter()
+                        .find(|chat| Some(chat.id) == self.active_chat_id)
+                };
+                self.status_message =
+                    chat.map(|chat| format!("{} · chat ID {}", chat.title, chat.id));
+                return Vec::new();
+            }
+            "help" | "settings" | "accounts" if self.screen == Screen::Main => {
+                let character = match run {
+                    "help" => '?',
+                    "settings" => 's',
+                    _ => 'a',
+                };
+                return self.handle_navigation(KeyAction::Character(character));
+            }
+            "message_up" => return self.move_messages_up(count),
+            "message_down" => {
+                let messages = self.active_messages();
+                if messages.is_empty() {
+                    return Vec::new();
+                }
+                let index = self
+                    .selected_message
+                    .and_then(|id| messages.iter().position(|message| message.id == id))
+                    .unwrap_or(messages.len() - 1);
+                let target = index.saturating_add(count).min(messages.len() - 1);
+                let id = messages[target].id;
+                self.select_message_id(id, true);
+                return Vec::new();
+            }
+            "up" if self.mode == Mode::Navigate => return self.move_up(count),
+            "down" if self.mode == Mode::Navigate => return self.move_down(count),
+            "page_up" => return self.move_up(PAGE_STEP.saturating_mul(count)),
+            "page_down" => return self.move_down(PAGE_STEP.saturating_mul(count)),
+            "latest" if self.browsing_older => {
+                if let Some(id) = self.active_chat_id
+                    && let Some(index) = self.chats.iter().position(|chat| chat.id == id)
+                {
+                    self.filter.clear();
+                    self.selected_chat = index;
+                    return self.open_selected_chat();
+                }
+                return Vec::new();
+            }
+            "latest" => return self.move_to_end(),
+            "oldest" => return self.move_to_start(),
+            "refresh" => return self.request_dialog_refresh(),
+            "filter" => {
+                self.focus = Focus::Chats;
+                self.mode = Mode::Filter;
+                return Vec::new();
+            }
+            "compose" => return self.start_composing(),
+            "send" => {
+                return self
+                    .active_chat_id
+                    .map_or_else(Vec::new, |id| self.send_draft(id));
+            }
+            "reply" => return self.start_replying_to_selected(),
+            "reply_target" => return self.navigate_to_selected_reply(),
+            "open_link" => return self.activate_selected_link(),
+            "next_action" => return self.select_actionable_message(true),
+            "previous_action" => return self.select_actionable_message(false),
+            "noop" => return Vec::new(),
+            _ => {}
+        }
+        let action = match run {
+            "quit" => KeyAction::Quit,
+            "help" => KeyAction::Character('?'),
+            "settings" => KeyAction::Character('s'),
+            "accounts" => KeyAction::Character('a'),
+            "next_account" => KeyAction::NextAccount,
+            "add_account" => KeyAction::AddAccount,
+            "open" => KeyAction::Enter,
+            "cancel" => KeyAction::Escape,
+            "focus" => KeyAction::Tab,
+            "newline" => KeyAction::Newline,
+            "redraw" => KeyAction::Redraw,
+            "up" => KeyAction::Up,
+            "down" => KeyAction::Down,
+            "home" => KeyAction::Home,
+            "end" => KeyAction::End,
+            "left" => KeyAction::Left,
+            "right" => KeyAction::Right,
+            "backspace" => KeyAction::Backspace,
+            "delete" => KeyAction::Delete,
+            "clear" => KeyAction::Clear,
+            "delete_word" => KeyAction::DeleteWord,
+            _ => return Vec::new(),
+        };
+        self.handle_action(action)
+    }
+
+    fn move_messages_up(&mut self, count: usize) -> Vec<TelegramCommand> {
+        let messages = self.active_messages();
+        if messages.is_empty() {
+            return Vec::new();
+        }
+        let index = self
+            .selected_message
+            .and_then(|id| messages.iter().position(|message| message.id == id))
+            .unwrap_or(messages.len() - 1);
+        let target = index.saturating_sub(count);
+        let id = messages[target].id;
+        self.select_message_id(id, true);
+        if count <= index {
+            return Vec::new();
+        }
+        let Some(chat_id) = self.active_chat_id else {
+            return Vec::new();
+        };
+        let request_id = self.next_history_request_id;
+        self.next_history_request_id = request_id.wrapping_add(1).max(1);
+        self.active_history_request = None;
+        self.history_changes.clear();
+        self.older_motion = Some((chat_id, request_id, count - index));
+        self.status_message = Some("Loading earlier messages…".to_owned());
+        vec![TelegramCommand::LoadOlder {
+            chat_id,
+            request_id,
+            before_id: id,
+        }]
+    }
+
+    fn finish_older(
+        &mut self,
+        chat_id: ChatId,
+        request_id: u64,
+        before_id: i32,
+        mut messages: Vec<Message>,
+    ) -> Vec<TelegramCommand> {
+        let Some((chat, request, remaining)) = self.older_motion else {
+            return Vec::new();
+        };
+        if chat != chat_id || request != request_id || self.active_chat_id != Some(chat_id) {
+            return Vec::new();
+        }
+        self.older_motion = None;
+        messages.retain(|message| {
+            message.id < before_id
+                && !self
+                    .history_changes
+                    .get(&message.id)
+                    .is_some_and(Option::is_none)
+        });
+        for message in &mut messages {
+            if let Some(Some(current)) = self.history_changes.get(&message.id) {
+                *message = current.clone();
+            }
+            sanitize_message(message);
+        }
+        if messages.is_empty() {
+            self.status_message = Some("Start of available history".to_owned());
+            return Vec::new();
+        }
+        let current = self.messages.remove(&chat_id).unwrap_or_default();
+        let pending = current
+            .iter()
+            .filter(|message| message.id < 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut combined = messages;
+        combined.extend(current.into_iter().filter(|message| message.id > 0));
+        combined.sort_by_key(|message| (message.timestamp, message.id));
+        combined.dedup_by_key(|message| message.id);
+        combined.truncate(MAX_MESSAGES_PER_CHAT.saturating_sub(pending.len()));
+        combined.extend(pending);
+        self.messages.insert(chat_id, combined);
+        self.browsing_older = true;
+        self.loading_history = false;
+        self.selected_message = Some(before_id);
+        self.move_messages_up(remaining)
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<TelegramCommand> {
+        if matches!(
+            mouse.kind,
+            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.older_motion = None;
+        }
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
@@ -614,6 +862,26 @@ impl App {
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.track_snapshot_changes(&event);
         match event {
+            NetworkEvent::OlderHistory {
+                chat_id,
+                request_id,
+                before_id,
+                messages,
+            } => self.finish_older(chat_id, request_id, before_id, messages),
+            NetworkEvent::OlderHistoryFailed {
+                chat_id,
+                request_id,
+                error,
+            } => {
+                if self
+                    .older_motion
+                    .is_some_and(|(chat, request, _)| chat == chat_id && request == request_id)
+                {
+                    self.older_motion = None;
+                    self.status_message = Some(error);
+                }
+                Vec::new()
+            }
             NetworkEvent::CachedSnapshot { user_name, chats } => {
                 self.user_name = user_name;
                 self.screen = Screen::Main;
@@ -1159,6 +1427,9 @@ impl App {
 
     #[must_use]
     pub fn needs_animation(&self) -> bool {
+        if self.keymap.pending() {
+            return true;
+        }
         match self.screen {
             Screen::Connecting | Screen::Auth(AuthPhase::Qr { .. }) => true,
             Screen::Main => {
@@ -1536,6 +1807,20 @@ impl App {
 
     fn handle_help(&mut self, action: KeyAction) -> Vec<TelegramCommand> {
         match action {
+            KeyAction::Up => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+                return Vec::new();
+            }
+            KeyAction::Down => {
+                self.help_scroll = self
+                    .help_scroll
+                    .saturating_add(1)
+                    .min(self.keymap.help().len().saturating_sub(1));
+                return Vec::new();
+            }
+            _ => {}
+        }
+        match action {
             KeyAction::Character('q') => self.quit(),
             KeyAction::Escape | KeyAction::Character('?') => {
                 self.mode = self.mode_before_help;
@@ -1698,7 +1983,10 @@ impl App {
         let available_update = self.available_update.clone();
         let terminal_focused = self.terminal_focused;
         let qr_render_mode = self.qr_render_mode;
+        let mut keymap = self.keymap.clone();
+        keymap.reset();
         *self = Self {
+            keymap,
             settings,
             settings_path,
             available_update,
@@ -1913,7 +2201,11 @@ impl App {
             self.viewport_anchor_row = 0;
             self.message_scroll = 1;
         }
-        self.status_message = Some(format!("Selected #{message_id} · R reply"));
+        self.status_message = Some(format!(
+            "Selected #{message_id} · {} reply",
+            self.keymap
+                .hint(crate::keymap::Context::Conversation, "reply")
+        ));
     }
 
     fn start_replying_to_selected(&mut self) -> Vec<TelegramCommand> {
@@ -2436,6 +2728,8 @@ impl App {
         let request_id = self.next_history_request_id;
         self.next_history_request_id = self.next_history_request_id.wrapping_add(1).max(1);
         self.active_history_request = Some((chat_id, request_id));
+        self.older_motion = None;
+        self.browsing_older = false;
         self.history_changes.clear();
         self.history_read_max = 0;
         self.history_target_message = selected_message;
@@ -2467,6 +2761,8 @@ impl App {
         let request_id = self.next_history_request_id;
         self.next_history_request_id = self.next_history_request_id.wrapping_add(1).max(1);
         self.active_history_request = Some((chat_id, request_id));
+        self.older_motion = None;
+        self.browsing_older = false;
         self.history_changes.clear();
         self.history_read_max = 0;
         self.history_target_message = None;
@@ -2574,7 +2870,10 @@ impl App {
     /// Overlay events received after a snapshot request. A slower history RPC
     /// must not resurrect deleted messages or undo a live edit/read receipt.
     fn track_snapshot_changes(&mut self, event: &NetworkEvent) {
-        let history_chat = self.active_history_request.map(|(chat_id, _)| chat_id);
+        let history_chat = self
+            .active_history_request
+            .map(|(chat_id, _)| chat_id)
+            .or_else(|| self.older_motion.map(|(chat_id, _, _)| chat_id));
         match event {
             NetworkEvent::NewMessage(message)
             | NetworkEvent::MessageUpdated(message)
@@ -3702,6 +4001,41 @@ mod tests {
                 .map(|id| message(id, 1, &format!("message {id}"), false))
                 .collect(),
         });
+    }
+
+    #[test]
+    fn counted_message_motion_continues_across_a_history_page() {
+        let mut app = ready_app();
+        app.handle_action(KeyAction::Enter);
+        app.handle_network(NetworkEvent::History {
+            chat_id: 1,
+            request_id: 1,
+            messages: (81..=160)
+                .map(|id| message(id, 1, "wrapped\nmessage", false))
+                .collect(),
+        });
+        let commands = app.run_binding("message_up", 100);
+        let TelegramCommand::LoadOlder {
+            request_id,
+            before_id,
+            ..
+        } = commands[0]
+        else {
+            panic!("load older page");
+        };
+        assert_eq!(before_id, 81);
+        app.handle_network(NetworkEvent::OlderHistory {
+            chat_id: 1,
+            request_id,
+            before_id,
+            messages: (1..=80).map(|id| message(id, 1, "older", false)).collect(),
+        });
+        assert_eq!(app.selected_message, Some(60));
+        assert!(
+            app.run_binding("latest", 1)
+                .iter()
+                .any(|command| matches!(command, TelegramCommand::LoadHistory { .. }))
+        );
     }
 
     #[test]

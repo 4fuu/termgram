@@ -59,6 +59,7 @@ pub(super) fn spawn(
 ) {
     let chat_id = match &command {
         TelegramCommand::LoadHistory { chat_id, .. }
+        | TelegramCommand::LoadOlder { chat_id, .. }
         | TelegramCommand::LoadMessage { chat_id, .. }
         | TelegramCommand::SendMessage { chat_id, .. }
         | TelegramCommand::ActivateButton { chat_id, .. }
@@ -103,8 +104,15 @@ async fn execute(
             }
             Ok(Response::Dialogs(dialogs))
         }
-        TelegramCommand::LoadHistory { .. } => {
-            let mut iter = client.iter_messages(peer()?).limit(HISTORY_LIMIT);
+        TelegramCommand::LoadHistory { .. } | TelegramCommand::LoadOlder { .. } => {
+            let before = match command {
+                TelegramCommand::LoadOlder { before_id, .. } => *before_id,
+                _ => 0,
+            };
+            let mut iter = client
+                .iter_messages(peer()?)
+                .offset_id(before)
+                .limit(HISTORY_LIMIT);
             let mut messages = Vec::new();
             while let Some(message) = iter.next().await? {
                 messages.push(message);
@@ -199,6 +207,26 @@ pub(super) async fn complete(
             NetworkEvent::History {
                 chat_id,
                 request_id,
+                messages,
+            }
+        }
+        (
+            TelegramCommand::LoadOlder {
+                chat_id,
+                request_id,
+                before_id,
+            },
+            Response::History(raw),
+        ) => {
+            let mut messages = raw
+                .iter()
+                .map(|message| map_message(message, cache))
+                .collect::<Result<Vec<_>>>()?;
+            hydrate_reply_senders(&mut messages, cache);
+            NetworkEvent::OlderHistory {
+                chat_id,
+                request_id,
+                before_id,
                 messages,
             }
         }

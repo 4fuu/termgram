@@ -67,6 +67,11 @@ pub enum TelegramCommand {
     SubmitPassword(String),
     /// Abandon the current login token and request a fresh phone/code flow.
     RestartAuth,
+    LoadOlder {
+        chat_id: ChatId,
+        request_id: u64,
+        before_id: i32,
+    },
     LoadHistory {
         chat_id: ChatId,
         request_id: u64,
@@ -143,6 +148,15 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::LoadOlder {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::OlderHistoryFailed {
+                chat_id,
+                request_id,
+                error,
+            },
             TelegramCommand::SendMessage {
                 chat_id,
                 local_id,
@@ -238,6 +252,16 @@ impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LoadOlder {
+                chat_id,
+                request_id,
+                before_id,
+            } => formatter
+                .debug_struct("LoadOlder")
+                .field("chat_id", chat_id)
+                .field("request_id", request_id)
+                .field("before_id", before_id)
+                .finish(),
             Self::StartQrAuth => formatter.write_str("StartQrAuth"),
             Self::SubmitPhone(_) => formatter
                 .debug_tuple("SubmitPhone")
@@ -351,6 +375,17 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    OlderHistory {
+        chat_id: ChatId,
+        request_id: u64,
+        before_id: i32,
+        messages: Vec<Message>,
+    },
+    OlderHistoryFailed {
+        chat_id: ChatId,
+        request_id: u64,
+        error: String,
+    },
     CachedSnapshot {
         user_name: Option<String>,
         chats: Vec<Chat>,

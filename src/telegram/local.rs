@@ -63,6 +63,14 @@ pub(super) async fn serve(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break; };
+                if let TelegramCommand::LoadOlder { chat_id, request_id, before_id } = &command {
+                    store.apply(&changes).await?;
+                    changes.clear();
+                    if let Some(messages) = store.older_page(*chat_id, *before_id).await? {
+                        events.send(NetworkEvent::OlderHistory { chat_id: *chat_id, request_id: *request_id, before_id: *before_id, messages }).await?;
+                        continue;
+                    }
+                }
                 if let TelegramCommand::LoadHistory { chat_id, request_id } = &command {
                     store.apply(&changes).await?;
                     changes.clear();

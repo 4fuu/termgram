@@ -135,6 +135,8 @@ async fn serve_cached(
     if matches!(
         command,
         TelegramCommand::LoadHistory { .. }
+            | TelegramCommand::LoadPinnedMessages { .. }
+            | TelegramCommand::LoadPinnedContext { .. }
             | TelegramCommand::LoadOlder { .. }
             | TelegramCommand::LoadCachedContext { .. }
             | TelegramCommand::DownloadAttachment { .. }
@@ -144,6 +146,43 @@ async fn serve_cached(
         changes.clear();
     }
     match command {
+        TelegramCommand::LoadPinnedMessages {
+            chat_id,
+            before,
+            request_id,
+        } => {
+            let page = store.pinned_messages(*chat_id, *before).await?;
+            events
+                .send(NetworkEvent::PinnedMessages {
+                    chat_id: *chat_id,
+                    request_id: *request_id,
+                    page,
+                })
+                .await?;
+        }
+        TelegramCommand::LoadPinnedContext {
+            chat_id,
+            message_id,
+            request_id,
+        } => {
+            let messages = store
+                .history(
+                    *chat_id,
+                    Some(message_id.saturating_add(1)),
+                    super::HISTORY_LIMIT,
+                )
+                .await?;
+            if messages.iter().any(|message| message.id == *message_id) {
+                events
+                    .send(NetworkEvent::PinnedContext {
+                        chat_id: *chat_id,
+                        message_id: *message_id,
+                        request_id: *request_id,
+                        messages,
+                    })
+                    .await?;
+            }
+        }
         TelegramCommand::DownloadAttachment {
             chat_id,
             message_id,

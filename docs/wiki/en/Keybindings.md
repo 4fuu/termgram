@@ -37,6 +37,11 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Conversation | l | Open the selected or first supported link |
 | Conversation | O | Reveal attachment in the system file manager |
 | Conversation | / / c | Local regex search / chat color |
+| Conversation | p / P | Pin/unpin selected message / browse pins |
+| Pinned messages | Enter / Esc | Open selected message / close |
+| Pinned messages | Ctrl-N / Ctrl-P | Next / previous page |
+| Pinned messages | p / U | Confirm unpin / unpin all |
+| Pinned messages | Ctrl-R | Refresh pins |
 | Navigation | Tab or Shift-Tab | Switch between chat list and conversation |
 | Conversation | Esc or Left | Focus/return to the chat list |
 | Navigation | g i / Ctrl-R | Show chat and folder IDs / refresh lists |

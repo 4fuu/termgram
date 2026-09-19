@@ -13,6 +13,7 @@ time. Cached messages are available while it reconnects.
 | Remap keys, jump to a saved chat, change ghost text | [Lua configuration](Configuration.md) |
 | Read, reply, send files, and switch accounts | [Daily workflows](UX.md) |
 | Navigate Telegram folders | [Folders](Folders.md) |
+| Pin chats or messages, browse pins | [Pins](Pins.md) |
 | Find text in cached messages | [Local regex search](Search.md) |
 | Color a chat or folder | [Appearance](Appearance.md) |
 | Preview or reveal a file | [Attachments](Attachments.md) |

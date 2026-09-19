@@ -1,4 +1,5 @@
 mod appearance;
+mod pins;
 mod search;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
@@ -445,6 +446,10 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
 
     if app.mode == Mode::Colors {
         appearance::render_colors(frame, area, app);
+    } else if app.mode == Mode::PinnedMessages {
+        pins::render(frame, area, app);
+    } else if app.mode == Mode::PinPrompt {
+        pins::render_prompt(frame, area, app);
     } else if app.mode == Mode::Search {
         search::render_search(frame, area, app);
     } else if app.mode == Mode::Help {
@@ -456,7 +461,13 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     if matches!(
         app.mode,
-        Mode::Search | Mode::Colors | Mode::Help | Mode::Settings | Mode::Accounts
+        Mode::Search
+            | Mode::Colors
+            | Mode::Help
+            | Mode::Settings
+            | Mode::Accounts
+            | Mode::PinnedMessages
+            | Mode::PinPrompt
     ) {
         app.media_slots.clear();
     }
@@ -628,7 +639,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             app.color(crate::appearance::Target::Chat(id))
         })),
     );
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(chat_id) = app.active_chat_id else {
         app.set_message_hit_regions(Vec::new());
@@ -643,6 +654,23 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         );
         return;
     };
+    if let Some((message, count)) = app.pinned_summary()
+        && inner.height > 1
+    {
+        let label = format!(
+            "^ {} pins{} · {}",
+            app.keymap.hint(Context::Conversation, "pins"),
+            count.map_or(String::new(), |n| format!(" ({n})")),
+            crate::model::sanitize_terminal_line(&message.text),
+        );
+        frame.render_widget(
+            Paragraph::new(truncate_cells(&label, usize::from(inner.width)))
+                .style(Style::default().fg(ACCENT)),
+            Rect { height: 1, ..inner },
+        );
+        inner.y = inner.y.saturating_add(1);
+        inner.height = inner.height.saturating_sub(1);
+    }
     let messages: &[Message] = app.messages.get(&chat_id).map_or(&[], Vec::as_slice);
     if messages.is_empty() {
         app.set_message_hit_regions(Vec::new());
@@ -1311,6 +1339,9 @@ fn message_lines(
         .saturating_sub(id_reserve)
         .max(8);
     let mut body = message_body(message, attachment_state, download_behavior);
+    if message.pinned {
+        body = format!("^ {body}");
+    }
     if let Some(reply) = &message.reply_to {
         let sender = reply.sender.as_deref().unwrap_or("unknown");
         body = format!("↩ #{} {}  {body}", reply.message_id, sender);
@@ -1764,6 +1795,19 @@ mod tests {
         populated_app_with_settings(Settings::default())
     }
 
+    #[test]
+    fn pinned_overlay_keeps_navigation_visible_in_a_small_terminal() {
+        let mut app = populated_app();
+        app.mode = Mode::PinnedMessages;
+        app.message_pins.chat = Some(7);
+        app.message_pins.page.messages = app.active_messages().to_vec();
+        let rendered = render_text(&app, 40, 10);
+        assert!(rendered.contains("Pinned messages"));
+        assert!(rendered.contains("<Enter> open"));
+        assert!(rendered.contains("<Esc> close"));
+        assert!(rendered.contains("<C-n> next"));
+    }
+
     fn populated_app_with_settings(settings: Settings) -> AppState {
         let mut app = AppState::with_ephemeral_settings(settings);
         app.screen = Screen::Main;
@@ -1783,6 +1827,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                pinned: false,
                 id: 11,
                 chat_id: 7,
                 sender: "Alice".to_owned(),
@@ -2088,6 +2133,7 @@ mod tests {
         let mut app = populated_app();
         app.messages.get_mut(&7).unwrap().extend([
             Message {
+                pinned: false,
                 id: 12,
                 chat_id: 7,
                 sender: "Alice".to_owned(),
@@ -2108,6 +2154,7 @@ mod tests {
                 buttons: Vec::new(),
             },
             Message {
+                pinned: false,
                 id: 13,
                 chat_id: 7,
                 sender: "Alice".to_owned(),
@@ -2351,6 +2398,7 @@ mod tests {
         let mut app = populated_app();
         let messages = (0_i32..30)
             .map(|id| Message {
+                pinned: false,
                 id,
                 chat_id: 7,
                 sender: "Alice".to_owned(),
@@ -2378,6 +2426,7 @@ mod tests {
             .get_mut(&7)
             .expect("active history")
             .push(Message {
+                pinned: false,
                 id: 30,
                 chat_id: 7,
                 sender: "Alice".to_owned(),
@@ -2413,6 +2462,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                pinned: false,
                 id: 99,
                 chat_id: 7,
                 sender: "Alice".to_owned(),

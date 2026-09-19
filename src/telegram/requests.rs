@@ -62,10 +62,35 @@ pub(super) async fn refresh_pending(
         cache.dialog_pins.in_flight = true;
         spawn(TelegramCommand::RefreshDialogPins, client, cache, requests);
     }
+    if cache.message_pins.dirty
+        && !cache.message_pins.in_flight
+        && requests.len() < MAX_REQUESTS
+        && let Some(chat_id) = cache.active_chat.filter(|id| cache.peers.contains_key(id))
+    {
+        cache.message_pins.dirty = false;
+        cache.message_pins.in_flight = true;
+        events
+            .send(NetworkEvent::PinnedMessagesLoading {
+                chat_id,
+                request_id: 0,
+            })
+            .await?;
+        spawn(
+            TelegramCommand::LoadPinnedMessages {
+                chat_id,
+                before: 0,
+                request_id: 0,
+            },
+            client,
+            cache,
+            requests,
+        );
+    }
     Ok(())
 }
 
 enum Response {
+    PinnedMessages(Vec<TelegramMessage>, usize),
     DialogPins(crate::pins::DialogPins),
     Dialogs(Vec<Dialog>, (i64, i64)),
     Folders(Vec<crate::folders::Folder>),
@@ -88,6 +113,9 @@ pub(super) fn spawn(
         TelegramCommand::LoadHistory { chat_id, .. }
         | TelegramCommand::ChangeDialogPin { chat_id, .. }
         | TelegramCommand::SetArchived { chat_id, .. }
+        | TelegramCommand::LoadPinnedMessages { chat_id, .. }
+        | TelegramCommand::LoadPinnedContext { chat_id, .. }
+        | TelegramCommand::ChangeMessagePin { chat_id, .. }
         | TelegramCommand::LoadOlder { chat_id, .. }
         | TelegramCommand::LoadMessage { chat_id, .. }
         | TelegramCommand::SendMessage { chat_id, .. }
@@ -128,6 +156,42 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::LoadPinnedMessages { before, .. } => {
+            let mut iter = client
+                .search_messages(peer()?)
+                .filter(grammers_client::tl::enums::MessagesFilter::InputMessagesFilterPinned)
+                .offset_id(*before)
+                .limit(crate::pins::PAGE_SIZE);
+            let mut messages = Vec::new();
+            while let Some(message) = iter.next().await? {
+                messages.push(message);
+            }
+            Ok(Response::PinnedMessages(messages, iter.total().await?))
+        }
+        TelegramCommand::LoadPinnedContext { message_id, .. } => {
+            let target = client
+                .get_messages_by_id(peer()?, &[*message_id])
+                .await?
+                .pop()
+                .flatten()
+                .context("Pinned message is no longer available")?;
+            let mut iter = client
+                .iter_messages(peer()?)
+                .offset_id(*message_id)
+                .limit(HISTORY_LIMIT - 1);
+            let mut messages = vec![target];
+            while let Some(message) = iter.next().await? {
+                messages.push(message);
+            }
+            messages.reverse();
+            Ok(Response::History(messages))
+        }
+        TelegramCommand::ChangeMessagePin {
+            message_id, action, ..
+        } => {
+            super::pins::change_message(client, peer()?, *message_id, *action).await?;
+            Ok(Response::Read)
+        }
         TelegramCommand::SetArchived { archived, .. } => {
             client
                 .invoke(&grammers_client::tl::functions::folders::EditPeerFolders {
@@ -245,6 +309,18 @@ pub(super) async fn complete(
     events: &mpsc::Sender<NetworkEvent>,
 ) -> Result<()> {
     let Completion { command, result } = completion;
+    if matches!(
+        command,
+        TelegramCommand::LoadPinnedMessages { request_id: 0, .. }
+    ) {
+        cache.message_pins.in_flight = false;
+        if cache.message_pins.dirty {
+            if let Some(event) = command.failure("Pins changed during refresh".to_owned()) {
+                events.send(event).await?;
+            }
+            return Ok(());
+        }
+    }
     if matches!(command, TelegramCommand::RefreshDialogs) {
         cache.dialogs.in_flight = false;
         if cache.dialogs.dirty {
@@ -273,6 +349,79 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::ChangeMessagePin {
+                chat_id,
+                message_id,
+                action,
+                request_id,
+            },
+            Response::Read,
+        ) => {
+            cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
+            let event = match action {
+                crate::pins::MessageAction::UnpinAll => {
+                    NetworkEvent::MessagePinsCleared { chat_id }
+                }
+                _ => NetworkEvent::MessagePinsChanged {
+                    chat_id,
+                    message_ids: vec![message_id],
+                    pinned: matches!(action, crate::pins::MessageAction::Pin { .. }),
+                },
+            };
+            events.send(event).await?;
+            NetworkEvent::MessagePinFinished {
+                chat_id,
+                request_id,
+                error: None,
+            }
+        }
+        (
+            TelegramCommand::LoadPinnedMessages {
+                chat_id,
+                before,
+                request_id,
+            },
+            Response::PinnedMessages(raw, total),
+        ) => {
+            let mut messages = raw
+                .iter()
+                .map(|message| map_message(message, cache))
+                .collect::<Result<Vec<_>>>()?;
+            hydrate_reply_senders(&mut messages, cache);
+            let next = (messages.len() == crate::pins::PAGE_SIZE)
+                .then(|| messages.last().expect("full page").id);
+            NetworkEvent::PinnedMessages {
+                chat_id,
+                request_id,
+                page: crate::pins::MessagePage {
+                    messages,
+                    total: Some(total),
+                    before,
+                    next,
+                },
+            }
+        }
+        (
+            TelegramCommand::LoadPinnedContext {
+                chat_id,
+                message_id,
+                request_id,
+            },
+            Response::History(raw),
+        ) => {
+            let mut messages = raw
+                .iter()
+                .map(|message| map_message(message, cache))
+                .collect::<Result<Vec<_>>>()?;
+            hydrate_reply_senders(&mut messages, cache);
+            NetworkEvent::PinnedContext {
+                chat_id,
+                message_id,
+                request_id,
+                messages,
+            }
+        }
         (
             TelegramCommand::SetArchived {
                 chat_id,

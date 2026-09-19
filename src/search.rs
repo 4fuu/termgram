@@ -204,6 +204,7 @@ mod tests {
         let mut events = vec![NetworkEvent::Dialogs(vec![chat(42), chat(43)])];
         for id in 1..=206 {
             events.push(NetworkEvent::NewMessage(Message {
+                pinned: false,
                 id,
                 chat_id: if id == 206 { 43 } else { 42 },
                 sender: "Ada".to_owned(),

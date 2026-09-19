@@ -65,6 +65,8 @@ struct WorkerCache {
     dialogs: MetadataRefresh,
     folders: MetadataRefresh,
     dialog_pins: MetadataRefresh,
+    message_pins: MetadataRefresh,
+    active_chat: Option<ChatId>,
     self_id: i64,
     channel_pts: HashMap<ChatId, i32>,
     peers: HashMap<ChatId, PeerRef>,
@@ -302,6 +304,8 @@ async fn run(
             channels: cursor.channels.into_iter().map(|(id, pts)| grammers_session::types::ChannelState { id, pts }).collect(),
         });
         let active_channel = updates.active_channel();
+        cache.active_chat = *active_chat.borrow();
+        cache.message_pins.dirty = true;
         signal_active_channel(&cache, *active_chat.borrow_and_update(), &active_channel);
         let mut recovering = false;
         let mut transfers = JoinSet::new();
@@ -321,6 +325,8 @@ async fn run(
                     update = &mut next => break update,
                     changed = active_chat.changed() => {
                         if changed.is_err() { break 'worker; }
+                        cache.active_chat = *active_chat.borrow();
+                        cache.message_pins.dirty = true;
                         signal_active_channel(&cache, *active_chat.borrow_and_update(), &active_channel);
                     }
                     command = commands.recv(), if requests.len() < requests::MAX_REQUESTS => {
@@ -456,6 +462,7 @@ async fn process_update(
         Ok(Update::MessageEdited(update)) => {
             restore_online_status(events, recovering).await;
             let message = update.into_inner();
+            cache.message_pins.dirty |= message.pinned();
             if message.mentioned() {
                 cache.dialogs.dirty = true;
             }
@@ -478,6 +485,7 @@ async fn process_update(
         }
         Ok(Update::MessageDeleted(update)) => {
             cache.dialogs.dirty = true;
+            cache.message_pins.dirty = true;
             restore_online_status(events, recovering).await;
             let channel_id = update
                 .channel_id()
@@ -494,6 +502,30 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::PinnedMessages(update) => {
+                    if let Some(chat_id) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::MessagePinsChanged {
+                                chat_id,
+                                message_ids: update.messages.clone(),
+                                pinned: update.pinned,
+                            })
+                            .await?;
+                        cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
+                    }
+                }
+                tl::enums::Update::PinnedChannelMessages(update) => {
+                    let chat_id =
+                        PeerId::channel_unchecked(update.channel_id).bot_api_dialog_id_unchecked();
+                    events
+                        .send(NetworkEvent::MessagePinsChanged {
+                            chat_id,
+                            message_ids: update.messages.clone(),
+                            pinned: update.pinned,
+                        })
+                        .await?;
+                    cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
+                }
                 tl::enums::Update::DialogPinned(_) | tl::enums::Update::PinnedDialogs(_) => {
                     cache.dialog_pins.dirty = true;
                 }
@@ -1303,12 +1335,33 @@ async fn handle_command(
         command @ (TelegramCommand::LoadOlder { .. }
         | TelegramCommand::ChangeDialogPin { .. }
         | TelegramCommand::SetArchived { .. }
+        | TelegramCommand::LoadPinnedMessages { .. }
+        | TelegramCommand::LoadPinnedContext { .. }
+        | TelegramCommand::ChangeMessagePin { .. }
         | TelegramCommand::LoadHistory { .. }
         | TelegramCommand::LoadMessage { .. }
         | TelegramCommand::SendMessage { .. }
         | TelegramCommand::ResolveTelegramLink { .. }
         | TelegramCommand::ActivateButton { .. }
         | TelegramCommand::MarkRead { .. }) => {
+            if let TelegramCommand::LoadPinnedMessages {
+                chat_id,
+                request_id,
+                ..
+            }
+            | TelegramCommand::LoadPinnedContext {
+                chat_id,
+                request_id,
+                ..
+            } = &command
+            {
+                events
+                    .send(NetworkEvent::PinnedMessagesLoading {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
             if let TelegramCommand::LoadHistory {
                 chat_id,
                 request_id,
@@ -1512,6 +1565,7 @@ async fn handle_command(
         }
         TelegramCommand::RefreshDialogs => {
             cache.dialog_pins.dirty = true;
+            cache.message_pins.dirty = true;
             requests::refresh_dialogs(client, cache, events, requests).await?;
         }
         TelegramCommand::RefreshDialogPins => cache.dialog_pins.dirty = true,
@@ -2143,6 +2197,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        pinned: message.pinned(),
         id: message.id(),
         chat_id,
         sender,
@@ -2794,6 +2849,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            pinned: false,
             id: 42,
             chat_id: 7,
             sender: "Bob".to_owned(),
@@ -2853,6 +2909,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            pinned: false,
             id: 42,
             chat_id: 7,
             sender: "Bob".to_owned(),

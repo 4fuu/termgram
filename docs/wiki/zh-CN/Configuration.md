@@ -23,7 +23,7 @@ return {
 ```
 
 上下文包括 `global`、`chats`、`conversation`、`compose`、`input`（登录与聊天过滤）
-、`overlay` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
+、`overlay`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
 `run = "noop"` 删除绑定。组合键用独立按键列表表示，例如 `{ "g", "w" }`。
 配置会检查前缀冲突。组合键一秒后过期，Escape 可以取消尚未完成的组合键。
 按键表示法沿用 Yazi，例如 `<C-s>`、`<A-x>`、`<S-Enter>`、`<Tab>`、`<Esc>`。
@@ -96,6 +96,8 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `pin`、`pin_up`、`pin_down`、`archive` | 聊天列表；官方置顶排序和归档 |
 | `reply`、`reply_target`、`open_link`、`next_action`、`previous_action`、`reveal` | 会话操作 |
 | `chat_color`、`folder_color` | 外观选择器 |
+| `pin`、`pins` | 会话；确认置顶/取消置顶，打开置顶列表 |
+| `pins_more`、`pins_previous`、`unpin_all` | 置顶消息浮层（`pins` 上下文） |
 | `search` | 打开本地搜索 |
 | `search_scope`、`search_query`、`search_more`、`search_previous` | 搜索浮层 |
 | `jump ALIAS` | 打开配置的稳定聊天 ID，返回导航状态 |

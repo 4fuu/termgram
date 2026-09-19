@@ -32,6 +32,7 @@ pub struct Store {
     revision: i64,
     dialog_revision: i64,
     history_revisions: BTreeMap<(ChatId, u64), i64>,
+    pin_revisions: BTreeMap<(ChatId, u64), i64>,
     downloads: BTreeMap<(ChatId, i32), (u64, Option<i64>)>,
     owner: std::sync::Arc<std::fs::File>,
 }
@@ -106,6 +107,7 @@ impl Store {
             revision,
             dialog_revision: revision,
             history_revisions: BTreeMap::new(),
+            pin_revisions: BTreeMap::new(),
             downloads: BTreeMap::new(),
         })
     }
@@ -145,6 +147,37 @@ impl Store {
             .map(|value| serde_json::from_str(&value))
             .transpose()?
             .unwrap_or_default())
+    }
+
+    /// # Errors
+    /// Returns database or message decoding errors.
+    pub async fn pinned_messages(
+        &self,
+        chat_id: ChatId,
+        before: i32,
+    ) -> Result<crate::pins::MessagePage> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT data FROM messages WHERE chat_id=?1 AND data IS NOT NULL
+             AND json_extract(data,'$.pinned')=1 AND (?2=0 OR id<?2) ORDER BY id DESC LIMIT ?3",
+                params![chat_id, before, i64::try_from(crate::pins::PAGE_SIZE)?],
+            )
+            .await?;
+        let mut messages: Vec<Message> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            messages.push(serde_json::from_str(&row.get::<String>(0)?)?);
+        }
+        let next = messages
+            .last()
+            .filter(|_| messages.len() == crate::pins::PAGE_SIZE)
+            .map(|message| message.id);
+        Ok(crate::pins::MessagePage {
+            messages,
+            before,
+            next,
+            total: None,
+        })
     }
 
     /// # Errors
@@ -271,6 +304,68 @@ impl Store {
             self.revision += 1;
             let revision = self.revision;
             match event {
+                NetworkEvent::PinnedMessagesLoading {
+                    chat_id,
+                    request_id,
+                } => {
+                    self.pin_revisions.insert((*chat_id, *request_id), revision);
+                }
+                NetworkEvent::PinnedMessages {
+                    chat_id,
+                    request_id,
+                    page,
+                } if page.total.is_some() => {
+                    let Some(started) = self.pin_revisions.remove(&(*chat_id, *request_id)) else {
+                        continue;
+                    };
+                    for message in &page.messages {
+                        write_message(&transaction, message, revision, started).await?;
+                    }
+                    transaction.execute(
+                        "UPDATE messages SET data=json_set(data,'$.pinned',json('false')), revision=?1
+                         WHERE chat_id=?2 AND data IS NOT NULL AND json_extract(data,'$.pinned')=1
+                         AND revision<=?3 AND (?4=0 OR id<?4) AND id>=?5",
+                        params![revision, *chat_id, started, page.before, page.next.unwrap_or(0)],
+                    ).await?;
+                    prune_chat_messages(&transaction, *chat_id).await?;
+                }
+                NetworkEvent::PinnedMessagesFailed {
+                    chat_id,
+                    request_id,
+                    ..
+                } => {
+                    self.pin_revisions.remove(&(*chat_id, *request_id));
+                }
+                NetworkEvent::MessagePinsChanged {
+                    chat_id,
+                    message_ids,
+                    pinned,
+                } => {
+                    for id in message_ids {
+                        transaction.execute(
+                            "UPDATE messages SET data=json_set(data,'$.pinned',json(?1)), revision=?2
+                             WHERE chat_id=?3 AND id=?4 AND data IS NOT NULL",
+                            params![if *pinned { "true" } else { "false" }, revision, *chat_id, *id],
+                        ).await?;
+                    }
+                }
+                NetworkEvent::MessagePinsCleared { chat_id } => {
+                    transaction.execute("UPDATE messages SET data=json_set(data,'$.pinned',json('false')), revision=?1 WHERE chat_id=?2 AND data IS NOT NULL", params![revision, *chat_id]).await?;
+                }
+                NetworkEvent::PinnedContext {
+                    chat_id,
+                    request_id,
+                    messages,
+                    ..
+                } => {
+                    let Some(started) = self.pin_revisions.remove(&(*chat_id, *request_id)) else {
+                        continue;
+                    };
+                    for message in messages {
+                        write_message(&transaction, message, revision, started).await?;
+                    }
+                    prune_chat_messages(&transaction, *chat_id).await?;
+                }
                 NetworkEvent::DialogPins(pins) => {
                     set_metadata(&transaction, "dialog_pins", &serde_json::to_string(pins)?)
                         .await?;
@@ -362,13 +457,7 @@ impl Store {
                     for message in messages {
                         write_message(&transaction, message, revision, started).await?;
                     }
-                    transaction
-                        .execute(
-                            "DELETE FROM messages WHERE chat_id=?1 AND id NOT IN
-                         (SELECT id FROM messages WHERE chat_id=?1 ORDER BY id DESC LIMIT ?2)",
-                            params![*chat_id, MAX_CHAT_MESSAGES],
-                        )
-                        .await?;
+                    prune_chat_messages(&transaction, *chat_id).await?;
                 }
                 NetworkEvent::HistoryFailed {
                     chat_id,
@@ -582,6 +671,7 @@ impl Store {
         let oldest_in_flight = self
             .history_revisions
             .values()
+            .chain(self.pin_revisions.values())
             .copied()
             .min()
             .unwrap_or(self.revision);
@@ -590,6 +680,17 @@ impl Store {
         transaction.commit().await?;
         Ok(())
     }
+}
+
+async fn prune_chat_messages(connection: &Connection, chat_id: ChatId) -> Result<()> {
+    connection
+        .execute(
+            "DELETE FROM messages WHERE chat_id=?1 AND id NOT IN
+         (SELECT id FROM messages WHERE chat_id=?1 ORDER BY id DESC LIMIT ?2)",
+            params![chat_id, MAX_CHAT_MESSAGES],
+        )
+        .await?;
+    Ok(())
 }
 
 async fn write_message(
@@ -705,6 +806,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            pinned: false,
             id,
             chat_id: 42,
             sender: "Ada".to_owned(),
@@ -964,6 +1066,91 @@ mod tests {
         assert!(Store::open(&path).await.is_err());
         drop(transfer_owner);
         assert!(Store::open(&path).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn pinned_pages_persist_without_undoing_live_unpins_or_deletions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pins.sqlite3");
+        let mut store = Store::open(&path).await.unwrap();
+        let mut pin = message(4, "pinned");
+        pin.pinned = true;
+        let mut removed = message(5, "deleted");
+        removed.pinned = true;
+        store
+            .apply(&[
+                NetworkEvent::CacheMessage(pin.clone()),
+                NetworkEvent::CacheMessage(removed.clone()),
+                NetworkEvent::PinnedMessagesLoading {
+                    chat_id: 42,
+                    request_id: 1,
+                },
+                NetworkEvent::MessagePinsChanged {
+                    chat_id: 42,
+                    message_ids: vec![4],
+                    pinned: false,
+                },
+                NetworkEvent::MessagesDeleted {
+                    channel_id: None,
+                    message_ids: vec![5],
+                },
+                NetworkEvent::PinnedMessages {
+                    chat_id: 42,
+                    request_id: 1,
+                    page: crate::pins::MessagePage {
+                        messages: vec![removed, pin.clone()],
+                        total: Some(2),
+                        ..Default::default()
+                    },
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            store
+                .pinned_messages(42, 0)
+                .await
+                .unwrap()
+                .messages
+                .is_empty()
+        );
+        store
+            .apply(&[
+                NetworkEvent::PinnedMessagesLoading {
+                    chat_id: 42,
+                    request_id: 2,
+                },
+                NetworkEvent::PinnedMessages {
+                    chat_id: 42,
+                    request_id: 2,
+                    page: crate::pins::MessagePage {
+                        messages: vec![pin],
+                        total: Some(1),
+                        ..Default::default()
+                    },
+                },
+            ])
+            .await
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(&path).await.unwrap();
+        assert_eq!(
+            store.pinned_messages(42, 0).await.unwrap().messages[0].id,
+            4
+        );
+        store
+            .apply(&[NetworkEvent::MessagePinsCleared { chat_id: 42 }])
+            .await
+            .unwrap();
+        assert!(
+            store
+                .pinned_messages(42, 0)
+                .await
+                .unwrap()
+                .messages
+                .is_empty()
+        );
+        assert_eq!(store.history(42, None, 20).await.unwrap().len(), 1);
     }
     #[tokio::test]
     async fn cached_dialogs_count_new_messages_once_and_clear_deleted_previews() {

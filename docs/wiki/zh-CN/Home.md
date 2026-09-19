@@ -12,6 +12,7 @@ Termgram 使用 Telegram 的 MTProto 用户 API，访问已有私聊和群组。
 | 改键、配置群聊直达、修改输入提示 | [Lua 配置](Configuration.md) |
 | 阅读、回复、发文件、切换账号 | [日常操作](UX.md) |
 | 切换 Telegram 文件夹 | [文件夹](Folders.md) |
+| 置顶聊天或消息、浏览置顶 | [置顶](Pins.md) |
 | 搜索本地缓存消息 | [本地正则搜索](Search.md) |
 | 设置聊天和文件夹颜色 | [外观](Appearance.md) |
 | 预览文件、在文件管理器中定位 | [附件](Attachments.md) |

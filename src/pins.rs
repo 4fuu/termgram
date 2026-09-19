@@ -24,6 +24,23 @@ pub enum DialogAction {
     MoveDown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageAction {
+    Pin { notify: bool, only_self: bool },
+    Unpin,
+    UnpinAll,
+}
+
+pub const PAGE_SIZE: usize = 30;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MessagePage {
+    pub messages: Vec<crate::model::Message>,
+    pub total: Option<usize>,
+    pub before: i32,
+    pub next: Option<i32>,
+}
+
 /// Move within the complete server order, including peers hidden by the UI.
 pub(crate) fn move_pin<T>(order: &mut [T], position: usize, action: DialogAction) {
     let target = match action {

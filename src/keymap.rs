@@ -27,6 +27,7 @@ pub enum Context {
     Input,
     Overlay,
     Search,
+    Pins,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -135,6 +136,10 @@ const ACTIONS: &[&str] = &[
     "pin_up",
     "pin_down",
     "archive",
+    "pins",
+    "pins_more",
+    "pins_previous",
+    "unpin_all",
 ];
 
 impl Default for Keymap {
@@ -196,6 +201,8 @@ impl Default for Keymap {
             (
                 Context::Conversation,
                 &[
+                    ("p", "pin"),
+                    ("P", "pins"),
                     ("c", "chat_color"),
                     ("/", "search"),
                     ("j", "message_down"),
@@ -276,6 +283,25 @@ impl Default for Keymap {
                     ("<Down>", "down"),
                     ("<PageUp>", "page_up"),
                     ("<PageDown>", "page_down"),
+                ][..],
+            ),
+            (
+                Context::Pins,
+                &[
+                    ("<Enter>", "open"),
+                    ("<Esc>", "cancel"),
+                    ("?", "cancel"),
+                    ("j", "down"),
+                    ("k", "up"),
+                    ("<Down>", "down"),
+                    ("<Up>", "up"),
+                    ("<PageUp>", "page_up"),
+                    ("<PageDown>", "page_down"),
+                    ("<C-n>", "pins_more"),
+                    ("<C-p>", "pins_previous"),
+                    ("<C-r>", "refresh"),
+                    ("p", "pin"),
+                    ("U", "unpin_all"),
                 ][..],
             ),
         ] {

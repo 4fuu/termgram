@@ -2,6 +2,7 @@
 
 mod appearance;
 mod attachments;
+mod message_pins;
 mod pins;
 mod search;
 
@@ -154,6 +155,8 @@ pub enum Mode {
     Compose,
     Filter,
     Search,
+    PinnedMessages,
+    PinPrompt,
     Colors,
     Help,
     Settings,
@@ -202,6 +205,7 @@ pub struct App {
     pub folders: Vec<crate::folders::Folder>,
     pub folder_id: i32,
     pub pins: pins::State,
+    pub message_pins: message_pins::State,
     /// Position in the filtered chat list, never a persistent model identity.
     pub selected_chat: usize,
     pub active_chat_id: Option<ChatId>,
@@ -307,6 +311,7 @@ impl Default for App {
             folders: vec![crate::folders::Folder::all()],
             folder_id: 0,
             pins: pins::State::default(),
+            message_pins: message_pins::State::default(),
             selected_chat: 0,
             active_chat_id: None,
             messages: BTreeMap::new(),
@@ -513,7 +518,10 @@ impl App {
                 Mode::Compose => Context::Compose,
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
-                Mode::Help | Mode::Settings | Mode::Accounts | Mode::Colors => Context::Overlay,
+                Mode::PinnedMessages => Context::Pins,
+                Mode::PinPrompt | Mode::Help | Mode::Settings | Mode::Accounts | Mode::Colors => {
+                    Context::Overlay
+                }
                 Mode::Navigate if self.focus == Focus::Chats => Context::Chats,
                 Mode::Navigate => Context::Conversation,
             }
@@ -555,6 +563,9 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn run_binding(&mut self, run: &str, count: usize) -> Vec<TelegramCommand> {
         self.older_motion = None;
+        if let Some(commands) = self.pin_binding(run, count) {
+            return commands;
+        }
         if self.mode == Mode::Search
             && let Some(commands) = self.search_binding(run, count)
         {
@@ -580,7 +591,9 @@ impl App {
         }
         match run {
             "archive" => return self.toggle_archive(),
+            "pin" if self.focus == Focus::Conversation => return self.begin_message_pin(false),
             "pin" | "pin_up" | "pin_down" => return self.change_chat_pin(run),
+            "pins" => return self.open_pinned_messages(),
             "search" => return self.open_search(),
             "chat_color" => return self.begin_color_picker(false),
             "folder_color" => return self.begin_color_picker(true),
@@ -811,7 +824,10 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
-        if matches!(self.mode, Mode::Help | Mode::Search | Mode::Colors) {
+        if matches!(
+            self.mode,
+            Mode::Help | Mode::Search | Mode::Colors | Mode::PinnedMessages | Mode::PinPrompt
+        ) {
             return Vec::new();
         }
         if self.mode == Mode::Settings {
@@ -942,7 +958,45 @@ impl App {
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.track_snapshot_changes(&event);
+        if let NetworkEvent::MessageUpdated(message) = &event {
+            self.update_pin_preview(message);
+        }
         match event {
+            NetworkEvent::PinnedMessages {
+                chat_id,
+                request_id,
+                page,
+            } => self.finish_pinned_messages(chat_id, request_id, page),
+            NetworkEvent::PinnedMessagesFailed {
+                chat_id,
+                request_id,
+                error,
+            } => {
+                self.fail_pinned_messages(chat_id, request_id, &error);
+                Vec::new()
+            }
+            NetworkEvent::PinnedContext {
+                chat_id,
+                message_id,
+                request_id,
+                messages,
+            } => {
+                self.finish_pinned_context(chat_id, message_id, request_id, messages);
+                Vec::new()
+            }
+            NetworkEvent::MessagePinsChanged {
+                chat_id,
+                message_ids,
+                pinned,
+            } => self.pin_messages_changed(chat_id, Some(&message_ids), pinned),
+            NetworkEvent::MessagePinsCleared { chat_id } => {
+                self.pin_messages_changed(chat_id, None, false)
+            }
+            NetworkEvent::MessagePinFinished {
+                chat_id,
+                request_id,
+                error,
+            } => self.finish_message_pin(chat_id, request_id, error),
             NetworkEvent::ArchiveChanged { chat_id, archived } => {
                 let selected_id = self.selected_chat_entry().map(|chat| chat.id);
                 if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
@@ -1043,6 +1097,7 @@ impl App {
                 Vec::new()
             }
             NetworkEvent::HistoryLoading { .. }
+            | NetworkEvent::PinnedMessagesLoading { .. }
             | NetworkEvent::SyncCheckpoint(_)
             | NetworkEvent::AttachmentDownloadStarted { .. }
             | NetworkEvent::CacheMessage(_) => Vec::new(),
@@ -1279,7 +1334,7 @@ impl App {
                 message_ids,
             } => {
                 self.remove_deleted_messages(channel_id, &message_ids);
-                Vec::new()
+                self.pinned_messages_deleted(channel_id, &message_ids)
             }
             NetworkEvent::AttachmentDownloaded {
                 request_id,
@@ -1774,6 +1829,7 @@ impl App {
             Mode::Compose => self.handle_compose(action),
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
+            Mode::PinnedMessages | Mode::PinPrompt => Vec::new(),
             Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
@@ -2283,6 +2339,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            pinned: false,
             id: local_id,
             chat_id,
             sender: "You".to_owned(),
@@ -2327,6 +2384,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                pinned: false,
                 id: local_id,
                 chat_id,
                 sender: "You".to_owned(),
@@ -2904,6 +2962,7 @@ impl App {
         chat.title = sanitize_terminal_line(&chat.title);
         chat.last_message = sanitize_terminal_text(&chat.last_message);
         if let Some(index) = known_chat {
+            chat.membership.clone_from(&self.chats[index].membership);
             self.chats[index] = chat;
         } else {
             self.chats.push(chat);
@@ -2911,9 +2970,9 @@ impl App {
             self.linked_chat_ids.insert(chat_id);
         }
         if let Some(index) = known_chat {
-            self.folder_id = 0;
+            self.folder_id = i32::from(self.chats[index].membership.archived);
             self.filter.clear();
-            self.selected_chat = index;
+            self.preserve_chat_selection(Some(chat_id));
         }
         // Pin the destination before insertion so the bounded global cache
         // cannot evict an older exact link/reply target during navigation.
@@ -3084,6 +3143,7 @@ impl App {
             .active_history_request
             .map(|(chat_id, _)| chat_id)
             .or_else(|| self.older_motion.map(|(chat_id, _, _)| chat_id));
+        let history_chat = self.pin_context_chat().or(history_chat);
         match event {
             NetworkEvent::NewMessage(message)
             | NetworkEvent::MessageUpdated(message)
@@ -4212,6 +4272,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            pinned: false,
             id,
             chat_id,
             sender: if outgoing { "Me" } else { "Them" }.to_owned(),
@@ -5873,6 +5934,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            pinned: false,
             id: -1,
             chat_id: 1,
             sender: "You".to_owned(),
@@ -5893,6 +5955,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            pinned: false,
             id: -2,
             attachment: Some(Attachment {
                 source_id: None,
@@ -5902,6 +5965,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            pinned: false,
             id: 42,
             attachment: second.attachment.clone(),
             delivery: Delivery::Sent,
@@ -6245,6 +6309,130 @@ mod tests {
         assert!(app.visible_chats().is_empty());
         app.folder_id = 0;
         assert_eq!(app.visible_chats().len(), 3);
+    }
+
+    #[test]
+    fn message_pin_confirmation_defaults_and_failures_keep_the_selected_target() {
+        use crate::pins::MessageAction as PinAction;
+        let mut app = ready_app();
+        app.active_chat_id = Some(1);
+        app.chats[0].kind = crate::model::ChatKind::Direct;
+        app.account_user_id = Some(99);
+        app.focus = Focus::Conversation;
+        app.messages
+            .insert(1, vec![message(10, 1, "keep this", false)]);
+        app.selected_message = Some(10);
+        assert!(app.run_binding("pin", 1).is_empty());
+        assert_eq!(app.mode, Mode::PinPrompt);
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::ChangeMessagePin {
+                request_id, action, ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("pin mutation");
+        };
+        assert_eq!(
+            *action,
+            PinAction::Pin {
+                notify: false,
+                only_self: true
+            }
+        );
+        assert!(app.run_binding("open", 1).is_empty());
+        app.handle_network(NetworkEvent::MessagePinFinished {
+            chat_id: 1,
+            request_id: *request_id,
+            error: Some("CHAT_ADMIN_REQUIRED".into()),
+        });
+        assert_eq!(app.mode, Mode::PinPrompt);
+        assert!(!app.active_messages()[0].pinned);
+        app.run_binding("cancel", 1);
+        app.chats[0].kind = crate::model::ChatKind::Group;
+        app.run_binding("pin", 1);
+        assert_eq!(
+            app.message_pins.prompt.as_ref().unwrap().options[0].1,
+            PinAction::Pin {
+                notify: true,
+                only_self: false
+            }
+        );
+    }
+
+    #[test]
+    fn pinned_navigation_preserves_drafts_and_does_not_resurrect_deleted_targets() {
+        let mut app = ready_app();
+        app.active_chat_id = Some(1);
+        app.focus = Focus::Conversation;
+        app.drafts.insert(1, TextInput::from_value("unsent"));
+        let mut pin = message(20, 1, "target", false);
+        pin.pinned = true;
+        let commands = app.run_binding("pins", 1);
+        let [TelegramCommand::LoadPinnedMessages { request_id, .. }] = commands.as_slice() else {
+            panic!("pin list");
+        };
+        app.handle_network(NetworkEvent::PinnedMessages {
+            chat_id: 1,
+            request_id: *request_id,
+            page: crate::pins::MessagePage {
+                messages: vec![pin.clone()],
+                total: Some(1),
+                ..Default::default()
+            },
+        });
+        let commands = app.run_binding("open", 1);
+        let [TelegramCommand::LoadPinnedContext { request_id, .. }] = commands.as_slice() else {
+            panic!("pin context");
+        };
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![20],
+        });
+        assert!(
+            app.handle_network(NetworkEvent::PinnedContext {
+                chat_id: 1,
+                message_id: 20,
+                request_id: *request_id,
+                messages: vec![pin]
+            })
+            .is_empty()
+        );
+        assert_eq!(app.mode, Mode::PinnedMessages);
+        assert!(app.message_pins.error.as_ref().unwrap().contains("deleted"));
+        assert!(app.active_messages().iter().all(|message| message.id != 20));
+        assert_eq!(app.active_draft().unwrap().value(), "unsent");
+        let commands = app.run_binding("refresh", 1);
+        let [TelegramCommand::LoadPinnedMessages { request_id, .. }] = commands.as_slice() else {
+            panic!("refresh pins");
+        };
+        let mut pin = message(21, 1, "another", false);
+        pin.pinned = true;
+        app.handle_network(NetworkEvent::PinnedMessages {
+            chat_id: 1,
+            request_id: *request_id,
+            page: crate::pins::MessagePage {
+                messages: vec![pin.clone()],
+                total: Some(1),
+                ..Default::default()
+            },
+        });
+        let commands = app.run_binding("open", 1);
+        let [TelegramCommand::LoadPinnedContext { request_id, .. }] = commands.as_slice() else {
+            panic!("pin context");
+        };
+        assert!(
+            app.handle_network(NetworkEvent::PinnedContext {
+                chat_id: 1,
+                message_id: 21,
+                request_id: *request_id,
+                messages: vec![pin]
+            })
+            .is_empty()
+        );
+        assert_eq!(app.selected_message, Some(21));
+        assert!(app.message_scroll > 0);
+        assert_eq!(app.active_draft().unwrap().value(), "unsent");
     }
     #[test]
     fn local_search_ignores_stale_results_and_preserves_drafts_and_query() {

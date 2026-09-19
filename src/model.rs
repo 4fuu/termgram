@@ -101,6 +101,8 @@ impl Attachment {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
+    #[serde(default)]
+    pub pinned: bool,
     pub id: i32,
     pub chat_id: ChatId,
     pub sender: String,

@@ -137,6 +137,22 @@ pub enum TelegramCommand {
     },
     RefreshDialogs,
     RefreshDialogPins,
+    LoadPinnedMessages {
+        chat_id: ChatId,
+        before: i32,
+        request_id: u64,
+    },
+    LoadPinnedContext {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
+    ChangeMessagePin {
+        chat_id: ChatId,
+        message_id: i32,
+        action: crate::pins::MessageAction,
+        request_id: u64,
+    },
     SetArchived {
         chat_id: ChatId,
         archived: bool,
@@ -170,6 +186,29 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::LoadPinnedMessages {
+                chat_id,
+                request_id,
+                ..
+            }
+            | Self::LoadPinnedContext {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::PinnedMessagesFailed {
+                chat_id,
+                request_id,
+                error,
+            },
+            Self::ChangeMessagePin {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::MessagePinFinished {
+                chat_id,
+                request_id,
+                error: Some(error),
+            },
             Self::ChangeDialogPin { request_id, .. } | Self::SetArchived { request_id, .. } => {
                 NetworkEvent::DialogPinFinished {
                     request_id,
@@ -422,6 +461,38 @@ impl fmt::Debug for TelegramCommand {
             Self::RefreshFolders => formatter.write_str("RefreshFolders"),
             Self::RefreshDialogs => formatter.write_str("RefreshDialogs"),
             Self::RefreshDialogPins => formatter.write_str("RefreshDialogPins"),
+            Self::LoadPinnedMessages {
+                chat_id,
+                before,
+                request_id,
+            } => formatter
+                .debug_struct("LoadPinnedMessages")
+                .field("chat_id", chat_id)
+                .field("before", before)
+                .field("request_id", request_id)
+                .finish(),
+            Self::LoadPinnedContext {
+                chat_id,
+                message_id,
+                request_id,
+            } => formatter
+                .debug_struct("LoadPinnedContext")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish(),
+            Self::ChangeMessagePin {
+                chat_id,
+                message_id,
+                action,
+                request_id,
+            } => formatter
+                .debug_struct("ChangeMessagePin")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("action", action)
+                .field("request_id", request_id)
+                .finish(),
             Self::SetArchived {
                 chat_id,
                 archived,
@@ -456,6 +527,39 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    PinnedMessagesLoading {
+        chat_id: ChatId,
+        request_id: u64,
+    },
+    PinnedMessages {
+        chat_id: ChatId,
+        request_id: u64,
+        page: crate::pins::MessagePage,
+    },
+    PinnedMessagesFailed {
+        chat_id: ChatId,
+        request_id: u64,
+        error: String,
+    },
+    PinnedContext {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        messages: Vec<Message>,
+    },
+    MessagePinsChanged {
+        chat_id: ChatId,
+        message_ids: Vec<i32>,
+        pinned: bool,
+    },
+    MessagePinsCleared {
+        chat_id: ChatId,
+    },
+    MessagePinFinished {
+        chat_id: ChatId,
+        request_id: u64,
+        error: Option<String>,
+    },
     DialogPins(crate::pins::DialogPins),
     ArchiveChanged {
         chat_id: ChatId,

@@ -24,7 +24,7 @@ return {
 ```
 
 Contexts are `global`, `chats`, `conversation`, `compose`, `input` (login and chat
-filter), `overlay`, and `search`. A context takes precedence over global bindings. Rebinding
+filter), `overlay`, `pins`, and `search`. A context takes precedence over global bindings. Rebinding
 an existing key replaces that binding. Use `run = "noop"` to remove a binding.
 A chord is a list of individual keys, such as `{ "g", "w" }`; ambiguous prefixes
 are rejected. Chords expire after one second; Escape cancels a pending chord.
@@ -110,6 +110,8 @@ binding can become visible again.
 | `pin`, `pin_up`, `pin_down`, `archive` | Chat list; native folder pins and archive |
 | `reply`, `reply_target`, `open_link`, `next_action`, `previous_action`, `reveal` | Conversation actions |
 | `chat_color`, `folder_color` | Appearance pickers |
+| `pin`, `pins` | Conversation; confirm pin/unpin, browse all pins |
+| `pins_more`, `pins_previous`, `unpin_all` | Pinned-message overlay (`pins` context) |
 | `search` | Open local search |
 | `search_scope`, `search_query`, `search_more`, `search_previous` | Search overlay |
 | `jump ALIAS` | Open the configured stable chat ID; returns to navigation |

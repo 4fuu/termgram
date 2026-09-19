@@ -10,6 +10,48 @@ use grammers_session::types::{PeerId, PeerRef};
 
 use crate::pins::{DialogAction, DialogPins, DialogScope, move_pin};
 
+pub(super) async fn change_message(
+    client: &Client,
+    peer: PeerRef,
+    id: i32,
+    action: crate::pins::MessageAction,
+) -> Result<()> {
+    use crate::pins::MessageAction;
+    match action {
+        MessageAction::Pin { notify, only_self } => {
+            ensure!(id > 0, "Only sent messages can be pinned");
+            client
+                .invoke(&tl::functions::messages::UpdatePinnedMessage {
+                    silent: !notify,
+                    unpin: false,
+                    pm_oneside: only_self,
+                    peer: peer.into(),
+                    id,
+                })
+                .await?;
+        }
+        MessageAction::Unpin => {
+            client.unpin_message(peer, id).await?;
+        }
+        MessageAction::UnpinAll => {
+            // The server can split large unpin operations into several batches.
+            loop {
+                let tl::enums::messages::AffectedHistory::History(result) = client
+                    .invoke(&tl::functions::messages::UnpinAllMessages {
+                        peer: peer.into(),
+                        top_msg_id: None,
+                        saved_peer_id: None,
+                    })
+                    .await?;
+                if result.offset == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn load_dialogs(client: &Client) -> Result<DialogPins> {
     let (main, archive) = tokio::try_join!(get_dialogs(client, 0), get_dialogs(client, 1))?;
     Ok(DialogPins {

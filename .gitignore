@@ -5,3 +5,4 @@
 *.session-*
 *.log
 .DS_Store
+/dev-notes/

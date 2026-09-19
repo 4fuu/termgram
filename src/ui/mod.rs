@@ -71,9 +71,7 @@ fn render_connecting(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Style::default().fg(WARNING),
         )));
     }
-    let height = clamp_u16(lines.len());
-    let body = Paragraph::new(lines).alignment(Alignment::Center);
-    frame.render_widget(body, vertically_centered(area, height));
+    render_centered_notice(frame, area, lines);
 }
 
 fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPhase) {
@@ -82,7 +80,24 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
         return;
     }
     let width = area.width.min(72);
-    let height = 14_u16.min(area.height.saturating_sub(2));
+    let text_width = width.saturating_sub(4);
+    let footer = if matches!(phase, AuthPhase::Phone) {
+        "Tab QR · F2 next account · F3 add account · Ctrl+C quits"
+    } else {
+        "Esc starts over · F2 next account · F3 add account · Ctrl+C quits"
+    };
+    let footer_height = wrapped_height(footer, text_width);
+    let status_height = app
+        .status_message
+        .as_deref()
+        .map_or(2, |message| wrapped_height(message, text_width).max(2));
+    let height = 14_u16
+        .max(
+            8_u16
+                .saturating_add(footer_height)
+                .saturating_add(status_height),
+        )
+        .min(area.height);
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -100,11 +115,12 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
         vertical: 1,
         horizontal: 2,
     });
+    let detail_height = inner.height.saturating_sub(4 + footer_height).clamp(1, 3);
     let chunks = Layout::vertical([
+        Constraint::Length(detail_height),
         Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Min(2),
-        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(footer_height),
     ])
     .split(inner);
 
@@ -148,26 +164,16 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
         !app.auth_is_submitting(),
     );
     if let Some(message) = &app.status_message {
-        frame.render_widget(
-            Paragraph::new(message.as_str()).style(Style::default().fg(DANGER)),
-            chunks[2],
-        );
+        render_notice(frame, chunks[2], message, DANGER);
     } else if let Some(message) = app.auth_progress_label() {
-        frame.render_widget(
-            Paragraph::new(format!("{}  {message}", spinner(app.tick)))
-                .style(Style::default().fg(WARNING)),
+        render_notice(
+            frame,
             chunks[2],
+            &format!("{}  {message}", spinner(app.tick)),
+            WARNING,
         );
     }
-    let footer = if matches!(phase, AuthPhase::Phone) {
-        "Tab QR · F2 next account · F3 add account · Ctrl+C quits"
-    } else {
-        "Esc starts over · F2 next account · F3 add account · Ctrl+C quits"
-    };
-    frame.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(MUTED)),
-        chunks[3],
-    );
+    render_notice(frame, chunks[3], footer, MUTED);
 }
 
 fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) {
@@ -192,13 +198,14 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
         let message = format!(
             "{mode_name} QR needs at least {qr_width} × {required_height} terminal cells. Resize, press Tab for {alternative} mode, or Esc for phone sign-in."
         );
+        let message = app
+            .status_message
+            .as_deref()
+            .map_or_else(|| message.clone(), |error| format!("{error}\n\n{message}"));
         render_qr_unavailable(frame, area, &message);
         return;
     }
 
-    let view_y = area
-        .y
-        .saturating_add(area.height.saturating_sub(required_height) / 2);
     let (guidance, style) = if let Some(message) = &app.status_message {
         (
             format!("{message} · Tab display · F2 next · F3 add · Esc phone"),
@@ -217,18 +224,36 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
             Style::default().fg(WARNING).bold(),
         )
     };
+    let guidance_height = wrapped_height(&guidance, area.width);
+    let required_height = qr_height.saturating_add(guidance_height);
+    if required_height > area.height {
+        render_qr_unavailable(
+            frame,
+            area,
+            &format!(
+                "{guidance}\n\nResize the terminal to show the QR code, or Esc for phone sign-in."
+            ),
+        );
+        return;
+    }
+    let view_y = area.y.saturating_add((area.height - required_height) / 2);
     frame.render_widget(
-        Paragraph::new(guidance)
+        Paragraph::new(notice_lines(&guidance, area.width, guidance_height))
             .alignment(Alignment::Center)
             .style(style),
-        Rect::new(area.x, view_y, area.width, 1),
+        Rect::new(area.x, view_y, area.width, guidance_height),
     );
     let qr_x = area
         .x
         .saturating_add(area.width.saturating_sub(qr_width) / 2);
     render_qr_code(
         frame,
-        Rect::new(qr_x, view_y.saturating_add(1), qr_width, qr_height),
+        Rect::new(
+            qr_x,
+            view_y.saturating_add(guidance_height),
+            qr_width,
+            qr_height,
+        ),
         &code,
         QR_QUIET_ZONE,
         mode,
@@ -236,9 +261,11 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
 }
 
 fn render_qr_unavailable(frame: &mut Frame<'_>, area: Rect, message: &str) {
-    let popup = centered(area, area.width.min(72), area.height.min(10));
-    frame.render_widget(
-        Paragraph::new(vec![
+    let popup = centered(area, area.width.min(72), area.height);
+    render_centered_notice(
+        frame,
+        popup,
+        vec![
             Line::from(Span::styled(
                 "Termgram · QR sign in",
                 Style::default().fg(ACCENT).bold(),
@@ -247,10 +274,7 @@ fn render_qr_unavailable(frame: &mut Frame<'_>, area: Rect, message: &str) {
             Line::from(message),
             Line::from(""),
             Line::from(Span::styled("Ctrl+C quits", Style::default().fg(MUTED))),
-        ])
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true }),
-        popup,
+        ],
     );
 }
 
@@ -349,11 +373,16 @@ const fn qr_pair_symbol(top: QrColor, bottom: QrColor) -> &'static str {
 fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let narrow = area.width < 96;
     let show_conversation_only = narrow && app.narrow_conversation && app.active_chat_id.is_some();
+    let composer_height = composer_height(app, area.width);
+    let footer_height = app.status_message.as_deref().map_or(1, |message| {
+        wrapped_height(message, area.width)
+            .min(area.height.saturating_sub(composer_height + 6).max(1))
+    });
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(5),
-        Constraint::Length(composer_height(app, area.width)),
-        Constraint::Length(1),
+        Constraint::Length(composer_height),
+        Constraint::Length(footer_height),
     ])
     .split(area);
 
@@ -744,12 +773,11 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &AppState, enabled: b
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState, narrow: bool) {
-    let content = if let Some(message) = &app.status_message {
-        Line::from(Span::styled(
-            format!(" {message}"),
-            Style::default().fg(WARNING),
-        ))
-    } else if let Some(version) = app.available_update() {
+    if let Some(message) = &app.status_message {
+        render_notice(frame, area, message, WARNING);
+        return;
+    }
+    let content = if let Some(version) = app.available_update() {
         Line::from(Span::styled(
             format!(" Update {version} available · run tg update"),
             Style::default().fg(SUCCESS),
@@ -986,8 +1014,10 @@ fn account_row(label: &str, selected: bool) -> Line<'static> {
 }
 
 fn render_fatal(frame: &mut Frame<'_>, area: Rect, app: &AppState, message: &str) {
-    frame.render_widget(
-        Paragraph::new(vec![
+    render_centered_notice(
+        frame,
+        area,
+        vec![
             Line::from(Span::styled(
                 "Termgram stopped",
                 Style::default().fg(DANGER).bold(),
@@ -1002,10 +1032,60 @@ fn render_fatal(frame: &mut Frame<'_>, area: Rect, app: &AppState, message: &str
                 ),
                 Style::default().fg(MUTED),
             )),
-        ])
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true }),
-        vertically_centered(area, 7),
+        ],
+    );
+}
+
+fn wrapped_height(message: &str, width: u16) -> u16 {
+    clamp_u16(wrap_cells(message, usize::from(width.max(1))).len())
+}
+
+// Use the same cell-aware wrapping for measurement and rendering. A bounded
+// viewport must indicate overflow instead of silently dropping error details.
+fn notice_lines(message: &str, width: u16, height: u16) -> Vec<Line<'static>> {
+    let mut lines = wrap_cells(message, usize::from(width.max(1)));
+    if lines.len() > usize::from(height) {
+        lines.truncate(usize::from(height));
+        if let Some(last) = lines.last_mut() {
+            *last = truncate_cells("… Resize terminal for more", usize::from(width));
+        }
+    }
+    lines.into_iter().map(Line::from).collect()
+}
+
+fn render_notice(frame: &mut Frame<'_>, area: Rect, message: &str, color: Color) {
+    frame.render_widget(
+        Paragraph::new(notice_lines(message, area.width, area.height))
+            .style(Style::default().fg(color)),
+        area,
+    );
+}
+
+fn render_centered_notice(frame: &mut Frame<'_>, area: Rect, lines: Vec<Line<'_>>) {
+    let mut wrapped = Vec::new();
+    for line in lines {
+        let style = line.spans.first().map_or(line.style, |span| span.style);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        wrapped.extend(
+            notice_lines(&text, area.width, u16::MAX)
+                .into_iter()
+                .map(|line| line.style(style)),
+        );
+    }
+    if wrapped.len() > usize::from(area.height) {
+        wrapped.truncate(usize::from(area.height));
+        if let Some(last) = wrapped.last_mut() {
+            *last = Line::from("… Resize terminal for more");
+        }
+    }
+    let height = clamp_u16(wrapped.len());
+    frame.render_widget(
+        Paragraph::new(wrapped).alignment(Alignment::Center),
+        vertically_centered(area, height),
     );
 }
 
@@ -1574,6 +1654,85 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect()
+    }
+
+    #[test]
+    fn login_errors_wrap_and_grow_for_all_phone_auth_phases() {
+        let error = "Could not request a login code: request error: rpc error 500: AUTH_RESTART";
+        for prompt in [
+            AuthPrompt::Phone,
+            AuthPrompt::Code {
+                phone: "+123456789".to_owned(),
+            },
+            AuthPrompt::Password { hint: None },
+        ] {
+            let mut app = AppState::with_ephemeral_settings(Settings::default());
+            app.handle_network(crate::event::NetworkEvent::Auth(prompt));
+            app.status_message = Some(error.to_owned());
+            for (width, height) in [(40, 16), (72, 20), (160, 50)] {
+                let output = render_text(&app, width, height);
+                assert!(
+                    output.contains("AUTH_RESTART"),
+                    "{width}x{height}: {output}"
+                );
+                assert!(output.contains("Ctrl+C quits"));
+                assert!(output.contains("Enter to continue"));
+            }
+            app.status_message = Some(format!("{} END_OF_ERROR", "连接失败 retry ".repeat(30)));
+            let output = render_text(&app, 72, 40);
+            assert!(output.contains("END_OF_ERROR"));
+            assert!(output.contains("Ctrl+C quits"));
+            let small = render_text(&app, 40, 10);
+            assert!(small.contains("Resize terminal for more"));
+            assert!(small.contains("Ctrl+C quits"));
+        }
+    }
+
+    #[test]
+    fn connection_and_chat_errors_show_the_end_of_long_messages() {
+        let error = format!("{} END_OF_ERROR", "连接失败 request failed ".repeat(6));
+        for screen in [Screen::Connecting, Screen::Main] {
+            let mut app = populated_app();
+            app.screen = screen;
+            app.status_message = Some(error.clone());
+            for width in [40, 80, 120] {
+                let output = render_text(&app, width, 24);
+                assert!(output.contains("END_OF_ERROR"), "{width}: {output}");
+            }
+            app.status_message = Some("failed ".repeat(200));
+            assert!(render_text(&app, 40, 10).contains("Resize terminal for more"));
+        }
+    }
+
+    #[test]
+    fn fatal_errors_use_available_height_instead_of_seven_rows() {
+        let mut app = populated_app();
+        app.screen = Screen::Fatal(format!("{} END_OF_ERROR", "request failed ".repeat(30)));
+        let output = render_text(&app, 40, 24);
+        assert!(output.contains("END_OF_ERROR"));
+        assert!(output.contains("q/Ctrl+C"));
+        assert!(output.contains("quit"));
+        assert!(render_text(&app, 40, 10).contains("Resize terminal for more"));
+    }
+
+    #[test]
+    fn qr_errors_wrap_without_clipping_the_code_or_disappearing_on_small_screens() {
+        let mut app = AppState::with_ephemeral_settings(Settings::default());
+        let url = "tg://login?token=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        app.handle_network(crate::event::NetworkEvent::Auth(AuthPrompt::Qr {
+            url: url.to_owned(),
+        }));
+        app.status_message = Some(format!("{} END_OF_ERROR", "QR login failed ".repeat(8)));
+        let output = render_text(&app, 80, 30);
+        assert!(output.contains("END_OF_ERROR"));
+        assert!(output.contains('▀'));
+        assert!(!output.contains(url));
+        let short = render_text(&app, 80, 20);
+        assert!(short.contains("END_OF_ERROR"));
+        assert!(!short.contains('▀'));
+        let narrow = render_text(&app, 40, 20);
+        assert!(narrow.contains("END_OF_ERROR"));
+        assert!(!narrow.contains(url));
     }
 
     #[test]

@@ -15,11 +15,11 @@ pub mod terminal;
 pub mod ui;
 pub mod update;
 
-/// Version embedded into distributable binaries by CI. Source builds fall
-/// back to the package's base development version.
+/// CI can override the version. Git source installs use the same commit-height
+/// versioning; archives without Git metadata use the package development version.
 pub const VERSION: &str = match option_env!("TERMGRAM_BUILD_VERSION") {
     Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
+    None => env!("TERMGRAM_SOURCE_VERSION"),
 };
 
 /// Human-readable build identity, separate from the updater's semantic version.

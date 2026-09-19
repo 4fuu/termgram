@@ -31,7 +31,11 @@ No TDD requirement or new general test framework is imposed. Do not duplicate
 upstream parser/database tests. Formatting and linting apply to the root
 workspace, preserving vendored upstream source conventions.
 
-CI runs the same checks plus six native release builds. See [Updates](Updates.md)
+CI runs the same checks and installs each release with `cargo install --git`
+from the checked-out Git revision on six native hosts. It exercises package
+selection, repository-local patches, the lockfile, installation tracking and
+the installed binary's version before packaging that executable. Build artifacts
+are reused through Cargo's target directory. See [Updates](Updates.md)
 for versioning and publication. Automated fixtures do not establish real Telegram
 latency parity or verify a desktop file manager's selection behavior. For those,
 use an authorized test account and the target operating system; do not send

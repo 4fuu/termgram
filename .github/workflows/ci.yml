@@ -203,7 +203,7 @@ jobs:
           set -euo pipefail
           [[ "$TELEGRAM_API_ID" =~ ^[0-9]+$ ]]
           [[ "$TELEGRAM_API_HASH" =~ ^[0-9a-fA-F]{32}$ ]]
-      - name: Build and package every pushed commit
+      - name: Install from Git and package every pushed commit
         shell: bash
         env:
           VERGEN_GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
@@ -212,6 +212,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          source_url="$(python3 -c 'from pathlib import Path; print(Path.cwd().as_uri())')"
+          install_root="$(pwd)/dist/cargo-install"
           while IFS=$'\t' read -r sha version; do
             sha="${sha%$'\r'}"
             version="${version%$'\r'}"
@@ -220,8 +222,12 @@ jobs:
             rustup target add "${{ matrix.target }}"
             export TERMGRAM_BUILD_VERSION="$version"
             cargo test --locked --all-targets --all-features
-            cargo build --locked --release --target "${{ matrix.target }}"
-            binary="target/${{ matrix.target }}/release/tg"
+            # Exercise Cargo's Git checkout, path patches, install tracking and
+            # release profile. Package the installed binary on all six hosts.
+            cargo install --locked --git "$source_url" --rev "$sha" \
+              --bin tg --target "${{ matrix.target }}" --target-dir target \
+              --root "$install_root" --force termgram
+            binary="$install_root/bin/tg"
             if [[ "$RUNNER_OS" == Windows ]]; then
               binary+=".exe"
             fi
@@ -242,12 +248,12 @@ jobs:
 
             if [[ "$RUNNER_OS" == Windows ]]; then
               (
-                cd "target/${{ matrix.target }}/release"
+                cd "$install_root/bin"
                 7z a -tzip \
-                  "../../../dist/termgram-$version-${{ matrix.platform }}.zip" tg.exe
+                  "../../termgram-$version-${{ matrix.platform }}.zip" tg.exe
               )
             else
-              tar -C "target/${{ matrix.target }}/release" -czf \
+              tar -C "$install_root/bin" -czf \
                 "dist/termgram-$version-${{ matrix.platform }}.tar.gz" tg
             fi
           done < <(jq -r '.[] | [.sha, .version] | @tsv' <<<"$RELEASE_PLAN")

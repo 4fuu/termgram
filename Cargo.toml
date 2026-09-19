@@ -23,7 +23,7 @@ grammers-client = { version = "=0.10.0", default-features = false, features = ["
 grammers-session = { version = "=0.10.0", default-features = false, features = ["sqlite-storage"] }
 image = { version = "=0.25.10", default-features = false }
 moxcms = "=0.9.1"
-mlua = { version = "=0.12.1", features = ["lua55", "serde", "error-send"] }
+mlua = { version = "=0.12.1", features = ["lua55", "vendored", "serde", "error-send"] }
 libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

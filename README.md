@@ -30,8 +30,15 @@ $installer = Invoke-RestMethod 'https://github.com/iebb/termgram/releases/latest
 & ([scriptblock]::Create([string]$installer))
 ```
 
+From source on any supported platform, with Rust 1.98.0 and native build tools:
+
+```sh
+cargo +1.98.0 install --locked --git https://github.com/iebb/termgram --bin tg termgram
+```
+
 Run `tg`, sign in with your phone or press Tab for QR login. Open a chat with
-Enter, press `i` to compose, and `?` for help. Use `tg update` to update.
+Enter, press `i` to compose, and `?` for help. Repeat the Cargo command to update
+a source install; use `tg update` for release binaries.
 
 Releases support Linux x86_64/ARM64, macOS Intel/Apple silicon, and Windows
 x64/ARM64. See [installation and source builds](docs/wiki/en/Getting-Started.md)

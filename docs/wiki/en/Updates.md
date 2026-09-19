@@ -19,6 +19,21 @@ number. A `*` marks a source tree with non-ignored changes. Piped version output
 is plain text; `NO_COLOR=1` or `TERM=dumb` also disables its styling. Source
 archives without Git metadata show `unknown` for unavailable fields.
 
+## Cargo source installs
+
+Repeat the [Cargo installation command](Getting-Started.md) to rebuild from the
+latest source, keeping the same `--branch`, `--rev` or `--root` options when used.
+A fixed `--rev` stays on that commit until you change it. Cargo tracks the Git
+source even though the manifest's base package version remains `0.1.0`.
+
+Git source builds display `0.1.Z` using their first-parent commit height. Check
+the displayed commit to identify the source; Cargo's detached Git checkout can
+show `HEAD` as its branch. Archives without Git metadata fall back to the manifest
+version; CI can set an explicit version.
+
+`tg update` downloads a prebuilt GitHub release; it does not run Cargo or follow
+your source branch. Use the Cargo command to continue following source changes.
+
 ## Maintainer release workflow
 
 CI checks formatting, strict Clippy, tests, installers, and six native packages:

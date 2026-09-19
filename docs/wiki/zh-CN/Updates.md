@@ -22,7 +22,7 @@
 需要主动改为其他提交才能更新。即使 manifest 的包版本仍是 `0.1.0`，Cargo 也会记录 Git 来源。
 
 Git 源码构建按 first-parent 提交高度显示 `0.1.Z`，通过显示的提交号确认源码；Cargo 的
-detached Git checkout 可能把分支显示为 `HEAD`。没有 Git 元数据的源码包回退到 manifest
+checkout 可能显示本地的 `master` 或 `HEAD`，不一定是指定的源码分支。没有 Git 元数据的源码包回退到 manifest
 版本，CI 可以指定版本覆盖值。
 
 `tg update` 下载 GitHub 上预编译的发行版，不会执行 Cargo 或跟随源码分支。

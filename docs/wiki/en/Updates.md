@@ -27,8 +27,9 @@ A fixed `--rev` stays on that commit until you change it. Cargo tracks the Git
 source even though the manifest's base package version remains `0.1.0`.
 
 Git source builds display `0.1.Z` using their first-parent commit height. Check
-the displayed commit to identify the source; Cargo's detached Git checkout can
-show `HEAD` as its branch. Archives without Git metadata fall back to the manifest
+the displayed commit to identify the source; Cargo's checkout can show a local
+branch such as `master` or `HEAD` instead of the requested source branch. Archives
+without Git metadata fall back to the manifest
 version; CI can set an explicit version.
 
 `tg update` downloads a prebuilt GitHub release; it does not run Cargo or follow

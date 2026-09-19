@@ -1117,7 +1117,8 @@ impl App {
                 } else {
                     self.messages.clear();
                 }
-                let mut commands = self.request_dialog_refresh();
+                let mut commands = self.invalidate_message_pins(chat_id);
+                commands.extend(self.request_dialog_refresh());
                 if let Some(active) = self.active_chat_id
                     && chat_id.is_none_or(|id| id == active)
                 {
@@ -6434,6 +6435,84 @@ mod tests {
         assert!(app.message_scroll > 0);
         assert_eq!(app.active_draft().unwrap().value(), "unsent");
     }
+    #[test]
+    fn pin_cache_invalidation_reloads_open_lists_and_rejects_old_context() {
+        for scope in [Some(1), None] {
+            let mut app = ready_app();
+            app.active_chat_id = Some(1);
+            app.focus = Focus::Conversation;
+            app.drafts.insert(1, TextInput::from_value("unsent"));
+            let mut pin = message(20, 1, "obsolete", false);
+            pin.pinned = true;
+            let commands = app.run_binding("pins", 1);
+            let [TelegramCommand::LoadPinnedMessages { request_id, .. }] = commands.as_slice()
+            else {
+                panic!("pin list");
+            };
+            let old_page = crate::pins::MessagePage {
+                messages: vec![pin.clone()],
+                total: Some(1),
+                ..Default::default()
+            };
+            app.handle_network(NetworkEvent::PinnedMessages {
+                chat_id: 1,
+                request_id: *request_id,
+                page: old_page.clone(),
+            });
+            app.handle_network(NetworkEvent::CacheInvalidated { chat_id: Some(2) });
+            assert_eq!(app.message_pins.page.messages[0].id, 20);
+            let commands = app.run_binding("open", 1);
+            let [
+                TelegramCommand::LoadPinnedContext {
+                    request_id: old_request,
+                    ..
+                },
+            ] = commands.as_slice()
+            else {
+                panic!("pin context");
+            };
+            let commands = app.handle_network(NetworkEvent::CacheInvalidated { chat_id: scope });
+            let request_id = commands
+                .iter()
+                .find_map(|command| match command {
+                    TelegramCommand::LoadPinnedMessages {
+                        request_id,
+                        before: 0,
+                        ..
+                    } => Some(*request_id),
+                    _ => None,
+                })
+                .expect("reload the open pin list");
+            assert_ne!(request_id, *old_request);
+            assert!(app.message_pins.page.messages.is_empty());
+            assert!(app.pinned_summary().is_none());
+            app.handle_network(NetworkEvent::PinnedContext {
+                chat_id: 1,
+                message_id: 20,
+                request_id: *old_request,
+                messages: vec![pin],
+            });
+            app.handle_network(NetworkEvent::PinnedMessages {
+                chat_id: 1,
+                request_id: *old_request,
+                page: old_page,
+            });
+            assert_eq!(app.mode, Mode::PinnedMessages);
+            assert!(app.active_messages().is_empty());
+            assert!(app.message_pins.page.messages.is_empty());
+            app.handle_network(NetworkEvent::PinnedMessages {
+                chat_id: 1,
+                request_id,
+                page: crate::pins::MessagePage {
+                    total: Some(0),
+                    ..Default::default()
+                },
+            });
+            assert!(!app.message_pins.loading);
+            assert_eq!(app.active_draft().unwrap().value(), "unsent");
+        }
+    }
+
     #[test]
     fn local_search_ignores_stale_results_and_preserves_drafts_and_query() {
         let mut app = ready_app();

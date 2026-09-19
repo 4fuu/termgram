@@ -578,6 +578,10 @@ async fn process_update(
                         .await?;
                 }
                 tl::enums::Update::PtsChanged => {
+                    cache.dialogs.dirty = true;
+                    cache.folders.dirty = true;
+                    cache.dialog_pins.dirty = true;
+                    cache.message_pins.dirty = true;
                     events
                         .send(NetworkEvent::CacheInvalidated { chat_id: None })
                         .await?;
@@ -585,6 +589,8 @@ async fn process_update(
                 tl::enums::Update::ChannelTooLong(update) => {
                     let chat_id =
                         PeerId::channel_unchecked(update.channel_id).bot_api_dialog_id_unchecked();
+                    cache.dialogs.dirty = true;
+                    cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
                     events
                         .send(NetworkEvent::CacheInvalidated {
                             chat_id: Some(chat_id),

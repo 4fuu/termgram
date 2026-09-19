@@ -649,6 +649,8 @@ impl Store {
                         .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                     self.history_revisions
                         .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
+                    self.pin_revisions
+                        .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                     if let Some(chat_id) = chat_id {
                         transaction
                             .execute("DELETE FROM history_pages WHERE chat_id=?1", [*chat_id])
@@ -1152,6 +1154,78 @@ mod tests {
         );
         assert_eq!(store.history(42, None, 20).await.unwrap().len(), 1);
     }
+    #[tokio::test]
+    async fn invalidated_pin_reads_cannot_repopulate_the_cache() {
+        for scope in [Some(42), None] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut store = Store::open(&directory.path().join("pins.sqlite3"))
+                .await
+                .unwrap();
+            let mut pin = message(4, "obsolete pin");
+            pin.pinned = true;
+            let mut other = pin.clone();
+            other.chat_id = 99;
+            store
+                .apply(&[
+                    NetworkEvent::CacheMessage(pin.clone()),
+                    NetworkEvent::CacheMessage(other),
+                    NetworkEvent::PinnedMessagesLoading {
+                        chat_id: 42,
+                        request_id: 1,
+                    },
+                    NetworkEvent::PinnedMessagesLoading {
+                        chat_id: 42,
+                        request_id: 2,
+                    },
+                    NetworkEvent::CacheInvalidated { chat_id: scope },
+                    NetworkEvent::PinnedMessages {
+                        chat_id: 42,
+                        request_id: 1,
+                        page: crate::pins::MessagePage {
+                            messages: vec![pin.clone()],
+                            total: Some(1),
+                            ..Default::default()
+                        },
+                    },
+                    NetworkEvent::PinnedContext {
+                        chat_id: 42,
+                        message_id: 4,
+                        request_id: 2,
+                        messages: vec![pin.clone()],
+                    },
+                ])
+                .await
+                .unwrap();
+            assert!(store.history(42, None, 20).await.unwrap().is_empty());
+            assert_eq!(
+                store.history(99, None, 20).await.unwrap().is_empty(),
+                scope.is_none()
+            );
+            pin.id = 6;
+            store
+                .apply(&[
+                    NetworkEvent::PinnedMessagesLoading {
+                        chat_id: 42,
+                        request_id: 3,
+                    },
+                    NetworkEvent::PinnedMessages {
+                        chat_id: 42,
+                        request_id: 3,
+                        page: crate::pins::MessagePage {
+                            messages: vec![pin],
+                            total: Some(1),
+                            ..Default::default()
+                        },
+                    },
+                ])
+                .await
+                .unwrap();
+            let pins = store.pinned_messages(42, 0).await.unwrap();
+            assert_eq!(pins.messages.len(), 1);
+            assert_eq!(pins.messages[0].id, 6);
+        }
+    }
+
     #[tokio::test]
     async fn cached_dialogs_count_new_messages_once_and_clear_deleted_previews() {
         let directory = tempfile::tempdir().unwrap();

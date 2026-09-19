@@ -37,6 +37,9 @@ pin/unpin and deletion updates refresh the banner/list. Pins and message preview
 are fetched in bounded background requests, so history loading and live updates
 continue while the list synchronizes.
 
+If Telegram requires a fresh synchronization, the open pin list reloads and
+outdated message confirmations close. Drafts are kept.
+
 Cached pins can be browsed before connecting. The list labels cached coverage;
 it may be incomplete because message retention is bounded. Server pages replace
 that view once connected. Mutating pins requires a connection.

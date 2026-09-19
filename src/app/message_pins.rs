@@ -34,6 +34,43 @@ pub struct Prompt {
 }
 
 impl App {
+    pub(super) fn invalidate_message_pins(
+        &mut self,
+        chat_id: Option<ChatId>,
+    ) -> Vec<TelegramCommand> {
+        let affected = |id: ChatId| chat_id.is_none_or(|chat| chat == id);
+        let state = &mut self.message_pins;
+        if state.head.as_ref().is_some_and(|(id, _)| affected(*id)) {
+            state.head = None;
+        }
+        if let Some(prompt) = &state.prompt
+            && affected(prompt.chat_id)
+        {
+            if self.mode == Mode::PinPrompt {
+                self.mode = prompt.previous_mode;
+            }
+            state.prompt = None;
+        }
+        if !state.chat.is_some_and(affected) {
+            return Vec::new();
+        }
+        // In-flight mutations still complete, but old reads must not restore
+        // invalidated messages. Keep next_request monotonic across the reset.
+        state.request_id = 0;
+        state.page = MessagePage::default();
+        state.starts = vec![0];
+        state.selected = 0;
+        state.opening = None;
+        state.loading = false;
+        state.dirty = false;
+        state.error = None;
+        if self.mode == Mode::PinnedMessages {
+            self.load_pin_page(0)
+        } else {
+            Vec::new()
+        }
+    }
+
     pub(super) fn update_pin_preview(&mut self, message: &Message) {
         let state = &mut self.message_pins;
         if let Some((chat_id, page)) = &mut state.head

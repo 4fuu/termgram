@@ -244,6 +244,9 @@ pub struct App {
     next_pending_id: i32,
     next_history_request_id: u64,
     active_history_request: Option<(ChatId, u64)>,
+    history_changes: BTreeMap<i32, Option<Message>>,
+    history_read_max: i32,
+    changed_dialogs: BTreeSet<ChatId>,
     active_reply_request: Option<ReplyRequest>,
     history_target_message: Option<i32>,
     read_ack_pending: BTreeSet<ChatId>,
@@ -318,6 +321,9 @@ impl Default for App {
             next_pending_id: -1,
             next_history_request_id: 1,
             active_history_request: None,
+            history_changes: BTreeMap::new(),
+            history_read_max: 0,
+            changed_dialogs: BTreeSet::new(),
             active_reply_request: None,
             history_target_message: None,
             read_ack_pending: BTreeSet::new(),
@@ -599,6 +605,7 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        self.track_snapshot_changes(&event);
         match event {
             NetworkEvent::Auth(prompt) => {
                 if self.auth_restart_pending && !matches!(&prompt, AuthPrompt::Phone) {
@@ -629,6 +636,11 @@ impl App {
                 self.screen = Screen::Main;
                 self.connection = ConnectionStatus::Online;
                 self.status_message = None;
+                Vec::new()
+            }
+            NetworkEvent::DialogsLoading => {
+                self.refresh_dialogs_pending = true;
+                self.changed_dialogs.clear();
                 Vec::new()
             }
             NetworkEvent::Dialogs(chats) => {
@@ -2369,6 +2381,8 @@ impl App {
         let request_id = self.next_history_request_id;
         self.next_history_request_id = self.next_history_request_id.wrapping_add(1).max(1);
         self.active_history_request = Some((chat_id, request_id));
+        self.history_changes.clear();
+        self.history_read_max = 0;
         self.history_target_message = selected_message;
         if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
             chat.unread = 0;
@@ -2398,6 +2412,8 @@ impl App {
         let request_id = self.next_history_request_id;
         self.next_history_request_id = self.next_history_request_id.wrapping_add(1).max(1);
         self.active_history_request = Some((chat_id, request_id));
+        self.history_changes.clear();
+        self.history_read_max = 0;
         self.history_target_message = None;
         if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
             chat.unread = 0;
@@ -2500,6 +2516,44 @@ impl App {
         self.selected_chat = self.selected_chat.min(length.saturating_sub(1));
     }
 
+    /// Overlay events received after a snapshot request. A slower history RPC
+    /// must not resurrect deleted messages or undo a live edit/read receipt.
+    fn track_snapshot_changes(&mut self, event: &NetworkEvent) {
+        let history_chat = self.active_history_request.map(|(chat_id, _)| chat_id);
+        match event {
+            NetworkEvent::NewMessage(message)
+            | NetworkEvent::MessageUpdated(message)
+            | NetworkEvent::MessageSent { message, .. } => {
+                if history_chat == Some(message.chat_id) {
+                    self.history_changes
+                        .insert(message.id, Some(message.clone()));
+                }
+                if self.refresh_dialogs_pending {
+                    self.changed_dialogs.insert(message.chat_id);
+                }
+            }
+            NetworkEvent::MessagesDeleted {
+                channel_id,
+                message_ids,
+            } => {
+                if let Some(chat_id) = history_chat
+                    && channel_id.map_or(chat_id > -1_000_000_000_000, |id| id == chat_id)
+                {
+                    for id in message_ids {
+                        self.history_changes.insert(*id, None);
+                    }
+                }
+            }
+            NetworkEvent::MessagesRead { chat_id, max_id } if history_chat == Some(*chat_id) => {
+                self.history_read_max = self.history_read_max.max(*max_id);
+            }
+            NetworkEvent::ReadMarked { chat_id } if self.refresh_dialogs_pending => {
+                self.changed_dialogs.insert(*chat_id);
+            }
+            _ => {}
+        }
+    }
+
     fn replace_dialogs(&mut self, mut chats: Vec<Chat>) {
         let selected_id = self.selected_chat_entry().map(|chat| chat.id);
         let transient_linked = self
@@ -2512,6 +2566,36 @@ impl App {
             .cloned()
             .collect::<Vec<_>>();
         chats.extend(transient_linked);
+        for chat in &mut chats {
+            if self.changed_dialogs.contains(&chat.id) {
+                if let Some(current) = self.chats.iter().find(|current| current.id == chat.id) {
+                    chat.last_message.clone_from(&current.last_message);
+                    chat.last_activity = current.last_activity;
+                    chat.unread = current.unread;
+                } else if let Some(message) = self
+                    .messages
+                    .get(&chat.id)
+                    .and_then(|messages| messages.last())
+                    && chat
+                        .last_activity
+                        .is_none_or(|timestamp| message.timestamp >= timestamp)
+                {
+                    chat.last_message.clone_from(&message.text);
+                    chat.last_activity = Some(message.timestamp);
+                }
+            }
+        }
+        for current in &self.chats {
+            if self.changed_dialogs.contains(&current.id)
+                && !chats.iter().any(|chat| chat.id == current.id)
+            {
+                chats.push(current.clone());
+            }
+        }
+        if !self.changed_dialogs.is_empty() {
+            chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_activity));
+        }
+        self.changed_dialogs.clear();
         self.linked_chat_ids
             .retain(|chat_id| chats.iter().any(|chat| chat.id == *chat_id));
         for chat in &mut chats {
@@ -2673,12 +2757,21 @@ impl App {
         }
         match result {
             Ok(messages) => {
+                let mut messages = messages;
+                messages.retain(|message| !self.history_changes.contains_key(&message.id));
+                messages.extend(self.history_changes.values().flatten().cloned());
+                for message in &mut messages {
+                    if message.outgoing && message.id > 0 && message.id <= self.history_read_max {
+                        message.delivery = Delivery::Read;
+                    }
+                }
                 self.merge_history(chat_id, messages, self.history_target_message);
                 self.status_message = None;
             }
             Err(error) => self.status_message = Some(sanitize_terminal_line(&error)),
         }
         self.active_history_request = None;
+        self.history_changes.clear();
         self.history_target_message = None;
         self.loading_history = false;
         Vec::new()
@@ -4024,6 +4117,68 @@ mod tests {
             messages: vec![message(1, 1, "server", false)],
         });
         assert!(app.active_messages().iter().any(|message| message.id == -1));
+    }
+
+    #[test]
+    fn history_snapshot_cannot_undo_live_messages_edits_deletions_or_reads() {
+        let mut app = ready_app();
+        app.handle_action(KeyAction::Enter);
+        app.handle_network(NetworkEvent::MessageUpdated(message(1, 1, "edited", false)));
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![2],
+        });
+        app.handle_network(NetworkEvent::NewMessage(message(
+            4,
+            1,
+            "arrived during request",
+            false,
+        )));
+        app.handle_network(NetworkEvent::MessagesRead {
+            chat_id: 1,
+            max_id: 3,
+        });
+        app.handle_network(NetworkEvent::History {
+            chat_id: 1,
+            request_id: 1,
+            messages: vec![
+                message(1, 1, "old", false),
+                message(2, 1, "deleted", false),
+                message(3, 1, "sent", true),
+            ],
+        });
+        let messages = app.active_messages();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 4]
+        );
+        assert_eq!(messages[0].text, "edited");
+        assert_eq!(messages[1].delivery, Delivery::Read);
+        assert_eq!(messages[2].text, "arrived during request");
+    }
+
+    #[test]
+    fn dialog_snapshot_cannot_undo_activity_or_reads_during_refresh() {
+        let mut app = ready_app();
+        app.handle_network(NetworkEvent::DialogsLoading);
+        app.handle_network(NetworkEvent::NewMessage(message(
+            25,
+            2,
+            "live preview",
+            false,
+        )));
+        let unread = app.chats.iter().find(|chat| chat.id == 2).unwrap().unread;
+        app.handle_network(NetworkEvent::Dialogs(vec![
+            chat(1, "Renamed"),
+            chat(2, "Beta"),
+        ]));
+        assert_eq!(app.chats[0].id, 2);
+        assert_eq!(app.chats[0].last_message, "live preview");
+        assert_eq!(app.chats[0].unread, unread);
+        assert_eq!(app.chats[1].title, "Renamed");
     }
 
     #[test]

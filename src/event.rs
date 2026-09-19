@@ -258,6 +258,7 @@ pub enum NetworkEvent {
     Ready {
         user_name: String,
     },
+    DialogsLoading,
     Dialogs(Vec<Chat>),
     History {
         chat_id: ChatId,

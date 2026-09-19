@@ -45,3 +45,11 @@ WAL is not necessary for multi-process operation, and the bundled libSQL SQLite
 engine predates upstream's WAL-reset fix. Reapply and review these changes when
 upgrading the session crate. `tests/session_concurrency.rs` validates independent
 processes opening and writing one session, including initial schema creation.
+
+`src/message_box/mod.rs` also follows Telegram's documented startup recovery:
+only common/secondary differences start immediately; channel differences are
+requested when Telegram reports a gap, including `updateChannelTooLong`.
+That notification preserves an existing local channel PTS instead of replacing
+it with the remote PTS before recovery. The upstream connection-flow assertion
+is adjusted; `tests/update_recovery.rs` checks both integration boundaries.
+See https://core.telegram.org/api/updates#recovering-gaps.

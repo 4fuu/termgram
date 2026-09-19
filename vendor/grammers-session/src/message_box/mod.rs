@@ -141,7 +141,14 @@ impl MessageBoxes {
         }));
         entries.sort_by_key(|entry| entry.key);
 
-        getting_diff_for.extend(entries.iter().map(|entry| entry.key));
+        // Telegram requests only the common difference on startup. It returns
+        // ChannelTooLong for channels that actually need recovery; walking every
+        // stored channel first can delay live updates by hundreds of RPCs.
+        // https://core.telegram.org/api/updates#recovering-gaps
+        getting_diff_for.extend(entries.iter().filter_map(|entry| match entry.key {
+            Key::Common | Key::Secondary => Some(entry.key),
+            Key::Channel(_) => None,
+        }));
 
         Self {
             entries,
@@ -467,12 +474,9 @@ impl MessageBoxes {
                 // Can skip this one early since no processing can be done for the entry.
                 let key = Key::Channel(u.channel_id);
                 if let Some(pts) = u.pts {
-                    self.set_entry(LiveEntry {
-                        key,
-                        pts,
-                        deadline,
-                        possible_gap: None,
-                    });
+                    // The notification describes the remote state. Advancing a
+                    // known local cursor here would skip the missing messages.
+                    self.try_set_channel_state(u.channel_id, pts);
                 }
                 self.try_begin_get_diff(key);
                 continue;

@@ -187,10 +187,7 @@ fn test_connect_flow_with_data() {
         message_boxes.get_difference(),
         Some(get_difference(56, 12, 34))
     );
-    assert_eq!(
-        message_boxes.get_channel_difference(),
-        Some(get_channel_difference(43, 21))
-    );
+    assert_eq!(message_boxes.get_channel_difference(), None);
     assert_eq!(message_boxes.session_state(), state)
 }
 

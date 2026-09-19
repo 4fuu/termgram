@@ -3,27 +3,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use grammers_client::client::{LoginToken, PasswordToken, UpdatesConfiguration};
-use grammers_client::media::Media;
+use grammers_client::media::{Media, PhotoSize};
 use grammers_client::message::{InputMessage, Message as TelegramMessage};
 use grammers_client::peer::{Peer, User};
 use grammers_client::sender::SenderPoolHandle;
 use grammers_client::tl::{self, enums::Dialog as RawDialog};
 use grammers_client::update::Update;
 use grammers_client::{Client, InvocationError, SenderPool, SignInError};
+use grammers_session::Session;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerInfo, PeerKind, PeerRef, UpdateState, UpdatesState};
 use grammers_session::updates::UpdatesLike;
-use grammers_session::Session;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::event::{AuthPrompt, ConnectionStatus, NetworkEvent, TelegramCommand};
 use crate::model::{
-    sanitize_terminal_line, sanitize_terminal_text, Attachment, AttachmentKind, Chat, ChatId,
-    ChatKind, Delivery, Message, MessageButton, MessageButtonKind, MessageLink, ReplyInfo,
+    Attachment, AttachmentKind, Chat, ChatId, ChatKind, Delivery, Message, MessageButton,
+    MessageButtonKind, MessageLink, ReplyInfo, sanitize_terminal_line, sanitize_terminal_text,
 };
 
 const HISTORY_LIMIT: usize = 80;
@@ -118,6 +118,12 @@ enum TransferCompletion {
         reply_to: Option<i32>,
         result: Box<Result<TelegramMessage, String>>,
     },
+    Preview {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        result: Result<PathBuf, String>,
+    },
     Download {
         chat_id: ChatId,
         message_id: i32,
@@ -159,7 +165,7 @@ pub fn spawn(config: Config) -> TelegramHandle {
     let task = tokio::spawn(async move {
         if let Err(error) = Box::pin(run(config, command_rx, event_tx.clone())).await {
             let _ = event_tx
-                .send(NetworkEvent::Fatal(format!("{error:#}")))
+                .send(NetworkEvent::Fatal(describe_worker_error(&error)))
                 .await;
         }
     });
@@ -168,6 +174,15 @@ pub fn spawn(config: Config) -> TelegramHandle {
         events: event_rx,
         task,
     }
+}
+
+fn describe_worker_error(error: &anyhow::Error) -> String {
+    for cause in error.chain() {
+        if let Some(InvocationError::Session(source)) = cause.downcast_ref::<InvocationError>() {
+            return format!("Telegram session storage failed: {source}");
+        }
+    }
+    format!("{error:#}")
 }
 
 #[allow(clippy::too_many_lines)]
@@ -248,7 +263,7 @@ async fn run(
                 },
             )
             .await
-            .map_err(|error| anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from_boxed)?;
         let mut recovering = false;
         let mut transfers = JoinSet::new();
 
@@ -328,7 +343,7 @@ async fn run(
         updates
             .sync_update_state()
             .await
-            .map_err(|error| anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from_boxed)?;
         Ok(())
     })
     .await;
@@ -362,7 +377,7 @@ async fn process_update(
             if let Some(peer) = message
                 .peer_ref()
                 .await
-                .map_err(|error| anyhow!(error.to_string()))?
+                .map_err(anyhow::Error::from_boxed)?
             {
                 cache.peers.insert(chat_id, peer);
             }
@@ -392,6 +407,20 @@ async fn process_update(
                 .send(NetworkEvent::MessageUpdated(
                     Box::pin(map_message(client, &message, cache)).await?,
                 ))
+                .await
+                .ok();
+        }
+        Ok(Update::MessageDeleted(update)) => {
+            restore_online_status(events, recovering).await;
+            let channel_id = update
+                .channel_id()
+                .and_then(PeerId::channel)
+                .and_then(PeerId::bot_api_dialog_id);
+            events
+                .send(NetworkEvent::MessagesDeleted {
+                    channel_id,
+                    message_ids: update.into_messages(),
+                })
                 .await
                 .ok();
         }
@@ -442,7 +471,8 @@ async fn process_update(
                     .ok();
                 events
                     .send(NetworkEvent::Error(format!(
-                        "Telegram update stream: {error}"
+                        "Telegram update stream: {}",
+                        describe_worker_error(&error.into())
                     )))
                     .await
                     .ok();
@@ -1331,6 +1361,58 @@ async fn handle_command(
                 }
             });
         }
+        TelegramCommand::DownloadPreview {
+            chat_id,
+            message_id,
+            request_id,
+            thumbnail,
+        } => {
+            let preparation = async {
+                let peer = cache
+                    .peers
+                    .get(&chat_id)
+                    .copied()
+                    .context("conversation is missing its Telegram peer reference")?;
+                if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
+                    bail!("too many Telegram transfers are already running; close and retry");
+                }
+                let directory = ensure_download_dir(cache).await?;
+                Ok::<_, anyhow::Error>((peer, directory))
+            }
+            .await;
+            match preparation {
+                Ok((peer, directory)) => {
+                    let client = client.clone();
+                    transfers.spawn(async move {
+                        let result = if thumbnail {
+                            download_preview_thumbnail(
+                                &client, peer, chat_id, message_id, directory,
+                            )
+                            .await
+                        } else {
+                            download_attachment(&client, peer, chat_id, message_id, directory).await
+                        }
+                        .map_err(|error| format!("{error:#}"));
+                        TransferCompletion::Preview {
+                            chat_id,
+                            message_id,
+                            request_id,
+                            result,
+                        }
+                    });
+                }
+                Err(error) => {
+                    events
+                        .send(NetworkEvent::PreviewDownloadFailed {
+                            chat_id,
+                            message_id,
+                            request_id,
+                            error: format!("{error:#}"),
+                        })
+                        .await?;
+                }
+            }
+        }
         TelegramCommand::DownloadAttachment {
             chat_id,
             message_id,
@@ -1548,6 +1630,29 @@ async fn process_transfer_completion(
     events: &mpsc::Sender<NetworkEvent>,
 ) -> Result<()> {
     match completion {
+        TransferCompletion::Preview {
+            chat_id,
+            message_id,
+            request_id,
+            result,
+        } => {
+            events
+                .send(match result {
+                    Ok(path) => NetworkEvent::PreviewDownloaded {
+                        chat_id,
+                        message_id,
+                        request_id,
+                        path,
+                    },
+                    Err(error) => NetworkEvent::PreviewDownloadFailed {
+                        chat_id,
+                        message_id,
+                        request_id,
+                        error,
+                    },
+                })
+                .await?;
+        }
         TransferCompletion::Send {
             chat_id,
             local_id,
@@ -1647,6 +1752,43 @@ async fn download_attachment(
         .download_media(&media, &partial.path)
         .await
         .context("Telegram media transfer failed")?;
+    Ok(partial.finish())
+}
+
+/// Use the SDK's Downloadable thumbnail implementation, including cached and
+/// stripped JPEG reconstruction; Telegram vector paths are not raster images.
+async fn download_preview_thumbnail(
+    client: &Client,
+    peer: PeerRef,
+    chat_id: ChatId,
+    message_id: i32,
+    directory: PathBuf,
+) -> Result<PathBuf> {
+    let message = client
+        .get_messages_by_id(peer, &[message_id])
+        .await?
+        .pop()
+        .flatten()
+        .context("the message is no longer available")?;
+    let media = message.media().context("the message no longer has media")?;
+    let thumbs = match media {
+        Media::Sticker(sticker) => sticker.document.thumbs(),
+        Media::Document(document) => document.thumbs(),
+        Media::Photo(photo) => photo.thumbs(),
+        _ => bail!("this attachment has no static preview"),
+    };
+    let thumbnail = thumbs
+        .into_iter()
+        .filter(|thumb| !matches!(thumb, PhotoSize::Empty(_) | PhotoSize::Path(_)))
+        .filter(|thumb| thumb.size() > 0)
+        .max_by_key(PhotoSize::size)
+        .context("Telegram did not provide a static thumbnail for this sticker")?;
+    let path = unique_download_path(&directory, chat_id, message_id, "preview.jpg").await?;
+    let partial = PartialDownload::new(path);
+    client
+        .download_media(&thumbnail, &partial.path)
+        .await
+        .context("Telegram preview transfer failed")?;
     Ok(partial.finish())
 }
 
@@ -1813,7 +1955,7 @@ async fn resolve_telegram_link(
             let peer = resolved
                 .to_ref()
                 .await
-                .map_err(|error| anyhow!(error.to_string()))?
+                .map_err(anyhow::Error::from_boxed)?
                 .context("Telegram did not provide an addressable peer reference")?;
             cache.peers.insert(id, peer);
             cache.linked_peers.insert(id);
@@ -2209,7 +2351,7 @@ async fn is_hidden_broadcast(
     let Some(peer_ref) = message
         .peer_ref()
         .await
-        .map_err(|error| anyhow!(error.to_string()))?
+        .map_err(anyhow::Error::from_boxed)?
     else {
         // Unknown channel-shaped peers may be either broadcasts or megagroups.
         // Drop this update safely, but do not poison either classification cache.
@@ -2472,13 +2614,13 @@ mod tests {
     use crate::model::{Delivery, Message, ReplyInfo};
 
     use super::{
-        advance_dialog_watermark, base64_url_no_pad, begin_unresolved_refresh,
-        cache_message_sender, cache_sender_name, contains_login_token_update, hydrate_reply_sender,
-        normalize_message_url, parse_telegram_link, qr_login_url, qr_refresh_delay,
-        reconcile_dialog_snapshot, sanitize_download_name, take_auth_interruption,
-        username_or_sender, utf16_entity_text, AuthInterruption, TelegramLink, WorkerCache,
-        DEFAULT_QR_REFRESH_DELAY, MESSAGE_SENDER_CACHE_LIMIT, MIN_QR_REFRESH_DELAY,
-        TRANSIENT_SENDER_NAME_LIMIT, UNRESOLVED_REFRESH_COOLDOWN,
+        AuthInterruption, DEFAULT_QR_REFRESH_DELAY, MESSAGE_SENDER_CACHE_LIMIT,
+        MIN_QR_REFRESH_DELAY, TRANSIENT_SENDER_NAME_LIMIT, TelegramLink,
+        UNRESOLVED_REFRESH_COOLDOWN, WorkerCache, advance_dialog_watermark, base64_url_no_pad,
+        begin_unresolved_refresh, cache_message_sender, cache_sender_name,
+        contains_login_token_update, hydrate_reply_sender, normalize_message_url,
+        parse_telegram_link, qr_login_url, qr_refresh_delay, reconcile_dialog_snapshot,
+        sanitize_download_name, take_auth_interruption, username_or_sender, utf16_entity_text,
     };
 
     #[test]
@@ -2675,9 +2817,11 @@ mod tests {
             Some("Current dialog")
         );
         assert!(!cache.names.contains_key(&PeerId::user_unchecked(2)));
-        assert!(cache
-            .names
-            .contains_key(&PeerId::user_unchecked(last_sender)));
+        assert!(
+            cache
+                .names
+                .contains_key(&PeerId::user_unchecked(last_sender))
+        );
     }
 
     #[test]
@@ -2732,9 +2876,11 @@ mod tests {
         assert_eq!(cache.message_senders.len(), MESSAGE_SENDER_CACHE_LIMIT);
         assert_eq!(cache.message_sender_order.len(), MESSAGE_SENDER_CACHE_LIMIT);
         assert!(!cache.message_senders.contains_key(&(1, 1)));
-        assert!(cache
-            .message_senders
-            .contains_key(&(1, i32::try_from(MESSAGE_SENDER_CACHE_LIMIT + 1).unwrap())));
+        assert!(
+            cache
+                .message_senders
+                .contains_key(&(1, i32::try_from(MESSAGE_SENDER_CACHE_LIMIT + 1).unwrap()))
+        );
     }
 
     #[test]

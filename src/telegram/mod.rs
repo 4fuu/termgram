@@ -1462,6 +1462,11 @@ async fn handle_command(
                 }
             });
         }
+        TelegramCommand::SearchCached(_)
+        | TelegramCommand::CancelSearch
+        | TelegramCommand::LoadCachedContext { .. } => {
+            unreachable!("local searches never reach Telegram")
+        }
         TelegramCommand::RefreshFolders => {
             cache.folders.dirty = true;
         }

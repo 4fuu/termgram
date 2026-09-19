@@ -12,7 +12,7 @@ use crate::{
     model::{Chat, ChatId, Delivery, Message},
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MAX_MESSAGES: i64 = 100_000;
 const MAX_CHAT_MESSAGES: i64 = 5_000;
 
@@ -73,6 +73,9 @@ impl Store {
         if version < 2 {
             transaction.execute_batch("CREATE TABLE history_pages (chat_id INTEGER NOT NULL, before_id INTEGER NOT NULL, oldest_id INTEGER NOT NULL, PRIMARY KEY(chat_id,before_id)); PRAGMA user_version=2;").await?;
         }
+        if version < 3 {
+            transaction.execute_batch("CREATE INDEX messages_search ON messages(timestamp DESC,chat_id DESC,id DESC); PRAGMA user_version=3;").await?;
+        }
         transaction.commit().await?;
         let revision = metadata(&connection, "revision")
             .await?
@@ -108,6 +111,23 @@ impl Store {
             .map(|value| serde_json::from_str(&value))
             .transpose()?
             .unwrap_or_else(|| vec![crate::folders::Folder::all()]))
+    }
+
+    /// Cached neighbors for a search hit, without triggering network reads.
+    /// # Errors
+    /// Returns an error when the hit was deleted or evicted since the search.
+    pub async fn context(&self, chat_id: ChatId, message_id: i32) -> Result<Vec<Message>> {
+        let mut messages = self
+            .history(chat_id, Some(message_id.saturating_add(1)), 40)
+            .await?;
+        if !messages.iter().any(|message| message.id == message_id) {
+            bail!("Search result is no longer cached; run the search again");
+        }
+        let mut rows = self.connection.query("SELECT data FROM messages WHERE chat_id=?1 AND id>?2 AND data IS NOT NULL ORDER BY id LIMIT 40", params![chat_id, message_id]).await?;
+        while let Some(row) = rows.next().await? {
+            messages.push(serde_json::from_str(&row.get::<String>(0)?)?);
+        }
+        Ok(messages)
     }
 
     /// # Errors

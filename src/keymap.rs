@@ -26,6 +26,7 @@ pub enum Context {
     Compose,
     Input,
     Overlay,
+    Search,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -110,6 +111,11 @@ const ACTIONS: &[&str] = &[
     "clear",
     "delete_word",
     "noop",
+    "search",
+    "search_scope",
+    "search_more",
+    "search_previous",
+    "search_query",
     "chat_info",
     "folder_next",
     "folder_previous",
@@ -148,6 +154,7 @@ impl Default for Keymap {
                     ("<Right>", "open"),
                     ("<Tab>", "focus"),
                     ("/", "filter"),
+                    ("<C-f>", "search"),
                     ("]", "folder_next"),
                     ("[", "folder_previous"),
                     ("q", "quit"),
@@ -165,6 +172,7 @@ impl Default for Keymap {
             (
                 Context::Conversation,
                 &[
+                    ("/", "search"),
                     ("j", "message_down"),
                     ("k", "message_up"),
                     ("[", "message_up"),
@@ -225,6 +233,21 @@ impl Default for Keymap {
                     ("<Down>", "down"),
                 ][..],
             ),
+            (
+                Context::Search,
+                &[
+                    ("<Enter>", "open"),
+                    ("<Esc>", "cancel"),
+                    ("<Tab>", "search_scope"),
+                    ("<C-n>", "search_more"),
+                    ("<C-p>", "search_previous"),
+                    ("<C-f>", "search_query"),
+                    ("<Up>", "up"),
+                    ("<Down>", "down"),
+                    ("<PageUp>", "page_up"),
+                    ("<PageDown>", "page_down"),
+                ][..],
+            ),
         ] {
             for &(keys, run) in definitions {
                 result
@@ -237,7 +260,7 @@ impl Default for Keymap {
                     .expect("valid builtin binding");
             }
         }
-        for context in [Context::Compose, Context::Input] {
+        for context in [Context::Compose, Context::Input, Context::Search] {
             for (key, run) in [
                 ("<C-a>", "home"),
                 ("<C-e>", "end"),

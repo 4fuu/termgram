@@ -1,3 +1,4 @@
+mod search;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
 use ratatui::Frame;
@@ -400,14 +401,19 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     render_composer(frame, rows[2], app, show_conversation_only || !narrow);
     render_footer(frame, rows[3], app, narrow);
 
-    if app.mode == Mode::Help {
+    if app.mode == Mode::Search {
+        search::render_search(frame, area, app);
+    } else if app.mode == Mode::Help {
         render_help(frame, area, app);
     } else if app.mode == Mode::Settings {
         render_settings(frame, area, app);
     } else if app.mode == Mode::Accounts {
         render_accounts(frame, area, app);
     }
-    if matches!(app.mode, Mode::Help | Mode::Settings | Mode::Accounts) {
+    if matches!(
+        app.mode,
+        Mode::Search | Mode::Help | Mode::Settings | Mode::Accounts
+    ) {
         app.media_slots.clear();
     }
 }

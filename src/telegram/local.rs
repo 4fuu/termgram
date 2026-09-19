@@ -56,6 +56,7 @@ pub(super) async fn serve(
         bootstrap,
         active_chat,
     ));
+    let mut search = crate::search::Worker::new(std::path::PathBuf::from(cache_path));
     let mut pending = VecDeque::new();
     let mut changes = Vec::new();
     let mut ready = false;
@@ -63,25 +64,12 @@ pub(super) async fn serve(
     flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
+        search.start_pending();
         tokio::select! {
+            result = search.next(), if search.running() => { if let Some(event) = result { events.send(event).await?; } },
             command = commands.recv() => {
                 let Some(command) = command else { break; };
-                if let TelegramCommand::LoadOlder { chat_id, request_id, before_id } = &command {
-                    store.apply(&changes).await?;
-                    changes.clear();
-                    if let Some(messages) = store.older_page(*chat_id, *before_id).await? {
-                        events.send(NetworkEvent::OlderHistory { chat_id: *chat_id, request_id: *request_id, before_id: *before_id, messages }).await?;
-                        continue;
-                    }
-                }
-                if let TelegramCommand::LoadHistory { chat_id, request_id } = &command {
-                    store.apply(&changes).await?;
-                    changes.clear();
-                    let messages = store.history(*chat_id, None, super::HISTORY_LIMIT).await?;
-                    if !messages.is_empty() {
-                        events.send(NetworkEvent::CachedHistory { chat_id: *chat_id, request_id: *request_id, messages }).await?;
-                    }
-                }
+                if serve_cached(&command, &mut store, &mut changes, &events, &mut search).await? { continue; }
                 if authentication_command(&command) {
                     pending.push_front(command);
                 } else if pending.len() < COMMAND_QUEUE_CAPACITY {
@@ -103,7 +91,7 @@ pub(super) async fn serve(
                 match &event {
                     NetworkEvent::Ready { .. } => ready = true,
                     NetworkEvent::Auth(_) => ready = false,
-                    NetworkEvent::CacheAccountReset { .. } => pending.clear(),
+                    NetworkEvent::CacheAccountReset { .. } => { pending.clear(); search.cancel(); },
                     _ => {}
                 }
                 let checkpoint = matches!(&event, NetworkEvent::SyncCheckpoint(_));
@@ -123,6 +111,89 @@ pub(super) async fn serve(
     store.apply(&changes).await?;
     tasks.shutdown().await;
     Ok(())
+}
+
+async fn serve_cached(
+    command: &TelegramCommand,
+    store: &mut Store,
+    changes: &mut Vec<NetworkEvent>,
+    events: &mpsc::Sender<NetworkEvent>,
+    search: &mut crate::search::Worker,
+) -> Result<bool> {
+    if matches!(
+        command,
+        TelegramCommand::LoadHistory { .. }
+            | TelegramCommand::LoadOlder { .. }
+            | TelegramCommand::LoadCachedContext { .. }
+            | TelegramCommand::SearchCached(_)
+    ) {
+        store.apply(changes).await?;
+        changes.clear();
+    }
+    match command {
+        TelegramCommand::SearchCached(request) => {
+            search.queue(request.clone());
+            return Ok(true);
+        }
+        TelegramCommand::CancelSearch => {
+            search.cancel();
+            return Ok(true);
+        }
+        TelegramCommand::LoadCachedContext {
+            chat_id,
+            message_id,
+            request_id,
+        } => {
+            let event = match store.context(*chat_id, *message_id).await {
+                Ok(messages) => NetworkEvent::CachedContext {
+                    request_id: *request_id,
+                    chat_id: *chat_id,
+                    message_id: *message_id,
+                    messages,
+                },
+                Err(error) => NetworkEvent::SearchFailed {
+                    request_id: *request_id,
+                    error: format!("{error:#}"),
+                },
+            };
+            events.send(event).await?;
+            return Ok(true);
+        }
+        TelegramCommand::LoadOlder {
+            chat_id,
+            request_id,
+            before_id,
+        } => {
+            if let Some(messages) = store.older_page(*chat_id, *before_id).await? {
+                events
+                    .send(NetworkEvent::OlderHistory {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                        before_id: *before_id,
+                        messages,
+                    })
+                    .await?;
+                return Ok(true);
+            }
+        }
+        TelegramCommand::LoadHistory {
+            chat_id,
+            request_id,
+        } => {
+            let messages = store.history(*chat_id, None, super::HISTORY_LIMIT).await?;
+            if !messages.is_empty() {
+                events
+                    .send(NetworkEvent::CachedHistory {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                        messages,
+                    })
+                    .await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
 }
 
 fn authentication_command(command: &TelegramCommand) -> bool {

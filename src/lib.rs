@@ -7,6 +7,7 @@ pub mod input;
 pub mod keymap;
 pub mod media;
 pub mod model;
+pub mod search;
 pub mod telegram;
 pub mod terminal;
 pub mod ui;

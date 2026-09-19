@@ -1,5 +1,7 @@
 //! Pure, single-owner application state and transitions.
 
+mod search;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -148,6 +150,7 @@ pub enum Mode {
     Navigate,
     Compose,
     Filter,
+    Search,
     Help,
     Settings,
     Accounts,
@@ -201,6 +204,7 @@ pub struct App {
     /// and inline bot buttons, so selection cannot be message-only.
     pub selected_action: usize,
     pub filter: TextInput,
+    pub search: search::State,
     pub narrow_conversation: bool,
     pub should_quit: bool,
     pub status_message: Option<String>,
@@ -295,6 +299,7 @@ impl Default for App {
             selected_message: None,
             selected_action: 0,
             filter: TextInput::new(),
+            search: search::State::default(),
             narrow_conversation: false,
             should_quit: false,
             status_message: None,
@@ -491,6 +496,7 @@ impl App {
             match self.mode {
                 Mode::Compose => Context::Compose,
                 Mode::Filter => Context::Input,
+                Mode::Search => Context::Search,
                 Mode::Help | Mode::Settings | Mode::Accounts => Context::Overlay,
                 Mode::Navigate if self.focus == Focus::Chats => Context::Chats,
                 Mode::Navigate => Context::Conversation,
@@ -513,7 +519,8 @@ impl App {
             }
             Resolution::Unbound => {}
         }
-        if matches!(context, Context::Compose | Context::Input)
+        if (matches!(context, Context::Compose | Context::Input)
+            || (context == Context::Search && self.search.editing))
             && key.kind != yazi_term::event::KeyEventKind::Release
             && let Some(text) = key.text(&mut [0; 4])
         {
@@ -529,6 +536,11 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn run_binding(&mut self, run: &str, count: usize) -> Vec<TelegramCommand> {
         self.older_motion = None;
+        if self.mode == Mode::Search
+            && let Some(commands) = self.search_binding(run, count)
+        {
+            return commands;
+        }
         if let Some(alias) = run.strip_prefix("jump ") {
             if let Some(id) = self.keymap.chats.get(alias).copied() {
                 if let Some(index) = self.chats.iter().position(|chat| chat.id == id) {
@@ -545,6 +557,7 @@ impl App {
             return Vec::new();
         }
         match run {
+            "search" => return self.open_search(),
             "folder_next" | "folder_previous" => {
                 let current = self
                     .folders
@@ -761,7 +774,7 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
-        if self.mode == Mode::Help {
+        if matches!(self.mode, Mode::Help | Mode::Search) {
             return Vec::new();
         }
         if self.mode == Mode::Settings {
@@ -893,6 +906,23 @@ impl App {
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.track_snapshot_changes(&event);
         match event {
+            NetworkEvent::SearchResults { request_id, page } => {
+                self.finish_search(request_id, Ok(page));
+                Vec::new()
+            }
+            NetworkEvent::SearchFailed { request_id, error } => {
+                self.finish_search(request_id, Err(error));
+                Vec::new()
+            }
+            NetworkEvent::CachedContext {
+                request_id,
+                chat_id,
+                message_id,
+                messages,
+            } => {
+                self.open_search_context(request_id, chat_id, message_id, messages);
+                Vec::new()
+            }
             NetworkEvent::OlderHistory {
                 chat_id,
                 request_id,
@@ -1501,6 +1531,7 @@ impl App {
             Screen::Connecting | Screen::Auth(AuthPhase::Qr { .. }) => true,
             Screen::Main => {
                 self.loading_history
+                    || self.search.loading
                     || self.media_previews.values().any(|preview| preview.loading)
                     || matches!(
                         self.connection,
@@ -1544,6 +1575,10 @@ impl App {
                         .or_default()
                         .insert_str(&normalized);
                 }
+            }
+            Screen::Main if self.mode == Mode::Search && self.search.editing => {
+                self.search.query.insert_str(&normalized.replace('\n', ""));
+                return self.search_edited();
             }
             Screen::Main if self.mode == Mode::Filter => {
                 self.filter
@@ -1658,6 +1693,7 @@ impl App {
             Mode::Navigate => self.handle_navigation(action),
             Mode::Compose => self.handle_compose(action),
             Mode::Filter => self.handle_filter(action),
+            Mode::Search => self.edit_search(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
             Mode::Accounts => self.handle_accounts(action),
@@ -5972,5 +6008,55 @@ mod tests {
         assert_eq!(app.selected_chat_entry().unwrap().id, 3);
         app.handle_network(NetworkEvent::Folders(vec![Folder::all()]));
         assert_eq!(app.folder_id, 0);
+    }
+    #[test]
+    fn local_search_ignores_stale_results_and_preserves_drafts_and_query() {
+        let mut app = ready_app();
+        app.active_chat_id = Some(1);
+        app.drafts.insert(1, TextInput::from_value("unsent"));
+        app.run_binding("search", 1);
+        app.update(AppEvent::Paste("error.*".to_owned()));
+        let commands = app.run_binding("open", 1);
+        let TelegramCommand::SearchCached(request) = &commands[0] else {
+            panic!("search request");
+        };
+        let page = crate::search::Page {
+            messages: vec![message(21, 1, "error!", false)],
+            next: None,
+            cached_messages: 30,
+            oldest: Some(1),
+            newest: Some(30),
+        };
+        app.handle_network(NetworkEvent::SearchResults {
+            request_id: request.id.wrapping_sub(1),
+            page: page.clone(),
+        });
+        assert!(app.search.page.is_none());
+        app.handle_network(NetworkEvent::SearchResults {
+            request_id: request.id,
+            page,
+        });
+        let commands = app.run_binding("open", 1);
+        let TelegramCommand::LoadCachedContext { request_id, .. } = commands[0] else {
+            panic!("cached context request");
+        };
+        let commands = app.handle_network(NetworkEvent::CachedContext {
+            request_id,
+            chat_id: 1,
+            message_id: 21,
+            messages: vec![
+                message(20, 1, "before", false),
+                message(21, 1, "error!", false),
+                message(22, 1, "after", false),
+            ],
+        });
+        assert!(
+            commands.is_empty(),
+            "opening search context must not mark unseen history read"
+        );
+        assert_eq!(app.selected_message, Some(21));
+        app.run_binding("search", 1);
+        assert_eq!(app.search.query.value(), "error.*");
+        assert_eq!(app.drafts.get(&1).unwrap().value(), "unsent");
     }
 }

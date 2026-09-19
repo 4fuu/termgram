@@ -3661,6 +3661,7 @@ dependencies = [
  "qrcode",
  "ratatui",
  "ratatui-image",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

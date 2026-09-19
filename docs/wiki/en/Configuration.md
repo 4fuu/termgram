@@ -21,7 +21,7 @@ return {
 ```
 
 Contexts are `global`, `chats`, `conversation`, `compose`, `input` (login and chat
-filter), and `overlay`. A context takes precedence over global bindings. Rebinding
+filter), `overlay`, and `search`. A context takes precedence over global bindings. Rebinding
 an existing key replaces that binding. Use `run = "noop"` to remove a binding.
 A chord is a list of individual keys, such as `{ "g", "w" }`; ambiguous prefixes
 are rejected. Chords expire after one second; Escape cancels a pending chord.

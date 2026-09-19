@@ -135,6 +135,13 @@ pub enum TelegramCommand {
     },
     RefreshDialogs,
     RefreshFolders,
+    SearchCached(crate::search::Request),
+    CancelSearch,
+    LoadCachedContext {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
     /// Select a different local session slot. The runtime intercepts this
     /// command and replaces the single active Telegram worker.
     SwitchAccount {
@@ -237,9 +244,18 @@ impl TelegramCommand {
             TelegramCommand::MarkRead { chat_id } => {
                 NetworkEvent::ReadMarkFailed { chat_id, error }
             }
+            TelegramCommand::SearchCached(request) => NetworkEvent::SearchFailed {
+                request_id: request.id,
+                error,
+            },
+            TelegramCommand::LoadCachedContext { request_id, .. } => {
+                NetworkEvent::SearchFailed { request_id, error }
+            }
             TelegramCommand::RefreshFolders => NetworkEvent::Error(error),
             TelegramCommand::RefreshDialogs => NetworkEvent::DialogsFailed(error),
-            TelegramCommand::SwitchAccount { .. } | TelegramCommand::Shutdown => return None,
+            TelegramCommand::CancelSearch
+            | TelegramCommand::SwitchAccount { .. }
+            | TelegramCommand::Shutdown => return None,
             TelegramCommand::StartQrAuth
             | TelegramCommand::SubmitPhone(_)
             | TelegramCommand::SubmitCode(_)
@@ -364,6 +380,21 @@ impl fmt::Debug for TelegramCommand {
                 .debug_struct("MarkRead")
                 .field("chat_id", chat_id)
                 .finish(),
+            Self::SearchCached(request) => formatter
+                .debug_struct("SearchCached")
+                .field("request_id", &request.id)
+                .finish_non_exhaustive(),
+            Self::LoadCachedContext {
+                chat_id,
+                message_id,
+                request_id,
+            } => formatter
+                .debug_struct("LoadCachedContext")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish(),
+            Self::CancelSearch => formatter.write_str("CancelSearch"),
             Self::RefreshFolders => formatter.write_str("RefreshFolders"),
             Self::RefreshDialogs => formatter.write_str("RefreshDialogs"),
             Self::SwitchAccount { account } => formatter
@@ -378,6 +409,20 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    CachedContext {
+        request_id: u64,
+        chat_id: ChatId,
+        message_id: i32,
+        messages: Vec<Message>,
+    },
+    SearchResults {
+        request_id: u64,
+        page: crate::search::Page,
+    },
+    SearchFailed {
+        request_id: u64,
+        error: String,
+    },
     Folders(Vec<crate::folders::Folder>),
     UnreadChanged {
         chat_id: ChatId,

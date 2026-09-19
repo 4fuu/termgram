@@ -1,6 +1,8 @@
 # Lua configuration
 
-[简体中文](../zh-CN/Configuration.md)
+[简体中文](../zh-CN/Configuration.md) · [Guide](Home.md)
+
+## Load configuration
 
 Place `config.lua` beside Termgram's `settings.conf`, or set `TERMGRAM_CONFIG` to
 an explicit file path. Restart to load changes. Start with [the example](../../../examples/config.lua).
@@ -51,3 +53,66 @@ bindings. Set `ghost_text = ""` to hide them. Managed in-app preferences remain
 in their own file; Termgram does not rewrite your Lua configuration.
 
 Press `g i` to show the current chat ID for an alias.
+
+## File locations
+
+`config.lua`, `settings.conf` and `appearance.json` use the configuration directory.
+The session, message database and media use the data directory. Defaults:
+
+| OS | Configuration directory | Data directory |
+| --- | --- | --- |
+| Linux | `$XDG_CONFIG_HOME/termgram` or `~/.config/termgram` | `$XDG_DATA_HOME/termgram` or `~/.local/share/termgram` |
+| macOS | `~/Library/Application Support/dev.termgram.Termgram` | Same |
+| Windows | `%APPDATA%/termgram/Termgram/config` | `%LOCALAPPDATA%/termgram/Termgram/data` |
+
+Account 1 uses `termgram.session`; other slots use
+`accounts/<session filename>.account-N` beside it. Each gets its own appended
+`.cache.sqlite3` database and `.media` directory. Session files contain account
+credentials; cached messages and media are local plaintext. Cache cleanup is
+described in [Synchronization](Synchronization.md).
+
+| Environment variable | Purpose |
+| --- | --- |
+| `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | Source-build application credentials; environment or `.env` takes precedence over embedded values |
+| `TERMGRAM_SESSION` | Override Account 1 session path; other slots derive from it |
+| `TERMGRAM_CONFIG` | Override the Lua file; set in the shell before starting |
+| `TERMGRAM_TMUX_PASSTHROUGH=1` | Opt into terminal passthrough setup; see [Terminal](Terminal.md) |
+
+Lua is loaded before the credentials `.env`, so `TERMGRAM_CONFIG` must already
+be in the process environment. A previous `TUIGRAM_SESSION` override and an
+existing TUIGram default session remain recognized for login continuity.
+Changing the session path does not move settings or colors.
+
+Lua source is limited to 64 KiB, an 8 MiB VM budget, and approximately one million
+instructions. Unknown configuration fields, actions, aliases and ambiguous
+same-context prefixes are reported; the entire invalid configuration falls back
+to defaults. There is no arbitrary plugin API or live reload.
+
+## Action reference
+
+Bind actions in an appropriate context. A custom global binding is a fallback;
+a more specific binding or chord prefix takes precedence. Help labels can be
+customized with `desc`. `noop` removes that context's key, so an existing global
+binding can become visible again.
+
+| Actions | Usual context and behavior |
+| --- | --- |
+| `quit`, `redraw`, `next_account`, `add_account` | Global lifecycle/account controls |
+| `help`, `settings`, `accounts` | Navigation; open or toggle the overlay |
+| `open`, `cancel`, `focus` | Contextual activation, dismissal, pane/QR switching |
+| `up`, `down`, `page_up`, `page_down` | List selection, rendered-row scrolling, or search selection; accept `count` |
+| `message_up`, `message_down` | Conversation message cursor; accept `count` |
+| `oldest`, `latest` | First/last chat, or loaded-history start/latest conversation |
+| `compose`, `send`, `newline` | Conversation/editor |
+| `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |
+| `filter`, `refresh`, `chat_info` | Navigation; title filter, lists refresh, IDs |
+| `folder_previous`, `folder_next` | Chat list folders |
+| `reply`, `reply_target`, `open_link`, `next_action`, `previous_action`, `reveal` | Conversation actions |
+| `chat_color`, `folder_color` | Appearance pickers |
+| `search` | Open local search |
+| `search_scope`, `search_query`, `search_more`, `search_previous` | Search overlay |
+| `jump ALIAS` | Open the configured stable chat ID; returns to navigation |
+| `noop` | Remove a binding from its declared context |
+
+Use [Keybindings](Keybindings.md) for defaults and [Appearance](Appearance.md)
+for the `colors` table and the precedence of in-app overrides.

@@ -1,6 +1,6 @@
 # Cache and synchronization
 
-[简体中文](../zh-CN/Synchronization.md)
+[简体中文](../zh-CN/Synchronization.md) · [Guide](Home.md)
 
 Termgram displays cached conversations before connecting to Telegram. Opening a
 cached conversation reads its most recent local page while a network request

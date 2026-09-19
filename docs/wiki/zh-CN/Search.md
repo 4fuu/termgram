@@ -1,6 +1,6 @@
 # 搜索本地缓存消息
 
-[English](../en/Search.md)
+[English](../en/Search.md) · [指南首页](Home.md)
 
 在聊天内容区按 `/`，或在聊天列表按 `Ctrl-F`，输入正则表达式后按 Enter。Tab 在当前
 聊天、当前文件夹、当前账号三个范围间切换。搜索可以离线使用，不会向 Telegram

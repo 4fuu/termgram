@@ -1,6 +1,8 @@
 # Lua 配置
 
-[English](../en/Configuration.md)
+[English](../en/Configuration.md) · [指南首页](Home.md)
+
+## 加载配置
 
 把 `config.lua` 放在 `settings.conf` 旁，或用 `TERMGRAM_CONFIG` 指定路径。
 重启后生效，可以从[配置示例](../../../examples/config.lua)开始。配置返回一个 Lua table，
@@ -44,3 +46,58 @@ return {
 `ghost_text = ""` 隐藏提示。应用内偏好单独保存，不会改写 Lua 文件。
 
 按 `g i` 显示当前聊天 ID，可用来配置别名。
+
+## 文件路径
+
+`config.lua`、`settings.conf`、`appearance.json` 位于配置目录；会话、消息库和媒体位于
+数据目录。默认值如下：
+
+| 系统 | 配置目录 | 数据目录 |
+| --- | --- | --- |
+| Linux | `$XDG_CONFIG_HOME/termgram` 或 `~/.config/termgram` | `$XDG_DATA_HOME/termgram` 或 `~/.local/share/termgram` |
+| macOS | `~/Library/Application Support/dev.termgram.Termgram` | 相同 |
+| Windows | `%APPDATA%/termgram/Termgram/config` | `%LOCALAPPDATA%/termgram/Termgram/data` |
+
+账号 1 使用 `termgram.session`，其他槽位使用它旁边的
+`accounts/<session filename>.account-N`，各自追加 `.cache.sqlite3` 数据库与 `.media`
+目录。会话文件包含账号凭据，消息缓存与媒体是本地明文。清理方法见[缓存与同步](Synchronization.md)。
+
+| 环境变量 | 用途 |
+| --- | --- |
+| `TELEGRAM_API_ID`、`TELEGRAM_API_HASH` | 源码构建的应用凭据；环境或 `.env` 优先于内置值 |
+| `TERMGRAM_SESSION` | 指定账号 1 会话路径，其他槽位据此派生 |
+| `TERMGRAM_CONFIG` | 指定 Lua 文件，在启动前的 shell 中设置 |
+| `TERMGRAM_TMUX_PASSTHROUGH=1` | 启用终端透传设置，见[终端](Terminal.md) |
+
+Lua 在凭据 `.env` 之前加载，因此 `TERMGRAM_CONFIG` 必须已存在于进程环境。
+旧的 `TUIGRAM_SESSION` 和已有 TUIGram 默认会话仍被识别，以保留登录状态。
+更改会话路径不会移动设置或颜色文件。
+
+Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段、动作、别名和同上下文
+前缀冲突会报错；整个无效配置回退为默认值。不提供任意插件 API 或热重载。
+
+## 动作表
+
+把动作放在合适的上下文。自定义 `global` 绑定作为后备，具体上下文的绑定或组合键前缀
+优先。`desc` 自定义帮助文字；`noop` 删除当前上下文的绑定后，已有全局绑定可能重新生效。
+
+| 动作 | 常用上下文与行为 |
+| --- | --- |
+| `quit`、`redraw`、`next_account`、`add_account` | 全局退出、重绘、账号控制 |
+| `help`、`settings`、`accounts` | 导航；打开或切换浮层 |
+| `open`、`cancel`、`focus` | 按上下文激活、关闭、切换面板或二维码 |
+| `up`、`down`、`page_up`、`page_down` | 列表选择、显示行滚动或搜索选择，支持 `count` |
+| `message_up`、`message_down` | 会话消息光标，支持 `count` |
+| `oldest`、`latest` | 首末聊天，或已加载历史起点/最新会话 |
+| `compose`、`send`、`newline` | 会话与输入框 |
+| `home`、`end`、`left`、`right`、`backspace`、`delete`、`clear`、`delete_word` | 编辑器 |
+| `filter`、`refresh`、`chat_info` | 导航；标题过滤、列表刷新、显示 ID |
+| `folder_previous`、`folder_next` | 聊天列表文件夹 |
+| `reply`、`reply_target`、`open_link`、`next_action`、`previous_action`、`reveal` | 会话操作 |
+| `chat_color`、`folder_color` | 外观选择器 |
+| `search` | 打开本地搜索 |
+| `search_scope`、`search_query`、`search_more`、`search_previous` | 搜索浮层 |
+| `jump ALIAS` | 打开配置的稳定聊天 ID，返回导航状态 |
+| `noop` | 移除指定上下文中的绑定 |
+
+默认按键见[快捷键](Keybindings.md)，`colors` 表及应用内覆盖优先级见[外观](Appearance.md)。

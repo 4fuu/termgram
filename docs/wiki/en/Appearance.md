@@ -1,6 +1,6 @@
 # Chat and folder colors
 
-[简体中文](../zh-CN/Appearance.md)
+[简体中文](../zh-CN/Appearance.md) · [Guide](Home.md)
 
 Press `c` on a chat, or in its conversation, to choose its color. Press `C` in the
 chat list to color the current folder. Up/Down selects a named terminal color;

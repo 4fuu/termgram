@@ -1,6 +1,6 @@
 # Telegram folders
 
-[简体中文](../zh-CN/Folders.md)
+[简体中文](../zh-CN/Folders.md) · [Guide](Home.md)
 
 Termgram reads the folders already configured in Telegram, including shared
 folders. Their order, pinned chats and inclusion/exclusion rules are synchronized

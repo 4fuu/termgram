@@ -1,6 +1,6 @@
 # 聊天和文件夹颜色
 
-[English](../en/Appearance.md)
+[English](../en/Appearance.md) · [指南首页](Home.md)
 
 在聊天列表或聊天内容区按 `c` 设置聊天颜色；在列表按 `C` 设置当前文件夹颜色。
 Up/Down 选择带名称的终端颜色，Enter 应用，Esc 取消。列表选中标记和选中样式不依赖

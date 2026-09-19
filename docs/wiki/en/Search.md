@@ -1,6 +1,6 @@
 # Search cached messages
 
-[简体中文](../zh-CN/Search.md)
+[简体中文](../zh-CN/Search.md) · [Guide](Home.md)
 
 Press `/` in a conversation, or `Ctrl-F` in the chat list. Type a regular
 expression and press Enter. Tab cycles through the open chat, selected folder,

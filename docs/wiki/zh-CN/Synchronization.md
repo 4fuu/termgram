@@ -1,6 +1,6 @@
 # 缓存与同步
 
-[English](../en/Synchronization.md)
+[English](../en/Synchronization.md) · [指南首页](Home.md)
 
 Termgram 会先显示本地缓存的聊天列表，再连接 Telegram。打开已有缓存的聊天时，
 先读取最近一页本地消息，同时在后台获取最新内容。同步期间仍可阅读缓存。

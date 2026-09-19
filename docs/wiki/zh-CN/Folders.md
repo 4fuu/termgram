@@ -1,6 +1,6 @@
 # Telegram 文件夹
 
-[English](../en/Folders.md)
+[English](../en/Folders.md) · [指南首页](Home.md)
 
 Termgram 读取 Telegram 中已配置的文件夹，包括共享文件夹。文件夹顺序、置顶聊天、
 包含与排除规则会同步，并按账号缓存。使用 Telegram Desktop 等官方客户端创建或

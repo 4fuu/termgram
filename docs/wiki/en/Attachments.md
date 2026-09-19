@@ -1,6 +1,6 @@
 # Attachments and file previews
 
-[简体中文](../zh-CN/Attachments.md)
+[简体中文](../zh-CN/Attachments.md) · [Guide](Home.md)
 
 Select an attachment with `j/k` (or click it) and press uppercase `O` (`Shift-O`)
 to reveal it in your system file manager. This is a single press, not a timed
@@ -34,3 +34,11 @@ completed files. Cancellation removes partial files; interrupted-process remnant
 are cleaned before the next transfer. The account cache has one process owner,
 and outstanding media tasks retain its lock through cleanup. This also prevents
 two clients from independently advancing one message-cache checkpoint.
+
+Photos, image documents and stickers preview in the timeline. Only visible
+previews are requested, with at most two preview downloads pending in the app;
+all network transfers share a bounded worker. Animated TGS/WebM stickers show
+Telegram's raster thumbnail and are labeled as static previews. Failed previews
+remain retryable through Enter/click. Ctrl-L redraws; terminal protocol details
+are in [Terminal](Terminal.md). Drop local file paths to upload as described in
+[Daily workflows](UX.md).

@@ -40,3 +40,39 @@ fn channel_gap_recovers_from_the_local_cursor() {
         .expect("channel gap must trigger recovery");
     assert_eq!(request.pts, 20);
 }
+
+#[tokio::test]
+async fn sdk_delivers_the_whole_batch_before_its_checkpoint() {
+    use grammers_client::{Client, SenderPool, client::UpdatesConfiguration};
+    use grammers_session::storages::MemorySession;
+    use std::sync::Arc;
+    let pool = SenderPool::new(Arc::new(MemorySession::default()), 1);
+    let client = Client::new(pool.handle);
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut stream = client
+        .stream_updates(
+            receiver,
+            UpdatesConfiguration {
+                catch_up: false,
+                update_queue_limit: None,
+            },
+        )
+        .await
+        .unwrap();
+    sender
+        .send(UpdatesLike::Updates(
+            tl::types::Updates {
+                updates: vec![tl::enums::Update::PtsChanged, tl::enums::Update::PtsChanged],
+                users: Vec::new(),
+                chats: Vec::new(),
+                date: 123,
+                seq: 1,
+            }
+            .into(),
+        ))
+        .unwrap();
+    let (updates, cursor) = stream.next_batch().await.unwrap();
+    assert_eq!(updates.len(), 2);
+    assert_eq!(cursor.seq, 1);
+    assert_eq!(cursor.date, 123);
+}

@@ -607,6 +607,40 @@ impl App {
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.track_snapshot_changes(&event);
         match event {
+            NetworkEvent::CachedSnapshot { user_name, chats } => {
+                self.user_name = user_name;
+                self.screen = Screen::Main;
+                self.replace_dialogs(chats);
+                self.status_message = Some("Cached conversations · connecting…".to_owned());
+                Vec::new()
+            }
+            NetworkEvent::CachedHistory {
+                chat_id,
+                request_id,
+                messages,
+            } => {
+                if self.active_history_request == Some((chat_id, request_id)) {
+                    self.merge_history(chat_id, messages, self.history_target_message);
+                }
+                Vec::new()
+            }
+            NetworkEvent::HistoryLoading { .. }
+            | NetworkEvent::SyncCheckpoint(_)
+            | NetworkEvent::AccountIdentity { .. }
+            | NetworkEvent::CacheMessage(_) => Vec::new(),
+            NetworkEvent::CacheAccountReset { .. } => {
+                self.messages.clear();
+                self.replace_dialogs(Vec::new());
+                Vec::new()
+            }
+            NetworkEvent::CacheInvalidated { chat_id } => {
+                if let Some(chat_id) = chat_id {
+                    self.messages.remove(&chat_id);
+                } else {
+                    self.messages.clear();
+                }
+                self.request_dialog_refresh()
+            }
             NetworkEvent::Auth(prompt) => {
                 if self.auth_restart_pending && !matches!(&prompt, AuthPrompt::Phone) {
                     return Vec::new();
@@ -3647,6 +3681,28 @@ mod tests {
                 .map(|id| message(id, 1, &format!("message {id}"), false))
                 .collect(),
         });
+    }
+
+    #[test]
+    fn cached_conversations_are_usable_before_network_authentication() {
+        let mut app = App::new();
+        app.handle_network(NetworkEvent::CachedSnapshot {
+            user_name: Some("Ada".to_owned()),
+            chats: vec![chat(1, "Cached")],
+        });
+        assert_eq!(app.screen, Screen::Main);
+        assert_eq!(app.connection, crate::event::ConnectionStatus::Connecting);
+        app.handle_action(KeyAction::Enter);
+        app.handle_network(NetworkEvent::CachedHistory {
+            chat_id: 1,
+            request_id: 1,
+            messages: vec![message(1, 1, "available offline", false)],
+        });
+        assert_eq!(app.active_messages()[0].text, "available offline");
+        assert!(
+            app.loading_history,
+            "cached content remains visible during reconciliation"
+        );
     }
 
     #[test]

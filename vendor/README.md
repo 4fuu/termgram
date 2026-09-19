@@ -53,3 +53,16 @@ That notification preserves an existing local channel PTS instead of replacing
 it with the remote PTS before recovery. The upstream connection-flow assertion
 is adjusted; `tests/update_recovery.rs` checks both integration boundaries.
 See https://core.telegram.org/api/updates#recovering-gaps.
+
+`grammers-client/` vendors crates.io 0.10.0 from the same Grammers revision
+(`grammers-client/`). Original source, examples, tests and both licenses are
+retained. Only `src/client/updates.rs` is adapted:
+
+- `next_batch` drains a complete update batch and returns its covered cursor;
+- `restore_state` loads the application's durable cursor before polling;
+- too-long differences emit a raw `PtsChanged` / `ChannelTooLong` invalidation
+  before replacement messages, allowing the local store to discard stale data.
+
+`src/telegram/local.rs` persists events before committing their cursor and reads
+that cursor on restart. Telegram's session peer cache remains separate: dialog
+iteration may advance its PTS without having cached any message content.

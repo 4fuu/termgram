@@ -1226,8 +1226,6 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f330139772e71b5e104f5a7bbf43bbda92fd8a734b4cf9c57839e04e949cf9b"
 dependencies = [
  "chrono",
  "futures-util",
@@ -3657,10 +3655,13 @@ dependencies = [
  "grammers-client",
  "grammers-session",
  "image",
+ "libsql",
  "moxcms 0.9.1",
  "qrcode",
  "ratatui",
  "ratatui-image",
+ "serde",
+ "serde_json",
  "sha2",
  "tokio",
  "toml",

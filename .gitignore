@@ -6,3 +6,5 @@
 *.log
 .DS_Store
 /dev-notes/
+*.cache.sqlite3
+*.cache.sqlite3-*

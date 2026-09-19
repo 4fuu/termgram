@@ -1,3 +1,4 @@
+mod local;
 mod requests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -167,7 +168,7 @@ pub fn spawn(config: Config) -> TelegramHandle {
     let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
     let task = tokio::spawn(async move {
-        if let Err(error) = Box::pin(run(config, command_rx, event_tx.clone())).await {
+        if let Err(error) = Box::pin(local::serve(config, command_rx, event_tx.clone())).await {
             let _ = event_tx
                 .send(NetworkEvent::Fatal(describe_worker_error(&error)))
                 .await;
@@ -194,6 +195,7 @@ async fn run(
     config: Config,
     mut commands: mpsc::Receiver<TelegramCommand>,
     events: mpsc::Sender<NetworkEvent>,
+    mut bootstrap: local::Bootstrap,
 ) -> Result<()> {
     config.prepare_session_dir()?;
     events
@@ -251,10 +253,27 @@ async fn run(
                 }
             }
         };
+        let user_id = me.id().bare_id().context("Telegram account has no stable identifier")?;
+        if bootstrap.account_id.is_some_and(|previous| previous != user_id) {
+            bootstrap.cursor = crate::cache::SyncCursor::default();
+            bootstrap.chats.clear();
+            events.send(NetworkEvent::CacheAccountReset { user_id }).await?;
+        }
+        events.send(NetworkEvent::AccountIdentity { user_id }).await?;
         let user_name = safe_name(me.first_name(), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
 
         let mut cache = WorkerCache::default();
+        for chat in bootstrap.chats {
+            if let Some(id) = PeerId::from_bot_api_dialog_id(chat.id) {
+                if let Some(peer) = session.peer_ref(id).await? { cache.peers.insert(chat.id, peer); }
+                cache.names.insert(id, chat.title);
+                if chat.kind == ChatKind::Group && id.kind() == PeerKind::Channel {
+                    cache.visible_channel_groups.insert(chat.id);
+                }
+            }
+        }
+        let cursor = bootstrap.cursor;
         events
             .send(NetworkEvent::Status(ConnectionStatus::Online))
             .await
@@ -272,6 +291,10 @@ async fn run(
             )
             .await
             .map_err(anyhow::Error::from_boxed)?;
+        updates.restore_state(UpdatesState {
+            pts: cursor.pts, qts: cursor.qts, date: cursor.date, seq: cursor.seq,
+            channels: cursor.channels.into_iter().map(|(id, pts)| grammers_session::types::ChannelState { id, pts }).collect(),
+        });
         let mut recovering = false;
         let mut transfers = JoinSet::new();
         let mut requests = JoinSet::new();
@@ -280,7 +303,7 @@ async fn run(
         'worker: loop {
             // Grammers can change its message-box state before awaiting peer
             // storage. Keep this future alive when commands or RPCs complete.
-            let next = updates.next();
+            let next = updates.next_batch();
             tokio::pin!(next);
             let update = loop {
                 tokio::select! {
@@ -311,25 +334,28 @@ async fn run(
             if matches!(update, Err(InvocationError::Dropped)) {
                 bail!("Telegram update stream closed");
             }
-            let update_failed = update.is_err();
-            if let Err(error) = Box::pin(process_update(update, &session, &client, &mut cache,
-                &events, &mut recovering, &mut requests)).await {
-                events.send(NetworkEvent::Error(format!(
-                    "Could not process a Telegram update: {error:#}"
-                ))).await.ok();
-            }
-            if update_failed {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+            match update {
+                Ok((batch, state)) => {
+                    for update in batch {
+                        Box::pin(process_update(Ok(update), &session, &client, &mut cache,
+                            &events, &mut recovering, &mut requests)).await?;
+                    }
+                    events.send(NetworkEvent::SyncCheckpoint(crate::cache::SyncCursor {
+                        pts: state.pts, qts: state.qts, date: state.date, seq: state.seq,
+                        channels: state.channels.into_iter().map(|channel| (channel.id, channel.pts)).collect(),
+                    })).await?;
+                }
+                Err(error) => {
+                    Box::pin(process_update(Err(error), &session, &client, &mut cache,
+                        &events, &mut recovering, &mut requests)).await?;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
             }
         }
 
         requests.shutdown().await;
         transfers.shutdown().await;
 
-        updates
-            .sync_update_state()
-            .await
-            .map_err(anyhow::Error::from_boxed)?;
         Ok(())
     })
     .await;
@@ -356,6 +382,9 @@ async fn process_update(
                 if requests.len() < requests::MAX_REQUESTS && begin_unresolved_refresh(cache) {
                     requests::refresh_dialogs(client, cache, events, requests).await?;
                 }
+                events
+                    .send(NetworkEvent::CacheMessage(map_message(&message, cache)?))
+                    .await?;
                 return Ok(());
             };
             if hidden {
@@ -386,6 +415,9 @@ async fn process_update(
                 if requests.len() < requests::MAX_REQUESTS && begin_unresolved_refresh(cache) {
                     requests::refresh_dialogs(client, cache, events, requests).await?;
                 }
+                events
+                    .send(NetworkEvent::CacheMessage(map_message(&message, cache)?))
+                    .await?;
                 return Ok(());
             };
             if hidden {
@@ -413,6 +445,20 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::PtsChanged => {
+                    events
+                        .send(NetworkEvent::CacheInvalidated { chat_id: None })
+                        .await?;
+                }
+                tl::enums::Update::ChannelTooLong(update) => {
+                    let chat_id =
+                        PeerId::channel_unchecked(update.channel_id).bot_api_dialog_id_unchecked();
+                    events
+                        .send(NetworkEvent::CacheInvalidated {
+                            chat_id: Some(chat_id),
+                        })
+                        .await?;
+                }
                 grammers_client::tl::enums::Update::ReadHistoryOutbox(read) => {
                     if let Some(chat_id) = PeerId::from(read.peer.clone()).bot_api_dialog_id() {
                         cache
@@ -1151,6 +1197,18 @@ async fn handle_command(
         | TelegramCommand::ResolveTelegramLink { .. }
         | TelegramCommand::ActivateButton { .. }
         | TelegramCommand::MarkRead { .. }) => {
+            if let TelegramCommand::LoadHistory {
+                chat_id,
+                request_id,
+            } = &command
+            {
+                events
+                    .send(NetworkEvent::HistoryLoading {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
             requests::spawn(command, client, cache, requests);
         }
         TelegramCommand::SendAttachment {

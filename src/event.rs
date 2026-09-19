@@ -254,6 +254,30 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    CachedSnapshot {
+        user_name: Option<String>,
+        chats: Vec<Chat>,
+    },
+    CachedHistory {
+        chat_id: ChatId,
+        request_id: u64,
+        messages: Vec<Message>,
+    },
+    HistoryLoading {
+        chat_id: ChatId,
+        request_id: u64,
+    },
+    SyncCheckpoint(crate::cache::SyncCursor),
+    CacheAccountReset {
+        user_id: i64,
+    },
+    AccountIdentity {
+        user_id: i64,
+    },
+    CacheMessage(Message),
+    CacheInvalidated {
+        chat_id: Option<ChatId>,
+    },
     Auth(AuthPrompt),
     Ready {
         user_name: String,

@@ -1,9 +1,11 @@
+use serde::{Deserialize, Serialize};
+
 use chrono::{DateTime, Local, TimeZone, Utc};
 use std::path::Path;
 
 pub type ChatId = i64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Chat {
     pub id: ChatId,
     pub title: String,
@@ -13,7 +15,7 @@ pub struct Chat {
     pub last_activity: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChatKind {
     Direct,
     Group,
@@ -24,7 +26,7 @@ pub enum ChatKind {
 ///
 /// This deliberately contains metadata only. Telegram's file reference stays
 /// in the network layer and is refreshed on demand before a download.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Attachment {
     pub kind: AttachmentKind,
     pub file_name: Option<String>,
@@ -34,7 +36,7 @@ pub struct Attachment {
     pub fallback_emoji: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentKind {
     Photo,
     File,
@@ -91,7 +93,7 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
     pub id: i32,
     pub chat_id: ChatId,
@@ -114,20 +116,20 @@ pub struct Message {
     pub buttons: Vec<MessageButton>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct MessageLink {
     pub label: String,
     pub url: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct MessageButton {
     pub label: String,
     pub index: u16,
     pub kind: MessageButtonKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageButtonKind {
     Url,
     Callback,
@@ -143,7 +145,7 @@ impl MessageButtonKind {
 }
 
 /// Lightweight metadata used to render and navigate a reply.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct ReplyInfo {
     pub message_id: i32,
     /// Stable dialog identifier for the target. Telegram permits replies to a
@@ -154,7 +156,7 @@ pub struct ReplyInfo {
     pub sender: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Delivery {
     Pending,
     Sent,

@@ -12,6 +12,7 @@ return {
   chats = { work = -1001234567890 },
   ghost_text = "{send} 发送 · {newline} 换行",
   keymap = {
+    { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },
     { context = "conversation", on = { "g", "w" }, run = "jump work" },
     { context = "compose", on = { "<Enter>" }, run = "newline" },
     { context = "compose", on = { "<C-s>" }, run = "send" },
@@ -20,7 +21,7 @@ return {
 ```
 
 上下文包括 `global`、`chats`、`conversation`、`compose`、`input`（登录与聊天过滤）
-和 `overlay`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
+、`overlay` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
 `run = "noop"` 删除绑定。组合键用独立按键列表表示，例如 `{ "g", "w" }`。
 配置会检查前缀冲突。组合键一秒后过期，Escape 可以取消尚未完成的组合键。
 按键表示法沿用 Yazi，例如 `<C-s>`、`<A-x>`、`<S-Enter>`、`<Tab>`、`<Esc>`。
@@ -34,6 +35,10 @@ return {
 方向键按显示行滚动，PageUp/PageDown 每次滚动十行。`i` 输入，`R` 回复，`r` 跳转到
 回复目标，`/` 在聊天列表中过滤，Tab 切换面板，`s` 设置，`a` 账号，`?` 帮助。
 输入框内的普通文字不会触发导航组合键或数字前缀。
+
+给 `message_up` 配置 `count = 20`，即可用一个快捷键向上跳 20 条。`count` 默认 1，
+范围 1–9999，支持 `up`、`down`、`message_up`、`message_down`、`page_up`、`page_down`。
+输入的数字前缀会乘以配置值，最终限制在 9999；其他动作不接受数量参数。
 
 输入框占位提示中的 `{send}`、`{newline}`、`{cancel}` 会替换为实际快捷键。
 `ghost_text = ""` 隐藏提示。应用内偏好单独保存，不会改写 Lua 文件。

@@ -35,8 +35,14 @@ struct BindingSpec {
     context: Context,
     on: Vec<String>,
     run: String,
+    #[serde(default = "default_count")]
+    count: usize,
     #[serde(default)]
     desc: Option<String>,
+}
+
+const fn default_count() -> usize {
+    1
 }
 
 #[derive(Default, Deserialize)]
@@ -53,6 +59,7 @@ struct Binding {
     context: Context,
     keys: Vec<Key>,
     run: String,
+    count: usize,
     description: String,
 }
 
@@ -159,6 +166,7 @@ impl Default for Keymap {
                     ("<Enter>", "open"),
                     ("<Right>", "open"),
                     ("<Tab>", "focus"),
+                    ("<S-Tab>", "focus"),
                     ("c", "chat_color"),
                     ("C", "folder_color"),
                     ("/", "filter"),
@@ -200,6 +208,7 @@ impl Default for Keymap {
                     ("<Esc>", "cancel"),
                     ("<Left>", "cancel"),
                     ("<Tab>", "focus"),
+                    ("<S-Tab>", "focus"),
                     ("q", "quit"),
                     ("?", "help"),
                     ("s", "settings"),
@@ -227,6 +236,8 @@ impl Default for Keymap {
                 &[
                     ("<Enter>", "open"),
                     ("<Esc>", "cancel"),
+                    ("<Tab>", "focus"),
+                    ("<S-Tab>", "focus"),
                     ("<Up>", "up"),
                     ("<Down>", "down"),
                 ][..],
@@ -235,6 +246,7 @@ impl Default for Keymap {
                 Context::Overlay,
                 &[
                     ("<Enter>", "open"),
+                    ("<Space>", "open"),
                     ("<Esc>", "cancel"),
                     ("?", "cancel"),
                     ("j", "down"),
@@ -265,6 +277,7 @@ impl Default for Keymap {
                         context,
                         on: keys.split(' ').map(str::to_owned).collect(),
                         run: run.to_owned(),
+                        count: 1,
                         desc: None,
                     })
                     .expect("valid builtin binding");
@@ -288,6 +301,7 @@ impl Default for Keymap {
                         context,
                         on: vec![key.to_owned()],
                         run: run.to_owned(),
+                        count: 1,
                         desc: None,
                     })
                     .expect("valid editor binding");
@@ -370,6 +384,17 @@ impl Keymap {
         if spec.on.is_empty() || spec.on.len() > 4 {
             bail!("a binding must contain one to four keys");
         }
+        if !(1..=9999).contains(&spec.count) {
+            bail!("binding count must be between 1 and 9999");
+        }
+        if spec.count != 1
+            && !matches!(
+                spec.run.as_str(),
+                "up" | "down" | "message_up" | "message_down" | "page_up" | "page_down"
+            )
+        {
+            bail!("count is only supported for navigation actions");
+        }
         let keys = spec
             .on
             .iter()
@@ -395,8 +420,16 @@ impl Keymap {
         self.bindings.push(Binding {
             context: spec.context,
             keys,
-            description: spec.desc.unwrap_or_else(|| spec.run.replace('_', " ")),
+            description: spec.desc.unwrap_or_else(|| {
+                let action = spec.run.replace('_', " ");
+                if spec.count == 1 {
+                    action
+                } else {
+                    format!("{action} ×{}", spec.count)
+                }
+            }),
             run: spec.run,
+            count: spec.count,
         });
         Ok(())
     }
@@ -463,7 +496,7 @@ impl Keymap {
             {
                 let result = Resolution::Action {
                     run: binding.run.clone(),
-                    count: self.count.max(1),
+                    count: self.count.max(1).saturating_mul(binding.count).min(9999),
                 };
                 self.reset();
                 return result;
@@ -497,6 +530,17 @@ impl Keymap {
         self.bindings
             .iter()
             .find(|binding| binding.context == context && binding.run == run)
+            .or_else(|| {
+                self.bindings.iter().find(|binding| {
+                    binding.context == Context::Global
+                        && binding.run == run
+                        && !self.bindings.iter().any(|local| {
+                            local.context == context
+                                && (local.keys.starts_with(&binding.keys)
+                                    || binding.keys.starts_with(&local.keys))
+                        })
+                })
+            })
             .map_or_else(
                 || "unbound".to_owned(),
                 |binding| display_keys(&binding.keys),
@@ -591,6 +635,55 @@ mod tests {
         assert!(
             Keymap::parse("return { keymap={{context='conversation',on={'x'},run='unknown'}} }")
                 .is_err()
+        );
+        for count in [0, 10_000] {
+            assert!(Keymap::parse(&format!(
+                "return {{keymap={{{{context='conversation',on={{'<C-u>'}},run='message_up',count={count}}}}}}}"
+            )).is_err());
+        }
+    }
+
+    #[test]
+    fn fixed_counts_and_global_hints_follow_context_precedence() {
+        let mut map = Keymap::parse(
+            r"return {keymap={
+            {context='conversation',on={'<C-u>'},run='message_up',count=20},
+            {context='global',on={'<C-s>'},run='send'},
+            {context='global',on={'g','w'},run='settings'},
+            {context='compose',on={'<Enter>'},run='newline'},
+            {context='input',on={'<C-s>'},run='clear'},
+        }}",
+        )
+        .unwrap();
+        assert_eq!(map.hint(Context::Compose, "send"), "<C-s>");
+        assert_eq!(map.hint(Context::Input, "send"), "unbound");
+        assert_eq!(map.hint(Context::Conversation, "settings"), "s");
+        assert!(matches!(
+            map.feed(
+                Context::Conversation,
+                &KeyEvent::new(KeyCode::Char('2'), Modifiers::empty())
+            ),
+            Resolution::Pending(_)
+        ));
+        assert_eq!(
+            map.feed(
+                Context::Conversation,
+                &KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL)
+            ),
+            Resolution::Action {
+                run: "message_up".to_owned(),
+                count: 40
+            }
+        );
+        assert_eq!(
+            map.feed(
+                Context::Conversation,
+                &KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL)
+            ),
+            Resolution::Action {
+                run: "message_up".to_owned(),
+                count: 20
+            }
         );
     }
 }

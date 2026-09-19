@@ -6,6 +6,7 @@ return {
   },
   ghost_text = "{send} to send",
   keymap = {
+    -- { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },
     -- { context = "conversation", on = { "g", "w" }, run = "jump work" },
     -- { context = "compose", on = { "<Enter>" }, run = "newline" },
     -- { context = "compose", on = { "<C-s>" }, run = "send" },

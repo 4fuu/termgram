@@ -18,6 +18,7 @@ use crate::app::{
 use crate::config::DownloadBehavior;
 use crate::event::ConnectionStatus;
 use crate::input::TextInput;
+use crate::keymap::Context;
 use crate::model::{AttachmentKind, Delivery, Message, MessageButtonKind};
 
 const ACCENT: Color = Color::Rgb(216, 180, 254);
@@ -53,6 +54,27 @@ pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     }
 }
 
+fn account_controls(app: &AppState, context: Context) -> String {
+    let hint = |action| app.keymap.hint(context, action);
+    format!(
+        "{} quit · {} next · {} add account",
+        hint("quit"),
+        hint("next_account"),
+        hint("add_account")
+    )
+}
+
+fn overlay_controls(app: &AppState, action: &str) -> String {
+    let hint = |action| app.keymap.hint(Context::Overlay, action);
+    format!(
+        "{} {action} · {} close\n{}/{} select",
+        hint("open"),
+        hint("cancel"),
+        hint("up"),
+        hint("down")
+    )
+}
+
 fn render_connecting(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let spinner = spinner(app.tick);
     let mut lines = vec![
@@ -63,7 +85,7 @@ fn render_connecting(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Line::from(""),
         Line::from(format!("{spinner}  Connecting to Telegram…")),
         Line::from(Span::styled(
-            "F2 next account · F3 add account · Ctrl+C quits",
+            account_controls(app, Context::Global),
             Style::default().fg(MUTED),
         )),
     ];
@@ -76,6 +98,19 @@ fn render_connecting(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     render_centered_notice(frame, area, lines);
 }
 
+fn auth_controls(app: &AppState, phase: &AuthPhase) -> String {
+    let hint = |action| app.keymap.hint(Context::Input, action);
+    format!(
+        "{} · {}",
+        if matches!(phase, AuthPhase::Phone) {
+            format!("{} QR", hint("focus"))
+        } else {
+            format!("{} starts over", hint("cancel"))
+        },
+        account_controls(app, Context::Input)
+    )
+}
+
 fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPhase) {
     if let AuthPhase::Qr { url } = phase {
         render_qr_auth(frame, area, app, url);
@@ -83,12 +118,9 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
     }
     let width = area.width.min(72);
     let text_width = width.saturating_sub(4);
-    let footer = if matches!(phase, AuthPhase::Phone) {
-        "Tab QR · F2 next account · F3 add account · Ctrl+C quits"
-    } else {
-        "Esc starts over · F2 next account · F3 add account · Ctrl+C quits"
-    };
-    let footer_height = wrapped_height(footer, text_width);
+    let hint = |action| app.keymap.hint(Context::Input, action);
+    let footer = auth_controls(app, phase);
+    let footer_height = wrapped_height(&footer, text_width);
     let status_height = app
         .status_message
         .as_deref()
@@ -153,6 +185,7 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
         .wrap(Wrap { trim: true }),
         chunks[0],
     );
+    let submit_hint = format!("{} to continue", hint("open"));
     render_input(
         frame,
         chunks[1],
@@ -161,7 +194,7 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
         if app.auth_is_submitting() {
             "Submitted"
         } else {
-            "Enter to continue"
+            &submit_hint
         },
         !app.auth_is_submitting(),
     );
@@ -175,15 +208,19 @@ fn render_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, phase: &AuthPh
             WARNING,
         );
     }
-    render_notice(frame, chunks[3], footer, MUTED);
+    render_notice(frame, chunks[3], &footer, MUTED);
 }
 
 fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) {
+    let display = app.keymap.hint(Context::Input, "focus");
+    let cancel = app.keymap.hint(Context::Input, "cancel");
+    let accounts = account_controls(app, Context::Input);
     let Ok(code) = QrCode::new(url.as_bytes()) else {
         render_qr_unavailable(
             frame,
             area,
-            "Could not render this QR code. Press Esc to use your phone number.",
+            app,
+            &format!("Could not render this QR code. {cancel} for phone sign-in."),
         );
         return;
     };
@@ -198,19 +235,19 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
             QrRenderMode::Compatible => ("Full-cell", "compact"),
         };
         let message = format!(
-            "{mode_name} QR needs at least {qr_width} × {required_height} terminal cells. Resize, press Tab for {alternative} mode, or Esc for phone sign-in."
+            "{mode_name} QR needs at least {qr_width} × {required_height} terminal cells. Resize, {display} for {alternative} mode, or {cancel} for phone sign-in."
         );
         let message = app
             .status_message
             .as_deref()
             .map_or_else(|| message.clone(), |error| format!("{error}\n\n{message}"));
-        render_qr_unavailable(frame, area, &message);
+        render_qr_unavailable(frame, area, app, &message);
         return;
     }
 
     let (guidance, style) = if let Some(message) = &app.status_message {
         (
-            format!("{message} · Tab display · F2 next · F3 add · Esc phone"),
+            format!("{message} · {display} display · {cancel} phone · {accounts}"),
             Style::default().fg(DANGER),
         )
     } else {
@@ -220,7 +257,7 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
         };
         (
             format!(
-                "{} Telegram: Devices→Link Desktop · Tab {alternative} · F2 next · F3 add · Esc phone",
+                "{} Telegram: Devices→Link Desktop · {display} {alternative} · {cancel} phone · {accounts}",
                 spinner(app.tick),
             ),
             Style::default().fg(WARNING).bold(),
@@ -232,8 +269,9 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
         render_qr_unavailable(
             frame,
             area,
+            app,
             &format!(
-                "{guidance}\n\nResize the terminal to show the QR code, or Esc for phone sign-in."
+                "{guidance}\n\nResize the terminal to show the QR code, or {cancel} for phone sign-in."
             ),
         );
         return;
@@ -262,7 +300,7 @@ fn render_qr_auth(frame: &mut Frame<'_>, area: Rect, app: &AppState, url: &str) 
     );
 }
 
-fn render_qr_unavailable(frame: &mut Frame<'_>, area: Rect, message: &str) {
+fn render_qr_unavailable(frame: &mut Frame<'_>, area: Rect, app: &AppState, message: &str) {
     let popup = centered(area, area.width.min(72), area.height);
     render_centered_notice(
         frame,
@@ -275,7 +313,10 @@ fn render_qr_unavailable(frame: &mut Frame<'_>, area: Rect, message: &str) {
             Line::from(""),
             Line::from(message),
             Line::from(""),
-            Line::from(Span::styled("Ctrl+C quits", Style::default().fg(MUTED))),
+            Line::from(Span::styled(
+                format!("{} quit", app.keymap.hint(Context::Input, "quit")),
+                Style::default().fg(MUTED),
+            )),
         ],
     );
 }
@@ -588,9 +629,12 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let Some(chat_id) = app.active_chat_id else {
         app.set_message_hit_regions(Vec::new());
         frame.render_widget(
-            Paragraph::new("Select a chat and press Enter")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(MUTED)),
+            Paragraph::new(format!(
+                "Select a chat · {} open",
+                app.keymap.hint(Context::Chats, "open")
+            ))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(MUTED)),
             vertically_centered(inner, 1),
         );
         return;
@@ -604,7 +648,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         let text = if app.loading_history {
             format!("{}  Loading messages…", spinner(app.tick))
         } else {
-            "No messages yet — press i to write one".to_owned()
+            "No messages yet".to_owned()
         };
         frame.render_widget(
             Paragraph::new(text)
@@ -846,6 +890,11 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &AppState, enabled: b
                 .replace("{send}", &app.keymap.hint(Context::Compose, "send"))
                 .replace("{newline}", &app.keymap.hint(Context::Compose, "newline"))
                 .replace("{cancel}", &app.keymap.hint(Context::Compose, "cancel"))
+        } else if app.focus == Focus::Chats {
+            format!(
+                "{} to focus conversation",
+                app.keymap.hint(Context::Chats, "focus")
+            )
         } else {
             format!(
                 "{} to compose",
@@ -895,16 +944,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState, narrow: bool
             format!(" Update {version} available · run tg update"),
             Style::default().fg(SUCCESS),
         ))
-    } else if app.mode == Mode::Compose {
+    } else if app.mode != Mode::Navigate {
         Line::default()
-    } else if matches!(app.mode, Mode::Settings | Mode::Accounts) {
-        use crate::keymap::Context;
-        Line::from(format!(
-            " {} select · {} activate · {} close",
-            app.keymap.hint(Context::Overlay, "down"),
-            app.keymap.hint(Context::Overlay, "open"),
-            app.keymap.hint(Context::Overlay, "cancel")
-        ))
     } else {
         let context = if app.focus == Focus::Chats {
             crate::keymap::Context::Chats
@@ -935,7 +976,12 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Keyboard shortcuts · ↑↓ scroll · Esc close ");
+        .title(format!(
+            " Shortcuts · {} close · {}/{} scroll ",
+            app.keymap.hint(Context::Overlay, "cancel"),
+            app.keymap.hint(Context::Overlay, "up"),
+            app.keymap.hint(Context::Overlay, "down")
+        ));
     let lines = app
         .keymap
         .help()
@@ -1017,11 +1063,9 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         if index == 2 {
             lines.push(Line::from(Span::styled(
                 match settings.download_behavior {
-                    DownloadBehavior::CacheOnly => {
-                        "  Temp download only; Termgram never reveals files."
-                    }
+                    DownloadBehavior::CacheOnly => "  Keep downloads for reuse.",
                     DownloadBehavior::RevealOnActivation => {
-                        "  Second activation reveals; Termgram never executes files."
+                        "  Activate a downloaded file to reveal it."
                     }
                 },
                 Style::default().fg(MUTED),
@@ -1032,7 +1076,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            "↑↓/j/k select · Enter/Space toggle · Esc close",
+            overlay_controls(app, "toggle"),
             Style::default().fg(MUTED),
         )),
     ]);
@@ -1098,7 +1142,7 @@ fn render_accounts(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            "↑↓/j/k select · Enter switch · 1-8 direct · Esc close",
+            overlay_controls(app, "switch"),
             Style::default().fg(MUTED),
         )),
     ]);
@@ -1130,8 +1174,9 @@ fn render_fatal(frame: &mut Frame<'_>, area: Rect, app: &AppState, message: &str
             Line::from(""),
             Line::from(Span::styled(
                 format!(
-                    "Account {} · F2 next · F3 add · q/Ctrl+C quit",
-                    app.active_account()
+                    "Account {} · {}",
+                    app.active_account(),
+                    account_controls(app, Context::Chats)
                 ),
                 Style::default().fg(MUTED),
             )),
@@ -1477,11 +1522,11 @@ fn message_body(
         "inline preview"
     } else {
         match state {
-            AttachmentState::Ready => "click/Enter to download",
+            AttachmentState::Ready => "ready to download",
             AttachmentState::Downloading => "downloading…",
             AttachmentState::Downloaded => match download_behavior {
                 DownloadBehavior::CacheOnly => "downloaded to cache",
-                DownloadBehavior::RevealOnActivation => "click/Enter to reveal",
+                DownloadBehavior::RevealOnActivation => "downloaded · activate to reveal",
             },
         }
     };
@@ -1778,6 +1823,19 @@ mod tests {
         let text = render_text(&app, 100, 24);
         assert!(text.contains("<C-s> to send"));
         assert!(!text.contains("Enter send"));
+        app.mode = Mode::Navigate;
+        app.focus = Focus::Chats;
+        assert!(render_text(&app, 100, 24).contains("<Tab> to focus conversation"));
+    }
+
+    #[test]
+    fn narrow_search_keeps_submit_and_close_controls_visible() {
+        let mut app = populated_app();
+        app.mode = Mode::Search;
+        app.search.editing = true;
+        let output = render_text(&app, 40, 14);
+        assert!(output.contains("<Enter> search"));
+        assert!(output.contains("<Esc> close"));
     }
 
     #[test]
@@ -1799,16 +1857,16 @@ mod tests {
                     output.contains("AUTH_RESTART"),
                     "{width}x{height}: {output}"
                 );
-                assert!(output.contains("Ctrl+C quits"));
-                assert!(output.contains("Enter to continue"));
+                assert!(output.contains("<C-c> quit"), "{output}");
+                assert!(output.contains("<Enter> to continue"));
             }
             app.status_message = Some(format!("{} END_OF_ERROR", "连接失败 retry ".repeat(30)));
             let output = render_text(&app, 72, 40);
             assert!(output.contains("END_OF_ERROR"));
-            assert!(output.contains("Ctrl+C quits"));
+            assert!(output.contains("<C-c> quit"), "{output}");
             let small = render_text(&app, 40, 10);
             assert!(small.contains("Resize terminal for more"));
-            assert!(small.contains("Ctrl+C quits"));
+            assert!(small.contains("<C-c> quit"));
         }
     }
 
@@ -1834,7 +1892,7 @@ mod tests {
         app.screen = Screen::Fatal(format!("{} END_OF_ERROR", "request failed ".repeat(30)));
         let output = render_text(&app, 40, 24);
         assert!(output.contains("END_OF_ERROR"));
-        assert!(output.contains("q/Ctrl+C"));
+        assert!(output.contains("q quit"));
         assert!(output.contains("quit"));
         assert!(render_text(&app, 40, 10).contains("Resize terminal for more"));
     }
@@ -1921,11 +1979,11 @@ mod tests {
         assert!(output.contains("Termgram"));
         assert!(output.contains("Alice"));
         assert!(output.contains("hello from the terminal"));
-        assert!(output.contains("i to compose"));
+        assert!(output.contains("<Tab> to focus conversation"));
     }
 
     #[test]
-    fn settings_overlay_renders_defaults_and_safety_language() {
+    fn settings_overlay_renders_current_download_behavior() {
         let mut app = populated_app();
         app.mode = Mode::Settings;
         let output = render_text(&app, 100, 30);
@@ -1934,7 +1992,7 @@ mod tests {
         assert!(output.contains("Automatic update checks"));
         assert!(output.contains("Stable"));
         assert!(output.contains("Reveal on activation"));
-        assert!(output.contains("never executes files"));
+        assert!(output.contains("Activate a downloaded file to reveal it"));
     }
 
     #[test]
@@ -1956,7 +2014,7 @@ mod tests {
         assert!(output.contains("Off"));
         assert!(output.contains("Prerelease"));
         assert!(output.contains("Keep in cache"));
-        assert!(output.contains("never reveals files"));
+        assert!(output.contains("Keep downloads for reuse"));
     }
 
     #[test]
@@ -1975,7 +2033,7 @@ mod tests {
         assert!(output.contains("Account 2  ·  Me  (active)"));
         assert!(output.contains("Account 3"));
         assert!(output.contains("+ Add account"));
-        assert!(output.contains("1-8 direct"));
+        assert!(output.contains("<Enter> switch"));
     }
 
     #[test]
@@ -2126,7 +2184,7 @@ mod tests {
         });
 
         let output = render_text(&app, 72, 20);
-        assert!(output.contains("Esc starts over"));
+        assert!(output.contains("<Esc> starts over"));
     }
 
     #[test]
@@ -2174,8 +2232,8 @@ mod tests {
 
         let output = render_text(&app, 80, 24);
         assert!(output.contains("Devices→Link Desktop"));
-        assert!(output.contains("Tab full"));
-        assert!(output.contains("Esc phone"));
+        assert!(output.contains("<Tab> full"));
+        assert!(output.contains("<Esc> phone"));
         assert!(output.contains('▀'));
         assert!(!output.contains(secret_url));
         assert_eq!(qr_pair_symbol(QrColor::Dark, QrColor::Dark), "█");
@@ -2204,7 +2262,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect();
-        assert!(compatible_text.contains("Tab compact"));
+        assert!(compatible_text.contains("<Tab> compact"));
         assert!(!compatible_text.contains('▀'));
         assert!(!compatible_text.contains(secret_url));
         assert!(

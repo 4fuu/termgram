@@ -13,6 +13,7 @@ return {
   chats = { work = -1001234567890 },
   ghost_text = "{send} to send · {newline} for a new line",
   keymap = {
+    { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },
     { context = "conversation", on = { "g", "w" }, run = "jump work" },
     { context = "compose", on = { "<Enter>" }, run = "newline" },
     { context = "compose", on = { "<C-s>" }, run = "send" },
@@ -39,6 +40,11 @@ Arrow keys scroll rendered rows. PageUp/PageDown scroll ten rows. `i` starts
 composing, `R` replies, `r` opens a reply target, `/` filters the chat list,
 Tab switches panes, `s` opens settings, `a` opens accounts, and `?` opens help.
 Counts and navigation chords never consume ordinary composer text.
+
+Use `count = 20` with `message_up` for a single shortcut that moves up 20
+messages. The optional count defaults to 1 and accepts 1–9999 for `up`, `down`,
+`message_up`, `message_down`, `page_up`, and `page_down`. A typed prefix multiplies
+the configured count, capped at 9999. Other actions do not accept a count.
 
 Composer placeholders use the effective `{send}`, `{newline}` and `{cancel}`
 bindings. Set `ghost_text = ""` to hide them. Managed in-app preferences remain

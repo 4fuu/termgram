@@ -614,6 +614,12 @@ impl App {
                 return Vec::new();
             }
             "help" | "settings" | "accounts" if self.screen == Screen::Main => {
+                if (run == "help" && self.mode == Mode::Help)
+                    || (run == "settings" && self.mode == Mode::Settings)
+                    || (run == "accounts" && self.mode == Mode::Accounts)
+                {
+                    return self.handle_main(KeyAction::Escape);
+                }
                 let character = match run {
                     "help" => '?',
                     "settings" => 's',
@@ -2076,7 +2082,11 @@ impl App {
 
     fn switch_to_next_account(&mut self) -> Vec<TelegramCommand> {
         if self.settings.account_count < 2 {
-            self.status_message = Some("Only one account · press F3 to add another".to_owned());
+            self.status_message = Some(format!(
+                "Only one account · {} to add another",
+                self.keymap
+                    .hint(crate::keymap::Context::Global, "add_account")
+            ));
             return Vec::new();
         }
         let account = if self.settings.active_account == self.settings.account_count {
@@ -2735,7 +2745,11 @@ impl App {
             })
             .cloned()
         else {
-            self.status_message = Some("Select a link with o first".to_owned());
+            self.status_message = Some(format!(
+                "Select a link with {} first",
+                self.keymap
+                    .hint(crate::keymap::Context::Conversation, "next_action")
+            ));
             return Vec::new();
         };
         let links = &message.links;
@@ -4139,7 +4153,7 @@ mod tests {
     use std::fs;
 
     use chrono::{TimeZone, Utc};
-    use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+    use yazi_term::event::{KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 
     use super::{
         App, AttachmentState, AuthPhase, Focus, MAX_CACHED_CHATS, MAX_MESSAGES_PER_CHAT, Mode,
@@ -4219,7 +4233,14 @@ mod tests {
                 .map(|id| message(id, 1, "wrapped\nmessage", false))
                 .collect(),
         });
-        let commands = app.run_binding("message_up", 100);
+        app.keymap = crate::keymap::Keymap::parse(
+            "return {keymap={{context='conversation',on={'<C-u>'},run='message_up',count=100}}}",
+        )
+        .unwrap();
+        let commands = app.handle_key(&KeyEvent::new(
+            yazi_term::event::KeyCode::Char('u'),
+            Modifiers::CONTROL,
+        ));
         let TelegramCommand::LoadOlder {
             request_id,
             before_id,
@@ -4263,6 +4284,31 @@ mod tests {
             app.loading_history,
             "cached content remains visible during reconciliation"
         );
+    }
+
+    #[test]
+    fn global_overlay_toggles_restore_the_composer_and_draft() {
+        use yazi_term::event::KeyCode;
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.start_composing();
+        app.handle_action(KeyAction::Character('x'));
+        app.keymap = crate::keymap::Keymap::parse(
+            r"return {keymap={
+            {context='global',on={'<F4>'},run='help'},
+            {context='global',on={'<F5>'},run='settings'},
+            {context='global',on={'<F6>'},run='accounts'},
+        }}",
+        )
+        .unwrap();
+        for (key, mode) in [(4, Mode::Help), (5, Mode::Settings), (6, Mode::Accounts)] {
+            let event = KeyEvent::new(KeyCode::Fn(key), Modifiers::empty());
+            app.handle_key(&event);
+            assert_eq!(app.mode, mode);
+            app.handle_key(&event);
+            assert_eq!(app.mode, Mode::Compose);
+            assert_eq!(app.active_draft().unwrap().value(), "x");
+        }
     }
 
     #[test]
@@ -4325,13 +4371,14 @@ mod tests {
 
     #[test]
     fn tab_starts_qr_login_and_escape_drops_the_transient_token() {
+        use yazi_term::event::{KeyCode, KeyEvent};
+        let tab = KeyEvent::new(KeyCode::Tab, Modifiers::empty());
+        let back_tab = KeyEvent::new(KeyCode::Tab, Modifiers::SHIFT);
+        let escape = KeyEvent::new(KeyCode::Escape, Modifiers::empty());
         let mut app = App::new();
         app.handle_network(NetworkEvent::Auth(AuthPrompt::Phone));
         app.handle_action(KeyAction::Character('+'));
-        assert_eq!(
-            app.handle_action(KeyAction::Tab),
-            vec![TelegramCommand::StartQrAuth]
-        );
+        assert_eq!(app.handle_key(&tab), vec![TelegramCommand::StartQrAuth]);
         assert!(app.auth_input().is_empty());
         assert_eq!(app.auth_progress_label(), Some("Preparing QR sign-in…"));
 
@@ -4346,18 +4393,15 @@ mod tests {
         assert!(app.needs_animation());
         assert!(!format!("{:?}", app.screen).contains(secret_url));
         assert_eq!(app.qr_render_mode(), QrRenderMode::Compact);
-        assert!(app.handle_action(KeyAction::Tab).is_empty());
+        assert!(app.handle_key(&tab).is_empty());
         assert_eq!(app.qr_render_mode(), QrRenderMode::Compatible);
-        assert!(app.handle_action(KeyAction::BackTab).is_empty());
+        assert!(app.handle_key(&back_tab).is_empty());
         assert_eq!(app.qr_render_mode(), QrRenderMode::Compact);
         assert_eq!(
             app.auth_progress_label(),
             Some("Waiting for approval in Telegram…")
         );
-        assert_eq!(
-            app.handle_action(KeyAction::Escape),
-            vec![TelegramCommand::RestartAuth]
-        );
+        assert_eq!(app.handle_key(&escape), vec![TelegramCommand::RestartAuth]);
         assert_eq!(app.screen, Screen::Auth(AuthPhase::Phone));
         assert!(app.auth_is_submitting());
         assert_eq!(

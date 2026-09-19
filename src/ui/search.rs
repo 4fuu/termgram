@@ -19,7 +19,7 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Constraint::Length(3),
         Constraint::Length(2),
         Constraint::Min(1),
-        Constraint::Length(2),
+        Constraint::Length(3),
     ])
     .split(inner);
     let input = &app.search.query;
@@ -79,12 +79,12 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let hint = |action| app.keymap.hint(Context::Search, action);
     frame.render_widget(
         Paragraph::new(format!(
-            "{} {} · {} scope · {} edit · {} close\n{} previous page · {} next page",
+            "{} {} · {} close\n{} scope · {} edit\n{} previous · {} next",
             hint("open"),
             if app.search.editing { "search" } else { "open" },
+            hint("cancel"),
             hint("search_scope"),
             hint("search_query"),
-            hint("cancel"),
             hint("search_previous"),
             hint("search_more")
         ))

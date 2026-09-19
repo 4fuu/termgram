@@ -223,9 +223,10 @@ jobs:
             export TERMGRAM_BUILD_VERSION="$version"
             cargo test --locked --all-targets --all-features
             # Exercise Cargo's Git checkout, path patches, install tracking and
-            # release profile. Package the installed binary on all six hosts.
+            # release profile. Keep immutable Git-source artifacts separate from
+            # workspace builds, including build-script executables and metadata.
             cargo install --locked --git "$source_url" --rev "$sha" \
-              --bin tg --target "${{ matrix.target }}" --target-dir target \
+              --bin tg --target "${{ matrix.target }}" --target-dir target/cargo-install \
               --root "$install_root" --force termgram
             binary="$install_root/bin/tg"
             if [[ "$RUNNER_OS" == Windows ]]; then

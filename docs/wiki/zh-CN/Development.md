@@ -26,7 +26,8 @@ python3 scripts/export-wiki.py --check
 
 CI 在六个平台上通过 `cargo install --git` 安装检出的 Git 提交，验证包选择、仓库内依赖
 补丁、锁文件、Cargo 安装记录和已安装程序的版本，再打包该可执行文件；通过 Cargo
-构建目录复用产物。版本与发布见[更新](Updates.md)。自动化数据不能证明
+目录 `target/cargo-install` 复用产物，与工作区构建及其 build-script 元数据分开。
+版本与发布见[更新](Updates.md)。自动化数据不能证明
 与 Telegram 的真实延迟一致，也不能代替目标平台文件管理器的人工验证。
 这些验证需要获准的测试账号与对应系统，不应默认给其他人发消息来测试。
 

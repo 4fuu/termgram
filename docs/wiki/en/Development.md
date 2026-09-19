@@ -35,7 +35,8 @@ CI runs the same checks and installs each release with `cargo install --git`
 from the checked-out Git revision on six native hosts. It exercises package
 selection, repository-local patches, the lockfile, installation tracking and
 the installed binary's version before packaging that executable. Build artifacts
-are reused through Cargo's target directory. See [Updates](Updates.md)
+are reused in `target/cargo-install`, separate from workspace builds and their
+build-script metadata. See [Updates](Updates.md)
 for versioning and publication. Automated fixtures do not establish real Telegram
 latency parity or verify a desktop file manager's selection behavior. For those,
 use an authorized test account and the target operating system; do not send

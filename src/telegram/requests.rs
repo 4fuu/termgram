@@ -32,16 +32,37 @@ pub(super) async fn refresh_dialogs(
     events: &mpsc::Sender<NetworkEvent>,
     requests: &mut JoinSet<Completion>,
 ) -> Result<()> {
-    if !cache.dialogs_loading {
-        cache.dialogs_loading = true;
+    if cache.dialogs.in_flight {
+        cache.dialogs.dirty = true;
+    } else {
+        cache.dialogs.in_flight = true;
+        cache.dialogs.dirty = false;
         events.send(NetworkEvent::DialogsLoading).await?;
         spawn(TelegramCommand::RefreshDialogs, client, cache, requests);
     }
     Ok(())
 }
 
+pub(super) async fn refresh_pending(
+    client: &Client,
+    cache: &mut WorkerCache,
+    events: &mpsc::Sender<NetworkEvent>,
+    requests: &mut JoinSet<Completion>,
+) -> Result<()> {
+    if cache.dialogs.dirty && !cache.dialogs.in_flight && requests.len() < MAX_REQUESTS {
+        refresh_dialogs(client, cache, events, requests).await?;
+    }
+    if cache.folders.dirty && !cache.folders.in_flight && requests.len() < MAX_REQUESTS {
+        cache.folders.dirty = false;
+        cache.folders.in_flight = true;
+        spawn(TelegramCommand::RefreshFolders, client, cache, requests);
+    }
+    Ok(())
+}
+
 enum Response {
-    Dialogs(Vec<Dialog>),
+    Dialogs(Vec<Dialog>, (i64, i64)),
+    Folders(Vec<crate::folders::Folder>),
     History(Vec<TelegramMessage>),
     Message(Box<TelegramMessage>),
     Link(Chat, PeerRef, Option<Box<TelegramMessage>>),
@@ -81,9 +102,10 @@ pub(super) fn spawn(
         },
         _ => None,
     };
+    let self_id = cache.self_id;
     let client = client.clone();
     requests.spawn(async move {
-        let result = Box::pin(execute(&command, &client, peer, private_link)).await;
+        let result = Box::pin(execute(&command, &client, peer, private_link, self_id)).await;
         Completion { command, result }
     });
 }
@@ -93,16 +115,23 @@ async fn execute(
     client: &Client,
     peer: Option<PeerRef>,
     private_link: Option<(PeerRef, String)>,
+    self_id: i64,
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::RefreshFolders => Ok(Response::Folders(
+            super::folders::load(client, self_id).await?,
+        )),
         TelegramCommand::RefreshDialogs => {
             let mut iter = client.iter_dialogs();
             let mut dialogs = Vec::new();
             while let Some(dialog) = iter.next().await? {
                 dialogs.push(dialog);
             }
-            Ok(Response::Dialogs(dialogs))
+            Ok(Response::Dialogs(
+                dialogs,
+                super::folders::default_mutes(client).await?,
+            ))
         }
         TelegramCommand::LoadHistory { .. } | TelegramCommand::LoadOlder { .. } => {
             let before = match command {
@@ -177,7 +206,10 @@ pub(super) async fn complete(
 ) -> Result<()> {
     let Completion { command, result } = completion;
     if matches!(command, TelegramCommand::RefreshDialogs) {
-        cache.dialogs_loading = false;
+        cache.dialogs.in_flight = false;
+    }
+    if matches!(command, TelegramCommand::RefreshFolders) {
+        cache.folders.in_flight = false;
     }
     let response = match result {
         Ok(response) => response,
@@ -189,8 +221,11 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
-        (TelegramCommand::RefreshDialogs, Response::Dialogs(dialogs)) => {
-            NetworkEvent::Dialogs(apply_dialogs(dialogs, cache)?)
+        (TelegramCommand::RefreshFolders, Response::Folders(folders)) => {
+            NetworkEvent::Folders(folders)
+        }
+        (TelegramCommand::RefreshDialogs, Response::Dialogs(dialogs, defaults)) => {
+            NetworkEvent::Dialogs(apply_dialogs(dialogs, defaults, cache)?)
         }
         (
             TelegramCommand::LoadHistory {

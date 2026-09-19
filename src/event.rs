@@ -134,6 +134,7 @@ pub enum TelegramCommand {
         chat_id: ChatId,
     },
     RefreshDialogs,
+    RefreshFolders,
     /// Select a different local session slot. The runtime intercepts this
     /// command and replaces the single active Telegram worker.
     SwitchAccount {
@@ -236,6 +237,7 @@ impl TelegramCommand {
             TelegramCommand::MarkRead { chat_id } => {
                 NetworkEvent::ReadMarkFailed { chat_id, error }
             }
+            TelegramCommand::RefreshFolders => NetworkEvent::Error(error),
             TelegramCommand::RefreshDialogs => NetworkEvent::DialogsFailed(error),
             TelegramCommand::SwitchAccount { .. } | TelegramCommand::Shutdown => return None,
             TelegramCommand::StartQrAuth
@@ -362,6 +364,7 @@ impl fmt::Debug for TelegramCommand {
                 .debug_struct("MarkRead")
                 .field("chat_id", chat_id)
                 .finish(),
+            Self::RefreshFolders => formatter.write_str("RefreshFolders"),
             Self::RefreshDialogs => formatter.write_str("RefreshDialogs"),
             Self::SwitchAccount { account } => formatter
                 .debug_struct("SwitchAccount")
@@ -375,6 +378,11 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    Folders(Vec<crate::folders::Folder>),
+    UnreadChanged {
+        chat_id: ChatId,
+        unread: u32,
+    },
     OlderHistory {
         chat_id: ChatId,
         request_id: u64,

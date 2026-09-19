@@ -38,6 +38,9 @@ pub(super) async fn serve(
             })
             .await?;
     }
+    events
+        .send(NetworkEvent::Folders(store.folders().await?))
+        .await?;
     let bootstrap = Bootstrap {
         cursor: store.cursor().await?,
         chats,

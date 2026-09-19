@@ -111,6 +111,8 @@ const ACTIONS: &[&str] = &[
     "delete_word",
     "noop",
     "chat_info",
+    "folder_next",
+    "folder_previous",
 ];
 
 impl Default for Keymap {
@@ -146,6 +148,8 @@ impl Default for Keymap {
                     ("<Right>", "open"),
                     ("<Tab>", "focus"),
                     ("/", "filter"),
+                    ("]", "folder_next"),
+                    ("[", "folder_previous"),
                     ("q", "quit"),
                     ("?", "help"),
                     ("s", "settings"),

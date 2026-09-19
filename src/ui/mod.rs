@@ -445,13 +445,34 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     );
 }
 
+fn chat_list_title(app: &AppState) -> String {
+    match app.mode {
+        Mode::Filter => format!(" Chats · /{} ", app.filter.value()),
+        _ if app.folders.len() > 1 => {
+            let index = app
+                .folders
+                .iter()
+                .position(|folder| folder.id == app.folder_id)
+                .unwrap_or(0);
+            format!(
+                " {} {}/{} · {} {} ",
+                app.folders[index].title,
+                index + 1,
+                app.folders.len(),
+                app.keymap
+                    .hint(crate::keymap::Context::Chats, "folder_previous"),
+                app.keymap
+                    .hint(crate::keymap::Context::Chats, "folder_next")
+            )
+        }
+        _ => " Chats ".to_owned(),
+    }
+}
+
 fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     app.set_chat_pane_region((area.x, area.right(), area.y, area.bottom()));
     let focused = app.focus == Focus::Chats && app.mode != Mode::Compose;
-    let title = match app.mode {
-        Mode::Filter => format!(" Chats · /{} ", app.filter.value()),
-        _ => " Chats ".to_owned(),
-    };
+    let title = chat_list_title(app);
     let block = pane_block(title, focused);
     let visible = app.filtered_chat_indices();
     let viewport_height = usize::from(area.height.saturating_sub(2)).max(1);
@@ -1683,6 +1704,7 @@ mod tests {
         app.connection = ConnectionStatus::Online;
         app.user_name = Some("Me".to_owned());
         app.chats.push(Chat {
+            membership: crate::folders::ChatMembership::default(),
             id: 7,
             title: "Alice 東京".to_owned(),
             kind: ChatKind::Direct,
@@ -2225,6 +2247,7 @@ mod tests {
         let mut app = populated_app();
         for index in 0_i64..30 {
             app.chats.push(Chat {
+                membership: crate::folders::ChatMembership::default(),
                 id: 100 + index,
                 title: format!("Overflow chat {index:02}"),
                 kind: ChatKind::Direct,

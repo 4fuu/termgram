@@ -1,3 +1,4 @@
+mod folders;
 mod local;
 mod requests;
 
@@ -52,8 +53,16 @@ pub struct TelegramHandle {
 }
 
 #[derive(Default)]
+struct MetadataRefresh {
+    in_flight: bool,
+    dirty: bool,
+}
+
+#[derive(Default)]
 struct WorkerCache {
-    dialogs_loading: bool,
+    dialogs: MetadataRefresh,
+    folders: MetadataRefresh,
+    self_id: i64,
     channel_pts: HashMap<ChatId, i32>,
     peers: HashMap<ChatId, PeerRef>,
     /// Peers opened explicitly through supported Telegram links remain usable
@@ -275,7 +284,7 @@ async fn run(
         let user_name = safe_name(me.first_name(), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
 
-        let mut cache = WorkerCache::default();
+        let mut cache = WorkerCache { self_id: user_id, folders: MetadataRefresh { dirty: true, ..MetadataRefresh::default() }, ..WorkerCache::default() };
         for chat in bootstrap.chats {
             if let Some(id) = PeerId::from_bot_api_dialog_id(chat.id) {
                 if let Some(peer) = session.peer_ref(id).await? { cache.peers.insert(chat.id, peer); }
@@ -316,8 +325,10 @@ async fn run(
         let mut transfers = JoinSet::new();
         let mut requests = JoinSet::new();
         requests::refresh_dialogs(&client, &mut cache, &events, &mut requests).await?;
+        requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
 
         'worker: loop {
+            requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
             // Grammers can change its message-box state before awaiting peer
             // storage. Keep this future alive when commands or RPCs complete.
             let next = updates.next_batch();
@@ -354,6 +365,7 @@ async fn run(
                         }
                     }
                 }
+                requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
             };
             if matches!(update, Err(InvocationError::Dropped)) {
                 bail!("Telegram update stream closed");
@@ -422,6 +434,9 @@ async fn process_update(
         Ok(Update::NewMessage(update)) => {
             restore_online_status(events, recovering).await;
             let message = update.into_inner();
+            if message.mentioned() {
+                cache.dialogs.dirty = true;
+            }
             let Some(hidden) = is_hidden_broadcast(session, &message, cache).await? else {
                 if requests.len() < requests::MAX_REQUESTS && begin_unresolved_refresh(cache) {
                     requests::refresh_dialogs(client, cache, events, requests).await?;
@@ -455,6 +470,9 @@ async fn process_update(
         Ok(Update::MessageEdited(update)) => {
             restore_online_status(events, recovering).await;
             let message = update.into_inner();
+            if message.mentioned() {
+                cache.dialogs.dirty = true;
+            }
             let Some(hidden) = is_hidden_broadcast(session, &message, cache).await? else {
                 if requests.len() < requests::MAX_REQUESTS && begin_unresolved_refresh(cache) {
                     requests::refresh_dialogs(client, cache, events, requests).await?;
@@ -489,6 +507,40 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::DialogFilter(_)
+                | tl::enums::Update::DialogFilterOrder(_)
+                | tl::enums::Update::DialogFilters => {
+                    cache.folders.dirty = true;
+                }
+                tl::enums::Update::NotifySettings(_)
+                | tl::enums::Update::FolderPeers(_)
+                | tl::enums::Update::DialogUnreadMark(_)
+                | tl::enums::Update::PeerSettings(_)
+                | tl::enums::Update::ReadMessagesContents(_)
+                | tl::enums::Update::ChannelReadMessagesContents(_) => {
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::ReadHistoryInbox(read) => {
+                    if let Some(chat_id) = PeerId::from(read.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::UnreadChanged {
+                                chat_id,
+                                unread: u32::try_from(read.still_unread_count.max(0))
+                                    .unwrap_or_default(),
+                            })
+                            .await?;
+                    }
+                }
+                tl::enums::Update::ReadChannelInbox(read) => {
+                    events
+                        .send(NetworkEvent::UnreadChanged {
+                            chat_id: PeerId::channel_unchecked(read.channel_id)
+                                .bot_api_dialog_id_unchecked(),
+                            unread: u32::try_from(read.still_unread_count.max(0))
+                                .unwrap_or_default(),
+                        })
+                        .await?;
+                }
                 tl::enums::Update::PtsChanged => {
                     events
                         .send(NetworkEvent::CacheInvalidated { chat_id: None })
@@ -1115,7 +1167,11 @@ async fn cancel_authorized_login(client: &Client) -> Result<CodeOutcome> {
     Ok(CodeOutcome::Restart)
 }
 
-fn apply_dialogs(dialogs: Vec<Dialog>, cache: &mut WorkerCache) -> Result<Vec<Chat>> {
+fn apply_dialogs(
+    dialogs: Vec<Dialog>,
+    defaults: (i64, i64),
+    cache: &mut WorkerCache,
+) -> Result<Vec<Chat>> {
     let mut chats = Vec::new();
     let mut visible_chat_ids = HashSet::new();
     let mut dialog_name_ids = HashSet::new();
@@ -1169,6 +1225,7 @@ fn apply_dialogs(dialogs: Vec<Dialog>, cache: &mut WorkerCache) -> Result<Vec<Ch
             .or_insert(read_outbox);
         let last_message = dialog.last_message.as_ref();
         chats.push(Chat {
+            membership: folders::membership(&dialog, defaults),
             id,
             title: safe_name(dialog.peer().name(), "Unknown"),
             kind: match dialog.peer() {
@@ -1404,6 +1461,9 @@ async fn handle_command(
                     result,
                 }
             });
+        }
+        TelegramCommand::RefreshFolders => {
+            cache.folders.dirty = true;
         }
         TelegramCommand::RefreshDialogs => {
             requests::refresh_dialogs(client, cache, events, requests).await?;
@@ -1841,6 +1901,7 @@ async fn resolve_telegram_link(
                 .map_err(anyhow::Error::from_boxed)?
                 .context("Telegram did not provide an addressable peer reference")?;
             let chat = Chat {
+                membership: crate::folders::ChatMembership::default(),
                 id,
                 title: safe_name(resolved.name(), "Unknown"),
                 kind: match &resolved {
@@ -1862,6 +1923,7 @@ async fn resolve_telegram_link(
                 "private message links can only open groups already present in your conversations",
             )?;
             let chat = Chat {
+                membership: crate::folders::ChatMembership::default(),
                 id: chat_id,
                 title,
                 kind: ChatKind::Group,

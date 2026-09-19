@@ -102,6 +102,16 @@ impl Store {
 
     /// # Errors
     /// Returns database or decoding errors.
+    pub async fn folders(&self) -> Result<Vec<crate::folders::Folder>> {
+        Ok(metadata(&self.connection, "folders")
+            .await?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_else(|| vec![crate::folders::Folder::all()]))
+    }
+
+    /// # Errors
+    /// Returns database or decoding errors.
     pub async fn cursor(&self) -> Result<SyncCursor> {
         metadata(&self.connection, "cursor")
             .await?
@@ -195,6 +205,15 @@ impl Store {
                 NetworkEvent::CacheAccountReset { user_id } => {
                     transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions; DELETE FROM history_pages;").await?;
                     set_metadata(&transaction, "account_id", &user_id.to_string()).await?;
+                }
+                NetworkEvent::Folders(folders) => {
+                    set_metadata(&transaction, "folders", &serde_json::to_string(folders)?).await?;
+                }
+                NetworkEvent::UnreadChanged { chat_id, unread } => {
+                    if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
+                        chat.unread = (*unread).max(u32::from(chat.membership.unread_mark));
+                        write_chat(&transaction, &chat, revision).await?;
+                    }
                 }
                 NetworkEvent::AccountIdentity { user_id } => {
                     set_metadata(&transaction, "account_id", &user_id.to_string()).await?;
@@ -493,6 +512,7 @@ mod tests {
         let path = directory.join("one.sqlite3");
         let mut store = Store::open(&path).await.unwrap();
         let chat = Chat {
+            membership: crate::folders::ChatMembership::default(),
             id: 42,
             title: "Group".to_owned(),
             kind: ChatKind::Group,

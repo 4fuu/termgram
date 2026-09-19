@@ -2,6 +2,7 @@ pub mod app;
 pub mod cache;
 pub mod config;
 pub mod event;
+pub mod folders;
 pub mod input;
 pub mod keymap;
 pub mod media;

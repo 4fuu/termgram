@@ -189,6 +189,8 @@ pub struct App {
     pub connection: ConnectionStatus,
     pub user_name: Option<String>,
     pub chats: Vec<Chat>,
+    pub folders: Vec<crate::folders::Folder>,
+    pub folder_id: i32,
     /// Position in the filtered chat list, never a persistent model identity.
     pub selected_chat: usize,
     pub active_chat_id: Option<ChatId>,
@@ -285,6 +287,8 @@ impl Default for App {
             connection: ConnectionStatus::Connecting,
             user_name: None,
             chats: Vec::new(),
+            folders: vec![crate::folders::Folder::all()],
+            folder_id: 0,
             selected_chat: 0,
             active_chat_id: None,
             messages: BTreeMap::new(),
@@ -529,6 +533,7 @@ impl App {
             if let Some(id) = self.keymap.chats.get(alias).copied() {
                 if let Some(index) = self.chats.iter().position(|chat| chat.id == id) {
                     self.filter.clear();
+                    self.folder_id = 0;
                     self.mode = Mode::Navigate;
                     self.selected_chat = index;
                     return self.open_selected_chat();
@@ -540,6 +545,27 @@ impl App {
             return Vec::new();
         }
         match run {
+            "folder_next" | "folder_previous" => {
+                let current = self
+                    .folders
+                    .iter()
+                    .position(|folder| folder.id == self.folder_id)
+                    .unwrap_or(0);
+                let total = self.folders.len();
+                if total > 0 {
+                    let index = if run == "folder_next" {
+                        (current + 1) % total
+                    } else {
+                        (current + total - 1) % total
+                    };
+                    self.folder_id = self.folders[index].id;
+                    self.selected_chat = 0;
+                    self.focus = Focus::Chats;
+                    self.narrow_conversation = false;
+                    self.mode = Mode::Navigate;
+                }
+                return Vec::new();
+            }
             "chat_info" => {
                 let chat = if self.focus == Focus::Chats {
                     self.selected_chat_entry()
@@ -579,11 +605,12 @@ impl App {
             "down" if self.mode == Mode::Navigate => return self.move_down(count),
             "page_up" => return self.move_up(PAGE_STEP.saturating_mul(count)),
             "page_down" => return self.move_down(PAGE_STEP.saturating_mul(count)),
-            "latest" if self.browsing_older => {
+            "latest" if self.browsing_older && self.focus == Focus::Conversation => {
                 if let Some(id) = self.active_chat_id
                     && let Some(index) = self.chats.iter().position(|chat| chat.id == id)
                 {
                     self.filter.clear();
+                    self.folder_id = 0;
                     self.selected_chat = index;
                     return self.open_selected_chat();
                 }
@@ -591,7 +618,11 @@ impl App {
             }
             "latest" => return self.move_to_end(),
             "oldest" => return self.move_to_start(),
-            "refresh" => return self.request_dialog_refresh(),
+            "refresh" => {
+                let mut commands = self.request_dialog_refresh();
+                commands.push(TelegramCommand::RefreshFolders);
+                return commands;
+            }
             "filter" => {
                 self.focus = Focus::Chats;
                 self.mode = Mode::Filter;
@@ -880,6 +911,25 @@ impl App {
                     self.older_motion = None;
                     self.status_message = Some(error);
                 }
+                Vec::new()
+            }
+            NetworkEvent::Folders(folders) => {
+                self.folders = folders;
+                if !self
+                    .folders
+                    .iter()
+                    .any(|folder| folder.id == self.folder_id)
+                {
+                    self.folder_id = 0;
+                }
+                self.clamp_chat_selection();
+                Vec::new()
+            }
+            NetworkEvent::UnreadChanged { chat_id, unread } => {
+                if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                    chat.unread = unread.max(u32::from(chat.membership.unread_mark));
+                }
+                self.clamp_chat_selection();
                 Vec::new()
             }
             NetworkEvent::CachedSnapshot { user_name, chats } => {
@@ -1286,16 +1336,33 @@ impl App {
     #[must_use]
     pub fn filtered_chat_indices(&self) -> Vec<usize> {
         let query = self.filter.value().to_lowercase();
-        self.chats
+        let folder = self
+            .folders
+            .iter()
+            .find(|folder| folder.id == self.folder_id);
+        let now = chrono::Utc::now().timestamp();
+        let mut indices: Vec<_> = self
+            .chats
             .iter()
             .enumerate()
             .filter_map(|(index, chat)| {
-                (query.is_empty()
-                    || chat.title.to_lowercase().contains(&query)
-                    || chat.last_message.to_lowercase().contains(&query))
+                (folder.is_none_or(|folder| folder.contains(chat, now))
+                    && (query.is_empty()
+                        || chat.title.to_lowercase().contains(&query)
+                        || chat.last_message.to_lowercase().contains(&query)))
                 .then_some(index)
             })
-            .collect()
+            .collect();
+        if let Some(folder) = folder {
+            indices.sort_by_key(|&index| {
+                folder
+                    .pinned
+                    .iter()
+                    .position(|id| *id == self.chats[index].id)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        indices
     }
 
     #[must_use]
@@ -2702,6 +2769,7 @@ impl App {
             self.linked_chat_ids.insert(chat_id);
         }
         if let Some(index) = known_chat {
+            self.folder_id = 0;
             self.filter.clear();
             self.selected_chat = index;
         }
@@ -2901,7 +2969,9 @@ impl App {
             NetworkEvent::MessagesRead { chat_id, max_id } if history_chat == Some(*chat_id) => {
                 self.history_read_max = self.history_read_max.max(*max_id);
             }
-            NetworkEvent::ReadMarked { chat_id } if self.refresh_dialogs_pending => {
+            NetworkEvent::ReadMarked { chat_id } | NetworkEvent::UnreadChanged { chat_id, .. }
+                if self.refresh_dialogs_pending =>
+            {
                 self.changed_dialogs.insert(*chat_id);
             }
             _ => {}
@@ -3954,6 +4024,7 @@ mod tests {
 
     fn chat(id: i64, title: &str) -> Chat {
         Chat {
+            membership: crate::folders::ChatMembership::default(),
             id,
             title: title.to_owned(),
             kind: ChatKind::Direct,
@@ -5170,6 +5241,7 @@ mod tests {
         open_first(&mut app);
         let linked = message(5, 99, "linked target", false);
         let linked_chat = Chat {
+            membership: crate::folders::ChatMembership::default(),
             id: 99,
             title: "Linked group".to_owned(),
             kind: ChatKind::Group,
@@ -5867,4 +5939,38 @@ mod tests {
     }
 
     use crate::input::TextInput;
+    #[test]
+    fn folders_preserve_pins_membership_drafts_and_alias_destinations() {
+        use crate::folders::Folder;
+        let mut app = App {
+            screen: Screen::Main,
+            chats: vec![chat(1, "One"), chat(2, "Two"), chat(3, "Three")],
+            ..App::default()
+        };
+        app.folders.push(Folder {
+            id: 9,
+            title: "Work".to_owned(),
+            pinned: vec![2],
+            include: vec![1],
+            ..Folder::default()
+        });
+        app.active_chat_id = Some(3);
+        app.drafts.insert(3, TextInput::from_value("draft"));
+        app.run_binding("folder_next", 1);
+        assert_eq!(
+            app.visible_chats()
+                .iter()
+                .map(|chat| chat.id)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert_eq!(app.active_chat_id, Some(3));
+        assert_eq!(app.drafts.get(&3).unwrap().value(), "draft");
+        app.keymap.chats.insert("three".to_owned(), 3);
+        app.run_binding("jump three", 1);
+        assert_eq!(app.folder_id, 0);
+        assert_eq!(app.selected_chat_entry().unwrap().id, 3);
+        app.handle_network(NetworkEvent::Folders(vec![Folder::all()]));
+        assert_eq!(app.folder_id, 0);
+    }
 }

@@ -10,6 +10,8 @@ pub struct Chat {
     pub id: ChatId,
     pub title: String,
     pub kind: ChatKind,
+    #[serde(default)]
+    pub membership: crate::folders::ChatMembership,
     pub unread: u32,
     pub last_message: String,
     pub last_activity: Option<DateTime<Utc>>,

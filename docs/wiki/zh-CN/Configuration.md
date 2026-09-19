@@ -93,6 +93,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `home`、`end`、`left`、`right`、`backspace`、`delete`、`clear`、`delete_word` | 编辑器 |
 | `filter`、`refresh`、`chat_info` | 导航；标题过滤、列表刷新、显示 ID |
 | `folder_previous`、`folder_next` | 聊天列表文件夹 |
+| `pin`、`pin_up`、`pin_down`、`archive` | 聊天列表；官方置顶排序和归档 |
 | `reply`、`reply_target`、`open_link`、`next_action`、`previous_action`、`reveal` | 会话操作 |
 | `chat_color`、`folder_color` | 外观选择器 |
 | `search` | 打开本地搜索 |

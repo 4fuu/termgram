@@ -44,9 +44,21 @@ impl Folder {
     }
 
     #[must_use]
+    pub fn archive() -> Self {
+        Self {
+            id: 1,
+            title: "Archive".to_owned(),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
     pub fn contains(&self, chat: &Chat, now: i64) -> bool {
         if self.id == 0 {
-            return true;
+            return !chat.membership.archived;
+        }
+        if self.id == 1 {
+            return chat.membership.archived;
         }
         if self.exclude.contains(&chat.id) {
             return false;

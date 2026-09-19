@@ -2,6 +2,7 @@
 
 mod appearance;
 mod attachments;
+mod pins;
 mod search;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -200,6 +201,7 @@ pub struct App {
     pub chats: Vec<Chat>,
     pub folders: Vec<crate::folders::Folder>,
     pub folder_id: i32,
+    pub pins: pins::State,
     /// Position in the filtered chat list, never a persistent model identity.
     pub selected_chat: usize,
     pub active_chat_id: Option<ChatId>,
@@ -304,6 +306,7 @@ impl Default for App {
             chats: Vec::new(),
             folders: vec![crate::folders::Folder::all()],
             folder_id: 0,
+            pins: pins::State::default(),
             selected_chat: 0,
             active_chat_id: None,
             messages: BTreeMap::new(),
@@ -561,9 +564,12 @@ impl App {
             if let Some(id) = self.keymap.chats.get(alias).copied() {
                 if let Some(index) = self.chats.iter().position(|chat| chat.id == id) {
                     self.filter.clear();
-                    self.folder_id = 0;
+                    self.folder_id = i32::from(self.chats[index].membership.archived);
+                    if self.folder_id == 1 && !self.folders.iter().any(|folder| folder.id == 1) {
+                        self.folders.push(crate::folders::Folder::archive());
+                    }
                     self.mode = Mode::Navigate;
-                    self.selected_chat = index;
+                    self.preserve_chat_selection(Some(id));
                     return self.open_selected_chat();
                 }
                 self.status_message = Some(format!(
@@ -573,6 +579,8 @@ impl App {
             return Vec::new();
         }
         match run {
+            "archive" => return self.toggle_archive(),
+            "pin" | "pin_up" | "pin_down" => return self.change_chat_pin(run),
             "search" => return self.open_search(),
             "chat_color" => return self.begin_color_picker(false),
             "folder_color" => return self.begin_color_picker(true),
@@ -935,6 +943,24 @@ impl App {
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.track_snapshot_changes(&event);
         match event {
+            NetworkEvent::ArchiveChanged { chat_id, archived } => {
+                let selected_id = self.selected_chat_entry().map(|chat| chat.id);
+                if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                    chat.membership.archived = archived;
+                }
+                self.preserve_chat_selection(selected_id);
+                Vec::new()
+            }
+            NetworkEvent::DialogPins(pins) => {
+                let selected_id = self.selected_chat_entry().map(|chat| chat.id);
+                self.pins.dialogs = pins;
+                self.preserve_chat_selection(selected_id);
+                Vec::new()
+            }
+            NetworkEvent::DialogPinFinished { request_id, error } => {
+                self.finish_dialog_pin(request_id, error);
+                Vec::new()
+            }
             NetworkEvent::AccountIdentity { user_id } => {
                 self.account_user_id = Some(user_id);
                 Vec::new()
@@ -976,7 +1002,11 @@ impl App {
                 }
                 Vec::new()
             }
-            NetworkEvent::Folders(folders) => {
+            NetworkEvent::Folders(mut folders) => {
+                let selected_id = self.selected_chat_entry().map(|chat| chat.id);
+                if !folders.iter().any(|folder| folder.id == 1) {
+                    folders.push(crate::folders::Folder::archive());
+                }
                 self.folders = folders;
                 if !self
                     .folders
@@ -985,7 +1015,7 @@ impl App {
                 {
                     self.folder_id = 0;
                 }
-                self.clamp_chat_selection();
+                self.preserve_chat_selection(selected_id);
                 Vec::new()
             }
             NetworkEvent::UnreadChanged { chat_id, unread } => {
@@ -1435,15 +1465,13 @@ impl App {
                 .then_some(index)
             })
             .collect();
-        if let Some(folder) = folder {
-            indices.sort_by_key(|&index| {
-                folder
-                    .pinned
-                    .iter()
-                    .position(|id| *id == self.chats[index].id)
-                    .unwrap_or(usize::MAX)
-            });
-        }
+        indices.sort_by_key(|&index| {
+            (
+                self.chat_pin_position(self.chats[index].id)
+                    .unwrap_or(usize::MAX),
+                std::cmp::Reverse(self.chats[index].last_activity),
+            )
+        });
         indices
     }
 
@@ -6163,6 +6191,60 @@ mod tests {
         assert_eq!(app.selected_chat_entry().unwrap().id, 3);
         app.handle_network(NetworkEvent::Folders(vec![Folder::all()]));
         assert_eq!(app.folder_id, 0);
+    }
+
+    #[test]
+    fn server_pins_preserve_selection_and_archive_has_its_own_order_and_aliases() {
+        use crate::{
+            folders::Folder,
+            pins::{DialogAction, DialogPins, DialogScope},
+        };
+        let mut app = ready_app();
+        app.chats = vec![chat(1, "One"), chat(2, "Two"), chat(3, "Archived")];
+        app.chats[2].membership.archived = true;
+        app.folders.push(Folder::archive());
+        app.selected_chat = 0;
+        app.focus = Focus::Chats;
+        app.handle_network(NetworkEvent::DialogPins(DialogPins {
+            main: vec![2, 1],
+            archive: vec![3],
+        }));
+        assert_eq!(
+            app.visible_chats()
+                .iter()
+                .map(|chat| chat.id)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert_eq!(app.selected_chat_entry().unwrap().id, 1);
+        let commands = app.run_binding("pin_up", 1);
+        assert!(matches!(
+            commands.as_slice(),
+            [TelegramCommand::ChangeDialogPin {
+                chat_id: 1,
+                scope: DialogScope::Main,
+                action: DialogAction::MoveUp,
+                ..
+            }]
+        ));
+        assert!(app.run_binding("pin_up", 1).is_empty());
+        app.handle_network(NetworkEvent::DialogPinFinished {
+            request_id: 1,
+            error: Some("PINNED_DIALOGS_TOO_MUCH".into()),
+        });
+        assert_eq!(app.pins.dialogs.main, vec![2, 1]);
+        app.keymap.chats.insert("archived".into(), 3);
+        app.run_binding("jump archived", 1);
+        assert_eq!(app.folder_id, 1);
+        assert_eq!(app.active_chat_id, Some(3));
+        assert_eq!(app.selected_chat_entry().unwrap().id, 3);
+        app.handle_network(NetworkEvent::ArchiveChanged {
+            chat_id: 3,
+            archived: false,
+        });
+        assert!(app.visible_chats().is_empty());
+        app.folder_id = 0;
+        assert_eq!(app.visible_chats().len(), 3);
     }
     #[test]
     fn local_search_ignores_stale_results_and_preserves_drafts_and_query() {

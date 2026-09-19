@@ -107,6 +107,7 @@ binding can become visible again.
 | `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |
 | `filter`, `refresh`, `chat_info` | Navigation; title filter, lists refresh, IDs |
 | `folder_previous`, `folder_next` | Chat list folders |
+| `pin`, `pin_up`, `pin_down`, `archive` | Chat list; native folder pins and archive |
 | `reply`, `reply_target`, `open_link`, `next_action`, `previous_action`, `reveal` | Conversation actions |
 | `chat_color`, `folder_color` | Appearance pickers |
 | `search` | Open local search |

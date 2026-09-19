@@ -1,6 +1,7 @@
 mod folders;
 mod local;
 mod media_cache;
+mod pins;
 mod requests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -63,6 +64,7 @@ struct MetadataRefresh {
 struct WorkerCache {
     dialogs: MetadataRefresh,
     folders: MetadataRefresh,
+    dialog_pins: MetadataRefresh,
     self_id: i64,
     channel_pts: HashMap<ChatId, i32>,
     peers: HashMap<ChatId, PeerRef>,
@@ -304,6 +306,7 @@ async fn run(
         let mut recovering = false;
         let mut transfers = JoinSet::new();
         let mut requests = JoinSet::new();
+        cache.dialog_pins.dirty = true;
         requests::refresh_dialogs(&client, &mut cache, &events, &mut requests).await?;
         requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
 
@@ -491,18 +494,35 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::DialogPinned(_) | tl::enums::Update::PinnedDialogs(_) => {
+                    cache.dialog_pins.dirty = true;
+                }
                 tl::enums::Update::DialogFilter(_)
                 | tl::enums::Update::DialogFilterOrder(_)
                 | tl::enums::Update::DialogFilters => {
                     cache.folders.dirty = true;
                 }
                 tl::enums::Update::NotifySettings(_)
-                | tl::enums::Update::FolderPeers(_)
                 | tl::enums::Update::DialogUnreadMark(_)
                 | tl::enums::Update::PeerSettings(_)
                 | tl::enums::Update::ReadMessagesContents(_)
                 | tl::enums::Update::ChannelReadMessagesContents(_) => {
                     cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::FolderPeers(update) => {
+                    cache.dialogs.dirty = true;
+                    cache.dialog_pins.dirty = true;
+                    for peer in &update.folder_peers {
+                        let tl::enums::FolderPeer::Peer(peer) = peer;
+                        if let Some(chat_id) = PeerId::from(peer.peer.clone()).bot_api_dialog_id() {
+                            events
+                                .send(NetworkEvent::ArchiveChanged {
+                                    chat_id,
+                                    archived: peer.folder_id == 1,
+                                })
+                                .await?;
+                        }
+                    }
                 }
                 tl::enums::Update::ReadHistoryInbox(read) => {
                     if let Some(chat_id) = PeerId::from(read.peer.clone()).bot_api_dialog_id() {
@@ -1281,6 +1301,8 @@ async fn handle_command(
 ) -> Result<bool> {
     match command {
         command @ (TelegramCommand::LoadOlder { .. }
+        | TelegramCommand::ChangeDialogPin { .. }
+        | TelegramCommand::SetArchived { .. }
         | TelegramCommand::LoadHistory { .. }
         | TelegramCommand::LoadMessage { .. }
         | TelegramCommand::SendMessage { .. }
@@ -1489,8 +1511,10 @@ async fn handle_command(
             cache.folders.dirty = true;
         }
         TelegramCommand::RefreshDialogs => {
+            cache.dialog_pins.dirty = true;
             requests::refresh_dialogs(client, cache, events, requests).await?;
         }
+        TelegramCommand::RefreshDialogPins => cache.dialog_pins.dirty = true,
         TelegramCommand::Shutdown => return Ok(true),
         TelegramCommand::StartQrAuth
         | TelegramCommand::SubmitPhone(_)

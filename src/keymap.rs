@@ -131,6 +131,10 @@ const ACTIONS: &[&str] = &[
     "chat_info",
     "folder_next",
     "folder_previous",
+    "pin",
+    "pin_up",
+    "pin_down",
+    "archive",
 ];
 
 impl Default for Keymap {
@@ -168,6 +172,10 @@ impl Default for Keymap {
                     ("<Tab>", "focus"),
                     ("<S-Tab>", "focus"),
                     ("c", "chat_color"),
+                    ("p", "pin"),
+                    ("e", "archive"),
+                    ("<C-k>", "pin_up"),
+                    ("<C-j>", "pin_down"),
                     ("C", "folder_color"),
                     ("/", "filter"),
                     ("<C-f>", "search"),

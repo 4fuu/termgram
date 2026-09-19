@@ -47,6 +47,9 @@ pub(super) async fn serve(
     events
         .send(NetworkEvent::Folders(store.folders().await?))
         .await?;
+    events
+        .send(NetworkEvent::DialogPins(store.dialog_pins().await?))
+        .await?;
     let bootstrap = Bootstrap {
         cache_owner: store.owner(),
         cursor: store.cursor().await?,

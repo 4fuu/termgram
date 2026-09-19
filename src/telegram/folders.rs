@@ -50,23 +50,28 @@ pub(super) async fn load(client: &Client, self_id: i64) -> Result<Vec<Folder>> {
     if !folders.iter().any(|folder| folder.id == 0) {
         folders.insert(0, Folder::all());
     }
+    folders.push(Folder::archive());
     Ok(folders)
 }
 
 fn peer_ids(peers: Vec<tl::enums::InputPeer>, self_id: i64) -> Vec<ChatId> {
     peers
         .into_iter()
-        .filter_map(|peer| match peer {
-            tl::enums::InputPeer::User(peer) => PeerId::user(peer.user_id),
-            tl::enums::InputPeer::Chat(peer) => PeerId::chat(peer.chat_id),
-            tl::enums::InputPeer::Channel(peer) => PeerId::channel(peer.channel_id),
-            tl::enums::InputPeer::UserFromMessage(peer) => PeerId::user(peer.user_id),
-            tl::enums::InputPeer::ChannelFromMessage(peer) => PeerId::channel(peer.channel_id),
-            tl::enums::InputPeer::PeerSelf => PeerId::user(self_id),
-            tl::enums::InputPeer::Empty => None,
-        })
-        .filter_map(PeerId::bot_api_dialog_id)
+        .filter_map(|peer| peer_id(&peer, self_id))
         .collect()
+}
+
+pub(super) fn peer_id(peer: &tl::enums::InputPeer, self_id: i64) -> Option<ChatId> {
+    match peer {
+        tl::enums::InputPeer::User(peer) => PeerId::user(peer.user_id),
+        tl::enums::InputPeer::Chat(peer) => PeerId::chat(peer.chat_id),
+        tl::enums::InputPeer::Channel(peer) => PeerId::channel(peer.channel_id),
+        tl::enums::InputPeer::UserFromMessage(peer) => PeerId::user(peer.user_id),
+        tl::enums::InputPeer::ChannelFromMessage(peer) => PeerId::channel(peer.channel_id),
+        tl::enums::InputPeer::PeerSelf => PeerId::user(self_id),
+        tl::enums::InputPeer::Empty => None,
+    }
+    .and_then(PeerId::bot_api_dialog_id)
 }
 
 pub(super) async fn default_mutes(client: &Client) -> Result<(i64, i64)> {

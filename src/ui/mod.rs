@@ -545,7 +545,11 @@ fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             } else {
                 String::new()
             };
-            let time = chat.activity_label(now);
+            let time = if app.chat_pin_position(chat.id).is_some() {
+                format!("^ {}", chat.activity_label(now))
+            } else {
+                chat.activity_label(now)
+            };
             let width = usize::from(area.width.saturating_sub(4));
             let suffix_width =
                 UnicodeWidthStr::width(time.as_str()) + UnicodeWidthStr::width(unread.as_str());

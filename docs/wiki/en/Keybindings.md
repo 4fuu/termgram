@@ -21,6 +21,9 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Chats | Ctrl-F | Open local regex search |
 | Chats | [ / ] | Previous / next Telegram folder |
 | Chats | c / C | Chat / folder color picker |
+| Chats | p | Pin/unpin in the current folder |
+| Chats | Ctrl-K / Ctrl-J | Move a pinned chat up/down |
+| Chats | e | Archive / restore selected chat |
 | Conversation | j/k or ]/[ | Select next/previous message |
 | Conversation | 20k | Move up 20 messages; fetch older pages if needed |
 | Conversation | Up/Down | Scroll rendered rows |

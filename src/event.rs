@@ -136,6 +136,18 @@ pub enum TelegramCommand {
         chat_id: ChatId,
     },
     RefreshDialogs,
+    RefreshDialogPins,
+    SetArchived {
+        chat_id: ChatId,
+        archived: bool,
+        request_id: u64,
+    },
+    ChangeDialogPin {
+        chat_id: ChatId,
+        scope: crate::pins::DialogScope,
+        action: crate::pins::DialogAction,
+        request_id: u64,
+    },
     RefreshFolders,
     SearchCached(crate::search::Request),
     CancelSearch,
@@ -158,6 +170,12 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::ChangeDialogPin { request_id, .. } | Self::SetArchived { request_id, .. } => {
+                NetworkEvent::DialogPinFinished {
+                    request_id,
+                    error: Some(error),
+                }
+            }
             Self::LoadOlder {
                 chat_id,
                 request_id,
@@ -256,7 +274,7 @@ impl TelegramCommand {
             TelegramCommand::LoadCachedContext { request_id, .. } => {
                 NetworkEvent::SearchFailed { request_id, error }
             }
-            TelegramCommand::RefreshFolders => NetworkEvent::Error(error),
+            TelegramCommand::RefreshFolders | Self::RefreshDialogPins => NetworkEvent::Error(error),
             TelegramCommand::RefreshDialogs => NetworkEvent::DialogsFailed(error),
             TelegramCommand::CancelSearch
             | TelegramCommand::SwitchAccount { .. }
@@ -403,6 +421,29 @@ impl fmt::Debug for TelegramCommand {
             Self::CancelSearch => formatter.write_str("CancelSearch"),
             Self::RefreshFolders => formatter.write_str("RefreshFolders"),
             Self::RefreshDialogs => formatter.write_str("RefreshDialogs"),
+            Self::RefreshDialogPins => formatter.write_str("RefreshDialogPins"),
+            Self::SetArchived {
+                chat_id,
+                archived,
+                request_id,
+            } => formatter
+                .debug_struct("SetArchived")
+                .field("chat_id", chat_id)
+                .field("archived", archived)
+                .field("request_id", request_id)
+                .finish(),
+            Self::ChangeDialogPin {
+                chat_id,
+                scope,
+                action,
+                request_id,
+            } => formatter
+                .debug_struct("ChangeDialogPin")
+                .field("chat_id", chat_id)
+                .field("scope", scope)
+                .field("action", action)
+                .field("request_id", request_id)
+                .finish(),
             Self::SwitchAccount { account } => formatter
                 .debug_struct("SwitchAccount")
                 .field("account", account)
@@ -415,6 +456,15 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    DialogPins(crate::pins::DialogPins),
+    ArchiveChanged {
+        chat_id: ChatId,
+        archived: bool,
+    },
+    DialogPinFinished {
+        request_id: u64,
+        error: Option<String>,
+    },
     AttachmentDownloadStarted {
         chat_id: ChatId,
         message_id: i32,

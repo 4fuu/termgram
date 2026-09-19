@@ -138,6 +138,16 @@ impl Store {
     }
 
     /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn dialog_pins(&self) -> Result<crate::pins::DialogPins> {
+        Ok(metadata(&self.connection, "dialog_pins")
+            .await?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_default())
+    }
+
+    /// # Errors
     /// Returns database errors. Missing files are treated as cache misses.
     pub async fn attachment(
         &self,
@@ -261,6 +271,16 @@ impl Store {
             self.revision += 1;
             let revision = self.revision;
             match event {
+                NetworkEvent::DialogPins(pins) => {
+                    set_metadata(&transaction, "dialog_pins", &serde_json::to_string(pins)?)
+                        .await?;
+                }
+                NetworkEvent::ArchiveChanged { chat_id, archived } => {
+                    if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
+                        chat.membership.archived = *archived;
+                        write_chat(&transaction, &chat, revision).await?;
+                    }
+                }
                 NetworkEvent::CacheAccountReset { user_id } => {
                     self.downloads.clear();
                     transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions; DELETE FROM history_pages;").await?;
@@ -700,6 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn restart_keeps_live_changes_and_their_cursor_and_isolates_accounts() {
         let directory = std::env::temp_dir().join(format!("termgram-cache-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -729,6 +750,14 @@ mod tests {
                 },
                 NetworkEvent::DialogsLoading,
                 NetworkEvent::Dialogs(vec![chat]),
+                NetworkEvent::ArchiveChanged {
+                    chat_id: 42,
+                    archived: true,
+                },
+                NetworkEvent::DialogPins(crate::pins::DialogPins {
+                    main: vec![7],
+                    archive: vec![42],
+                }),
                 NetworkEvent::HistoryLoading {
                     chat_id: 42,
                     request_id: 1,
@@ -760,6 +789,8 @@ mod tests {
         );
         assert_eq!(store.cursor().await.unwrap(), cursor);
         assert_eq!(store.account_id().await.unwrap(), Some(7));
+        assert!(store.snapshot().await.unwrap().1[0].membership.archived);
+        assert_eq!(store.dialog_pins().await.unwrap().archive, vec![42]);
         assert_eq!(store.snapshot().await.unwrap().0.as_deref(), Some("Ada"));
         let other = Store::open(&directory.join("two.sqlite3")).await.unwrap();
         assert!(other.history(42, None, 80).await.unwrap().is_empty());
@@ -788,6 +819,10 @@ mod tests {
         assert!(store.history(42, None, 80).await.unwrap().is_empty());
         assert!(store.snapshot().await.unwrap().1.is_empty());
         assert_eq!(store.cursor().await.unwrap(), SyncCursor::default());
+        assert_eq!(
+            store.dialog_pins().await.unwrap(),
+            crate::pins::DialogPins::default()
+        );
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }

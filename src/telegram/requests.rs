@@ -57,10 +57,16 @@ pub(super) async fn refresh_pending(
         cache.folders.in_flight = true;
         spawn(TelegramCommand::RefreshFolders, client, cache, requests);
     }
+    if cache.dialog_pins.dirty && !cache.dialog_pins.in_flight && requests.len() < MAX_REQUESTS {
+        cache.dialog_pins.dirty = false;
+        cache.dialog_pins.in_flight = true;
+        spawn(TelegramCommand::RefreshDialogPins, client, cache, requests);
+    }
     Ok(())
 }
 
 enum Response {
+    DialogPins(crate::pins::DialogPins),
     Dialogs(Vec<Dialog>, (i64, i64)),
     Folders(Vec<crate::folders::Folder>),
     History(Vec<TelegramMessage>),
@@ -80,6 +86,8 @@ pub(super) fn spawn(
 ) {
     let chat_id = match &command {
         TelegramCommand::LoadHistory { chat_id, .. }
+        | TelegramCommand::ChangeDialogPin { chat_id, .. }
+        | TelegramCommand::SetArchived { chat_id, .. }
         | TelegramCommand::LoadOlder { chat_id, .. }
         | TelegramCommand::LoadMessage { chat_id, .. }
         | TelegramCommand::SendMessage { chat_id, .. }
@@ -110,6 +118,7 @@ pub(super) fn spawn(
     });
 }
 
+#[allow(clippy::too_many_lines)]
 async fn execute(
     command: &TelegramCommand,
     client: &Client,
@@ -119,6 +128,37 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::SetArchived { archived, .. } => {
+            client
+                .invoke(&grammers_client::tl::functions::folders::EditPeerFolders {
+                    folder_peers: vec![
+                        grammers_client::tl::types::InputFolderPeer {
+                            peer: peer()?.into(),
+                            folder_id: i32::from(*archived),
+                        }
+                        .into(),
+                    ],
+                })
+                .await?;
+            Ok(Response::DialogPins(
+                super::pins::load_dialogs(client).await?,
+            ))
+        }
+        TelegramCommand::RefreshDialogPins => Ok(Response::DialogPins(
+            super::pins::load_dialogs(client).await?,
+        )),
+        TelegramCommand::ChangeDialogPin { scope, action, .. } => {
+            super::pins::change_dialog(client, peer()?, *scope, *action, self_id).await?;
+            if matches!(scope, crate::pins::DialogScope::Filter(_)) {
+                Ok(Response::Folders(
+                    super::folders::load(client, self_id).await?,
+                ))
+            } else {
+                Ok(Response::DialogPins(
+                    super::pins::load_dialogs(client).await?,
+                ))
+            }
+        }
         TelegramCommand::RefreshFolders => Ok(Response::Folders(
             super::folders::load(client, self_id).await?,
         )),
@@ -207,9 +247,21 @@ pub(super) async fn complete(
     let Completion { command, result } = completion;
     if matches!(command, TelegramCommand::RefreshDialogs) {
         cache.dialogs.in_flight = false;
+        if cache.dialogs.dirty {
+            return Ok(());
+        }
     }
     if matches!(command, TelegramCommand::RefreshFolders) {
         cache.folders.in_flight = false;
+        if cache.folders.dirty {
+            return Ok(());
+        }
+    }
+    if matches!(command, TelegramCommand::RefreshDialogPins) {
+        cache.dialog_pins.in_flight = false;
+        if cache.dialog_pins.dirty {
+            return Ok(());
+        }
     }
     let response = match result {
         Ok(response) => response,
@@ -221,6 +273,41 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::SetArchived {
+                chat_id,
+                archived,
+                request_id,
+            },
+            Response::DialogPins(pins),
+        ) => {
+            cache.dialogs.dirty = true;
+            cache.dialog_pins.dirty = true;
+            events
+                .send(NetworkEvent::ArchiveChanged { chat_id, archived })
+                .await?;
+            events.send(NetworkEvent::DialogPins(pins)).await?;
+            NetworkEvent::DialogPinFinished {
+                request_id,
+                error: None,
+            }
+        }
+        (TelegramCommand::RefreshDialogPins, Response::DialogPins(pins)) => {
+            NetworkEvent::DialogPins(pins)
+        }
+        (TelegramCommand::ChangeDialogPin { request_id, .. }, response) => {
+            cache.dialog_pins.dirty = true;
+            cache.folders.dirty = true;
+            match response {
+                Response::DialogPins(pins) => events.send(NetworkEvent::DialogPins(pins)).await?,
+                Response::Folders(folders) => events.send(NetworkEvent::Folders(folders)).await?,
+                _ => unreachable!("pin mutations return their authoritative server list"),
+            }
+            NetworkEvent::DialogPinFinished {
+                request_id,
+                error: None,
+            }
+        }
         (TelegramCommand::RefreshFolders, Response::Folders(folders)) => {
             NetworkEvent::Folders(folders)
         }

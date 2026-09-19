@@ -52,6 +52,7 @@ struct Configuration {
     keymap: Vec<BindingSpec>,
     chats: BTreeMap<String, i64>,
     ghost_text: Option<String>,
+    nerd_font: bool,
     colors: crate::appearance::Colors,
 }
 
@@ -69,6 +70,7 @@ pub struct Keymap {
     bindings: Vec<Binding>,
     pub chats: BTreeMap<String, i64>,
     pub ghost_text: String,
+    pub nerd_font: bool,
     pub colors: crate::appearance::Colors,
     pending: Vec<Key>,
     count: usize,
@@ -150,6 +152,7 @@ impl Default for Keymap {
             chats: BTreeMap::new(),
             colors: crate::appearance::Colors::default(),
             ghost_text: "{send} to send".to_owned(),
+            nerd_font: false,
             pending: Vec::new(),
             count: 0,
             context: None,
@@ -389,6 +392,7 @@ impl Keymap {
         let mut keymap = Self {
             chats: configuration.chats,
             colors: configuration.colors,
+            nerd_font: configuration.nerd_font,
             ..Self::default()
         };
         if let Some(text) = configuration.ghost_text {

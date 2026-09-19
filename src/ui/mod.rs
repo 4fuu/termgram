@@ -1,4 +1,5 @@
 mod appearance;
+mod icons;
 mod pins;
 mod search;
 use chrono::Local;
@@ -507,7 +508,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn chat_list_title(app: &AppState) -> String {
-    match app.mode {
+    let title = match app.mode {
         Mode::Filter => format!(" Chats · /{} ", app.filter.value()),
         _ if app.folders.len() > 1 => {
             let index = app
@@ -527,7 +528,12 @@ fn chat_list_title(app: &AppState) -> String {
             )
         }
         _ => " Chats ".to_owned(),
-    }
+    };
+    format!(
+        " {}{}",
+        icons::Icons(app.keymap.nerd_font).folder(app.folder_id),
+        title.trim_start()
+    )
 }
 
 fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
@@ -557,7 +563,11 @@ fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
                 String::new()
             };
             let time = if app.chat_pin_position(chat.id).is_some() {
-                format!("^ {}", chat.activity_label(now))
+                format!(
+                    "{} {}",
+                    icons::Icons(app.keymap.nerd_font).pin(),
+                    chat.activity_label(now)
+                )
             } else {
                 chat.activity_label(now)
             };
@@ -565,7 +575,11 @@ fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             let suffix_width =
                 UnicodeWidthStr::width(time.as_str()) + UnicodeWidthStr::width(unread.as_str());
             let title = truncate_cells(
-                &chat.title,
+                &format!(
+                    "{}{}",
+                    icons::Icons(app.keymap.nerd_font).chat(chat.kind),
+                    chat.title
+                ),
                 width.saturating_sub(suffix_width).saturating_sub(1),
             );
             let gap = width
@@ -658,7 +672,8 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         && inner.height > 1
     {
         let label = format!(
-            "^ {} pins{} · {}",
+            "{} {} pins{} · {}",
+            icons::Icons(app.keymap.nerd_font).pin(),
             app.keymap.hint(Context::Conversation, "pins"),
             count.map_or(String::new(), |n| format!(" ({n})")),
             crate::model::sanitize_terminal_line(&message.text),
@@ -706,6 +721,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             app.selected_message == Some(message.id),
             app.selected_action,
             app.settings().show_message_ids,
+            icons::Icons(app.keymap.nerd_font),
             &actions,
         );
         let body_action = rendered.body_action;
@@ -1321,6 +1337,7 @@ fn message_lines(
     selected: bool,
     selected_action: usize,
     show_message_ids: bool,
+    icons: icons::Icons,
     actions: &[MessageAction],
 ) -> RenderedMessage {
     let time = message
@@ -1339,8 +1356,11 @@ fn message_lines(
         .saturating_sub(id_reserve)
         .max(8);
     let mut body = message_body(message, attachment_state, download_behavior);
+    if let Some(attachment) = &message.attachment {
+        body.insert_str(0, icons.attachment(attachment.kind));
+    }
     if message.pinned {
-        body = format!("^ {body}");
+        body = format!("{} {body}", icons.pin());
     }
     if let Some(reply) = &message.reply_to {
         let sender = reply.sender.as_deref().unwrap_or("unknown");
@@ -1806,6 +1826,47 @@ mod tests {
         assert!(rendered.contains("<Enter> open"));
         assert!(rendered.contains("<Esc> close"));
         assert!(rendered.contains("<C-n> next"));
+    }
+
+    #[test]
+    fn nerd_font_opt_in_preserves_labels_and_plain_font_fallback() {
+        let mut app = populated_app();
+        app.folders.push(crate::folders::Folder::archive());
+        app.folder_id = 1;
+        app.chats[0].membership.archived = true;
+        app.pins.dialogs.archive = vec![7];
+        let message = &mut app.messages.get_mut(&7).unwrap()[0];
+        message.pinned = true;
+        message.attachment = Some(Attachment {
+            source_id: None,
+            kind: AttachmentKind::File,
+            file_name: Some("notes.txt".to_owned()),
+            mime_type: None,
+            size: None,
+            fallback_emoji: None,
+        });
+        assert!(!app.keymap.nerd_font);
+        let plain = render_text(&app, 100, 24);
+        assert!(plain.contains("Archive"));
+        assert!(plain.contains("notes.txt"));
+        assert!(
+            !plain
+                .chars()
+                .any(|ch| ('\u{e000}'..='\u{f8ff}').contains(&ch))
+        );
+        app.keymap = crate::keymap::Keymap::parse("return { nerd_font = true }").unwrap();
+        let icons = render_text(&app, 100, 24);
+        for glyph in ['\u{f187}', '\u{f075}', '\u{f08d}', '\u{f15b}'] {
+            assert!(icons.contains(glyph));
+        }
+        // TestBackend retains the blank continuation cell of each wide glyph.
+        assert!(icons.contains("Alice 東 京"));
+        assert!(icons.contains("notes.txt"));
+        assert!(icons.contains("P pins"));
+        assert!(render_text(&app, 40, 10).contains("Archive"));
+        app.keymap = crate::keymap::Keymap::parse("return { nerd_font = false }").unwrap();
+        assert_eq!(render_text(&app, 100, 24), plain);
+        assert!(crate::keymap::Keymap::parse("return { nerd_font = 'yes' }").is_err());
     }
 
     fn populated_app_with_settings(settings: Settings) -> AppState {

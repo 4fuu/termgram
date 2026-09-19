@@ -5,6 +5,7 @@ return {
     -- work = -1001234567890, -- stable Telegram chat ID
   },
   ghost_text = "{send} to send",
+  nerd_font = false, -- true when the terminal uses a Nerd Font Mono (v3+)
   keymap = {
     -- { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },
     -- { context = "conversation", on = { "g", "w" }, run = "jump work" },

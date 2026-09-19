@@ -1,4 +1,4 @@
-# 聊天和文件夹颜色
+# 外观
 
 [English](../en/Appearance.md) · [指南首页](Home.md)
 
@@ -30,3 +30,24 @@ return {
 账号 ID 隔离。切换账号或清理消息缓存不会混用或删除配色。保存复用现有原子写入
 逻辑；格式错误会明确报错，不会悄悄覆盖损坏的文件。调色板不会改写 Lua 配置或
 服务端文件夹颜色。
+
+## Nerd Font 图标
+
+Nerd Font 支持需要主动开启。安装 [Nerd Font 字体](https://www.nerdfonts.com/font-downloads)，
+在终端配置中选择其 **Nerd Font Mono** 变体，再在 `config.lua` 中添加配置并重启 Termgram：
+
+```lua
+return {
+  nerd_font = true,
+}
+```
+
+使用 v3+ 字体。图标用于区分聊天类型、文件夹、Archive、置顶和附件，文字标签、按键提示
+与终端配色仍会保留。Mono 变体让图标位于单个终端单元格内。通过 SSH 或 tmux 使用时，
+需要在实际显示会话的本地终端设置字体。Termgram 使用终端选定的字体，不会安装字体或
+修改终端偏好。
+
+默认 `nerd_font = false` 使用普通文字显示，置顶标记为 `^`。如果图标显示为方框或与邻近
+文字重叠，将此选项关闭即可恢复。配置错误通过现有 Lua 加载流程显示。
+
+字体参考：[Nerd Fonts 字体变体](https://github.com/ryanoasis/nerd-fonts/wiki/FAQ-and-Troubleshooting)。

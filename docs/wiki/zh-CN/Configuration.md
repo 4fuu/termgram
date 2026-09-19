@@ -13,6 +13,7 @@
 return {
   chats = { work = -1001234567890 },
   ghost_text = "{send} 发送 · {newline} 换行",
+  nerd_font = false,
   keymap = {
     { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },
     { context = "conversation", on = { "g", "w" }, run = "jump work" },
@@ -46,6 +47,9 @@ return {
 `ghost_text = ""` 隐藏提示。应用内偏好单独保存，不会改写 Lua 文件。
 
 按 `g i` 显示当前聊天 ID，可用来配置别名。
+
+终端使用 Nerd Font Mono（v3+）时，可设置 `nerd_font = true`，启用聊天、文件夹、
+归档、置顶和附件图标；默认 `false`。字体选择和回退方法见[外观](Appearance.md)。
 
 ## 文件路径
 

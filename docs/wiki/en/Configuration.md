@@ -14,6 +14,7 @@ configuration interface. Invalid files show an error and retain default bindings
 return {
   chats = { work = -1001234567890 },
   ghost_text = "{send} to send · {newline} for a new line",
+  nerd_font = false,
   keymap = {
     { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },
     { context = "conversation", on = { "g", "w" }, run = "jump work" },
@@ -53,6 +54,10 @@ bindings. Set `ghost_text = ""` to hide them. Managed in-app preferences remain
 in their own file; Termgram does not rewrite your Lua configuration.
 
 Press `g i` to show the current chat ID for an alias.
+
+Set `nerd_font = true` when your terminal uses a Nerd Font Mono (v3+). It enables
+chat, folder, archive, pin and attachment icons; `false` is the default. See
+[Appearance](Appearance.md) for font selection and fallback behavior.
 
 ## File locations
 

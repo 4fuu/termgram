@@ -222,6 +222,9 @@ fn selected_context(app: &AppState) -> Option<String> {
             hints.push(format!("{} {manager}", hint("reveal")));
         }
         hints.push(format!("{} reply", hint("compose")));
+        if message.id > 0 && !message.text.is_empty() {
+            hints.push(format!("{} copy", hint("copy_text")));
+        }
         if message.outgoing && message.id > 0 {
             hints.push(format!("{} edit", hint("edit_message")));
         }

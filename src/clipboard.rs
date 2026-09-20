@@ -2,6 +2,8 @@
 //! draft-owned PNG assets. Clipboard reads never run on the terminal thread.
 mod wsl;
 
+pub mod copy;
+
 use crate::staging::{Attachment, Prepared, Request};
 use anyhow::{Context, Result, ensure};
 use image::{ImageDecoder, ImageEncoder};
@@ -13,6 +15,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+// Arboard operations must not overlap on Windows. Both background adapters
+// share this guard; no clipboard access or lock wait runs on the terminal thread.
+static NATIVE_ACCESS: Mutex<()> = Mutex::new(());
 
 static LIVE_ASSETS: OnceLock<Mutex<HashMap<PathBuf, Weak<Asset>>>> = OnceLock::new();
 
@@ -292,6 +298,9 @@ pub(crate) fn read(state: &Path, request: &Request) -> Result<Prepared> {
 }
 
 fn read_native(state: &Path, request: &Request) -> Result<Prepared> {
+    let _access = NATIVE_ACCESS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Native clipboard lock failed"))?;
     let mut clipboard = arboard::Clipboard::new()
         .context("System clipboard unavailable; use :attach for a local file")?;
     if let Ok(files) = clipboard.get().file_list()

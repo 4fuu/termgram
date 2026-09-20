@@ -124,6 +124,29 @@ running and reports its outcome in the footer. Confirmed deletion passes through
 the ordered sync stream and removes cached content, search results and reply
 previews before the corresponding sync checkpoint is stored.
 
+## Copy message content
+
+Select a delivered message and use `y` or `:copy` / `:copy text` for its text or
+caption, without sender labels or timestamps. `Y` / `:copy link` asks Telegram for
+its message link, including a topic/thread when available. Links are available
+for supergroups/channels, including members-only private links; ordinary private
+chats and basic groups have no exportable message link.
+
+Copy checks the latest message and chat permissions online. Protected text is
+not copied; empty text and unavailable messages leave the clipboard unchanged.
+The captured message remains the target while the request runs, even if you
+navigate elsewhere. One preparation and one clipboard write may run at a time.
+The footer reports errors and uses your configured copy key in selection hints.
+
+Local text writes use the native clipboard in the background. Linux retains its
+clipboard owner while Termgram runs; pasting after exit depends on the desktop's
+clipboard manager. WSL falls back to Windows PowerShell when needed. SSH sends
+Yazi's OSC 52 request to the attached terminal, and tmux also receives a terminal
+copy request. Native failure likewise falls back to OSC 52. Terminal delivery
+has no acknowledgement: “Clipboard request sent” means the terminal still needs
+to accept it, and tmux/terminal clipboard settings can prevent it. Copy payloads
+are limited to 100,000 UTF-8 bytes and never written to logs or command arguments.
+
 ## Files, links and mouse input
 
 Use `:attach <paths...>` to prepare files in the chat draft. Plain pasted paths

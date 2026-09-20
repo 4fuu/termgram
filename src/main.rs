@@ -26,7 +26,7 @@ enum RuntimeEvent {
     ShutdownSignal(io::Result<()>),
     Preview(Result<Vec<termgram::media::MediaFailure>>),
     DraftError(String),
-    ClipboardTimeout,
+    Clipboard(termgram::terminal::clipboard::Activity),
     Tick,
 }
 
@@ -205,7 +205,7 @@ async fn main() -> Result<()> {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
-                () = clipboard.expired() => RuntimeEvent::ClipboardTimeout,
+                activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
                 event = network.recv() => RuntimeEvent::Network(Box::new(event)),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
@@ -216,7 +216,7 @@ async fn main() -> Result<()> {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
-                () = clipboard.expired() => RuntimeEvent::ClipboardTimeout,
+                activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
                 () = animation_tick => RuntimeEvent::Tick,
@@ -342,8 +342,8 @@ async fn main() -> Result<()> {
                 Vec::new()
             }
             RuntimeEvent::Tick => app.update(AppEvent::Tick),
-            RuntimeEvent::ClipboardTimeout => {
-                clipboard.timeout(&mut app);
+            RuntimeEvent::Clipboard(activity) => {
+                clipboard.activity(&mut app, activity);
                 Vec::new()
             }
         };

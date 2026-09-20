@@ -187,3 +187,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 会话动作 `delete_message` 打开删除确认；它与编辑器中删除下一个字符的 `delete`
 不同。确认框使用 `overlay` 上下文中的 `up`、`down`、`open` 和 `cancel`；
 底栏显示 DELETE，以及实际的范围选择和确认快捷键。
+
+`conversation` 中的 `copy_text` 和 `copy_link` 操作明确选中的消息，默认键为 `y` 和 `Y`。
+`attachments.terminal_clipboard` 控制 OSC 5522 媒体粘贴，不影响用户主动触发的 OSC 52
+文字复制。本机文字复制复用已有原生剪贴板依赖。

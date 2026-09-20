@@ -19,6 +19,7 @@ pub enum Kind {
     Attach,
     Paste,
     Read(bool),
+    Copy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +76,7 @@ impl Spec {
             Kind::Color => Some(Action::ChatColor),
             Kind::Attach => Some(Action::Attach),
             Kind::Paste => Some(Action::PasteClipboard),
+            Kind::Copy => Some(Action::CopyText),
             Kind::Read(true) => Some(Action::MarkUnread),
             Kind::Read(false) => Some(Action::MarkRead),
         }
@@ -95,6 +97,14 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "copy",
+        None,
+        "[text, link]",
+        Kind::Copy,
+        Message,
+        "Copy message text or a Telegram message link"
+    ),
     command!(
         "delete",
         None,

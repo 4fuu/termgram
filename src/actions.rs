@@ -52,6 +52,8 @@ actions! {
     Open => ("open", "Activate the selected item"),
     Preview => ("preview", "Expand the selected image or sticker"),
     Compose => ("compose", "Compose a message or reply to the selection"),
+    CopyText => ("copy_text", "Copy the selected message text or caption"),
+    CopyLink => ("copy_link", "Copy the selected Telegram message link"),
     DeleteMessage => ("delete_message", "Review the selected message and confirm its deletion scope"),
     EditMessage => ("edit_message", "Edit a message or resume a saved edit"),
     DiscardEdit => ("discard_edit", "Discard this chat’s local message edit"),

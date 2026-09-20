@@ -240,8 +240,10 @@ impl App {
 
     fn command_unavailable(&self, spec: &Spec) -> Option<String> {
         self.target_error(spec.target).or_else(|| {
-            (matches!(spec.kind, Kind::Pin(_) | Kind::Archive(_) | Kind::Read(_))
-                && self.connection != ConnectionStatus::Online)
+            (matches!(
+                spec.kind,
+                Kind::Pin(_) | Kind::Archive(_) | Kind::Read(_) | Kind::Copy
+            ) && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
     }
@@ -310,28 +312,7 @@ impl App {
             }
         };
         match spec.kind {
-            Kind::Chat => {
-                for (alias, id) in &self.keymap.chats {
-                    if let Some(chat) = self.chats.iter().find(|chat| chat.id == *id) {
-                        add(alias.clone(), alias.clone(), chat.title.clone());
-                    }
-                }
-                for chat in &self.chats {
-                    add(
-                        chat.id.to_string(),
-                        chat.title.clone(),
-                        format!(
-                            "Chat {}{}",
-                            chat.id,
-                            if chat.membership.archived {
-                                " · Archive"
-                            } else {
-                                ""
-                            }
-                        ),
-                    );
-                }
-            }
+            Kind::Chat => self.add_command_chats(&mut add),
             Kind::Folder => {
                 for folder in &self.folders {
                     add(
@@ -368,6 +349,15 @@ impl App {
                 };
                 add(value.to_owned(), value.to_owned(), description.to_owned());
             }
+            Kind::Copy => {
+                for value in ["text", "link"] {
+                    add(
+                        value.to_owned(),
+                        value.to_owned(),
+                        "Copy selected message".to_owned(),
+                    );
+                }
+            }
             Kind::Sidebar => {
                 for value in ["show", "hide", "toggle"] {
                     add(
@@ -389,6 +379,29 @@ impl App {
             _ => {}
         }
         candidates
+    }
+
+    fn add_command_chats(&self, add: &mut impl FnMut(String, String, String)) {
+        for (alias, id) in &self.keymap.chats {
+            if let Some(chat) = self.chats.iter().find(|chat| chat.id == *id) {
+                add(alias.clone(), alias.clone(), chat.title.clone());
+            }
+        }
+        for chat in &self.chats {
+            add(
+                chat.id.to_string(),
+                chat.title.clone(),
+                format!(
+                    "Chat {}{}",
+                    chat.id,
+                    if chat.membership.archived {
+                        " · Archive"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        }
     }
 
     fn complete_command(&mut self, forward: bool) {
@@ -574,6 +587,9 @@ impl App {
             None
         };
         match spec.kind {
+            Kind::Copy if !matches!(argument, "" | "text" | "link") => {
+                return self.command_error(format!("Usage: :{}", spec.usage()));
+            }
             Kind::Pin(_) if !matches!(argument, "chat" | "message") => {
                 return self.command_error(format!("Usage: :{}", spec.usage()));
             }
@@ -633,6 +649,7 @@ impl App {
         self.mode = Mode::Navigate;
         self.status_message = None;
         let outgoing = match &spec.kind {
+            Kind::Copy => self.copy_message(argument == "link"),
             Kind::Read(unread) => {
                 self.set_chat_unread(origin.chat.expect("validated chat"), *unread)
             }

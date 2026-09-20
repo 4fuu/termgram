@@ -12,6 +12,7 @@ mod pins;
 mod reads;
 mod replies;
 mod search;
+mod sharing;
 mod staging;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -238,6 +239,7 @@ pub struct App {
     pub attachment_draft: staging::State,
     pub editing: editing::State,
     pub deletion: deletion::State,
+    pub sharing: sharing::State,
     pub narrow_conversation: bool,
     pub sidebar_hidden: bool,
     pub should_quit: bool,
@@ -352,6 +354,7 @@ impl Default for App {
             attachment_draft: staging::State::default(),
             editing: editing::State::default(),
             deletion: deletion::State::default(),
+            sharing: sharing::State::default(),
             narrow_conversation: false,
             sidebar_hidden: false,
             should_quit: false,
@@ -667,6 +670,8 @@ impl App {
             Action::FirstUnread => return self.first_unread(),
             Action::MarkRead => return self.mark_focused_chat(false),
             Action::MarkUnread => return self.mark_focused_chat(true),
+            Action::CopyText => return self.copy_message(false),
+            Action::CopyLink => return self.copy_message(true),
             Action::PasteClipboard => return self.paste_clipboard(),
             Action::Attach => {
                 self.begin_command();
@@ -1147,6 +1152,9 @@ impl App {
             self.update_pin_preview(message);
         }
         match event {
+            NetworkEvent::MessageCopyReady { request_id, result } => {
+                self.message_copy_ready(request_id, result)
+            }
             NetworkEvent::DeletionReady {
                 chat_id,
                 message_id,
@@ -7986,5 +7994,79 @@ mod tests {
         assert_eq!(app.deletion.prompt.as_ref().unwrap().selected, 0);
         assert!(app.run_binding("open", 1).is_empty());
         assert_eq!(app.mode, Mode::Navigate);
+    }
+    #[test]
+    fn copy_captures_the_selected_message_and_only_accepts_its_own_result() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        assert!(
+            app.run_binding("copy_text", 1).is_empty(),
+            "selection is explicit"
+        );
+        app.selected_message = Some(20);
+        app.run_binding("command", 1);
+        app.update(AppEvent::Paste("copy link".to_owned()));
+        app.selected_message = Some(19);
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::CopyMessage {
+                chat_id: 1,
+                message_id: 20,
+                link: true,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("command must retain its original target")
+        };
+        assert!(
+            app.run_binding("copy_text", 1).is_empty(),
+            "only one preparation in flight"
+        );
+        assert!(
+            app.handle_network(NetworkEvent::MessageCopyReady {
+                request_id: request_id + 1,
+                result: Ok("wrong result".to_owned()),
+            })
+            .is_empty()
+        );
+        assert!(
+            app.handle_network(NetworkEvent::MessageCopyReady {
+                request_id: *request_id,
+                result: Err("Content is protected".to_owned()),
+            })
+            .is_empty()
+        );
+        let commands = app.run_binding("copy_text", 1);
+        let [
+            TelegramCommand::CopyMessage {
+                request_id,
+                link: false,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("retry")
+        };
+        app.active_chat_id = Some(2);
+        let result = app.handle_network(NetworkEvent::MessageCopyReady {
+            request_id: *request_id,
+            result: Ok("original 界🙂\ncaption".to_owned()),
+        });
+        assert_eq!(
+            result,
+            [TelegramCommand::CopyText(
+                "original 界🙂\ncaption".to_owned()
+            )]
+        );
+        assert_eq!(app.active_chat_id, Some(2));
+        assert!(!format!("{:?}", result[0]).contains("caption"));
+        assert!(
+            app.handle_network(NetworkEvent::MessageCopyReady {
+                request_id: *request_id,
+                result: Ok("duplicate".to_owned()),
+            })
+            .is_empty()
+        );
     }
 }

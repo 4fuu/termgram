@@ -171,6 +171,8 @@ impl Default for Keymap {
                     (":", "command"),
                     ("e", "edit_message"),
                     ("d", "delete_message"),
+                    ("y", "copy_text"),
+                    ("Y", "copy_link"),
                     ("p", "pin"),
                     ("P", "pins"),
                     ("c", "chat_color"),

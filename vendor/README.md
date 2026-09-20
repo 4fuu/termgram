@@ -168,3 +168,13 @@ unit test checks both revoke scopes, channel PTS ownership and a non-deleting RP
 Reapply this narrow patch until an upstream release retains common deletion IDs.
 Deletion eligibility in `src/telegram/deletion.rs` follows Desktop's `canDelete`
 and `canDeleteForEveryone` at the revision recorded above; no source is copied.
+
+Message text copying calls the existing arboard 3.6.1 dependency. The persistent
+Linux owner and native/terminal fallback behavior follow Codex
+`codex-rs/tui/src/clipboard_copy.rs` at the Codex revision above; no source is
+copied. The original adapter in `src/clipboard/copy.rs` runs one bounded writer,
+serializes native reads/writes and passes WSL text through stdin with constant
+PowerShell code. SSH writes only to the attached terminal. `src/terminal/clipboard.rs`
+formats OSC 52 with Yazi's existing `SetClipboard`, following `yazi-widgets/src/clipboard.rs`
+at the pinned revision, and flushes it through the same TTY on the main thread.
+No clipboard reader, escape encoder or Linux selection implementation is copied.

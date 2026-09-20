@@ -7,6 +7,7 @@ mod message_actions;
 mod pins;
 mod reads;
 mod requests;
+mod sharing;
 mod telemetry;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1367,7 +1368,8 @@ async fn handle_command(
         .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
         .clone();
     match command {
-        command @ (TelegramCommand::ReviewDeletion { .. }
+        command @ (TelegramCommand::CopyMessage { .. }
+        | TelegramCommand::ReviewDeletion { .. }
         | TelegramCommand::DeleteMessage { .. }
         | TelegramCommand::LoadEdit { .. }
         | TelegramCommand::EditMessage { .. }
@@ -1656,6 +1658,7 @@ async fn handle_command(
             });
         }
         TelegramCommand::PrepareAttachments(_)
+        | TelegramCommand::CopyText(_)
         | TelegramCommand::SearchCached(_)
         | TelegramCommand::CancelSearch
         | TelegramCommand::LoadCachedContext { .. } => {

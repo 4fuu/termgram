@@ -10,7 +10,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // Clipboard values are data in JSON, never interpolated into shell source.
 const SCRIPT: &str = r"
@@ -57,6 +57,7 @@ pub(super) fn read(state: &Path, request: &Request) -> Result<Prepared> {
                 "powershell.exe",
                 &["-NoProfile", "-NonInteractive", "-STA", "-Command", SCRIPT],
                 24 * 1024 * 1024,
+                None,
             )
             .await?;
             match serde_json::from_slice::<Payload>(&bytes)? {
@@ -67,7 +68,7 @@ pub(super) fn read(state: &Path, request: &Request) -> Result<Prepared> {
                     );
                     let mut paths = Vec::new();
                     for file in files {
-                        let bytes = output("wslpath", &["-u", &file], 16 * 1024).await?;
+                        let bytes = output("wslpath", &["-u", &file], 16 * 1024, None).await?;
                         let value = String::from_utf8(bytes)?;
                         // Remove only the tool's line ending, preserving spaces in names.
                         paths.push(PathBuf::from(value.trim_end_matches(['\r', '\n'])));
@@ -99,10 +100,41 @@ pub(super) fn read(state: &Path, request: &Request) -> Result<Prepared> {
         })
 }
 
-async fn output(program: &str, arguments: &[&str], limit: usize) -> Result<Vec<u8>> {
+pub(super) fn copy(text: &str) -> Result<()> {
+    const COPY: &str = r"
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Clipboard]::SetText([Console]::In.ReadToEnd())
+";
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            output(
+                "powershell.exe",
+                &["-NoProfile", "-NonInteractive", "-STA", "-Command", COPY],
+                1024,
+                Some(text.as_bytes()),
+            )
+            .await?;
+            Ok(())
+        })
+}
+
+async fn output(
+    program: &str,
+    arguments: &[&str],
+    limit: usize,
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     let mut child = tokio::process::Command::new(program)
         .args(arguments)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -114,6 +146,10 @@ async fn output(program: &str, arguments: &[&str], limit: usize) -> Result<Vec<u
         .context("missing clipboard tool output")?
         .take((limit + 1) as u64);
     let result = tokio::time::timeout(Duration::from_secs(4), async {
+        if let Some(input) = input {
+            let mut stdin = child.stdin.take().context("missing clipboard tool input")?;
+            stdin.write_all(input).await?;
+        }
         let mut bytes = Vec::new();
         stdout.read_to_end(&mut bytes).await?;
         ensure!(

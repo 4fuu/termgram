@@ -215,3 +215,8 @@ The conversation action `delete_message` opens deletion review. It is separate
 from the editor action `delete`, which deletes the next character. The review
 uses `overlay` bindings: `up`, `down`, `open` and `cancel`. The footer displays
 DELETE and the effective scope/confirmation keys.
+
+`copy_text` and `copy_link` act on the explicit message selection in the
+`conversation` context (defaults `y` and `Y`). The `attachments.terminal_clipboard`
+switch controls OSC 5522 media paste; it does not disable user-requested OSC 52
+text copying. Native text copying uses the same installed clipboard backend.

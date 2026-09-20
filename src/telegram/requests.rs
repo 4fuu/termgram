@@ -90,6 +90,7 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Copied(String),
     Deletion(Box<super::deletion::Review>),
     EditSource(crate::editing::Source),
     Edited(Option<Box<TelegramMessage>>),
@@ -116,7 +117,8 @@ pub(super) fn spawn(
     requests: &mut JoinSet<Completion>,
 ) {
     let chat_id = match &command {
-        TelegramCommand::ReviewDeletion { chat_id, .. }
+        TelegramCommand::CopyMessage { chat_id, .. }
+        | TelegramCommand::ReviewDeletion { chat_id, .. }
         | TelegramCommand::DeleteMessage { chat_id, .. }
         | TelegramCommand::LoadEdit { chat_id, .. }
         | TelegramCommand::EditMessage { chat_id, .. }
@@ -168,6 +170,11 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::CopyMessage {
+            message_id, link, ..
+        } => Ok(Response::Copied(
+            super::sharing::copy(client, peer()?, *message_id, *link).await?,
+        )),
         TelegramCommand::ReviewDeletion { message_id, .. } => Ok(Response::Deletion(Box::new(
             super::deletion::review(client, peer()?, *message_id, self_id).await?,
         ))),
@@ -426,6 +433,12 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (TelegramCommand::CopyMessage { request_id, .. }, Response::Copied(text)) => {
+            NetworkEvent::MessageCopyReady {
+                request_id,
+                result: Ok(text),
+            }
+        }
         (
             TelegramCommand::ReviewDeletion {
                 chat_id,

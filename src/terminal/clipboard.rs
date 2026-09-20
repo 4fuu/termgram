@@ -9,7 +9,10 @@ use crate::{
 use std::{collections::VecDeque, io::Write, time::Duration};
 use tokio::time::Instant;
 use yazi_term::event::{ClipboardData, ClipboardEvent};
-use yazi_tty::{TTY, sequence::ReadClipboard};
+use yazi_tty::{
+    TTY,
+    sequence::{ReadClipboard, SetClipboard},
+};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const MAX_TEXT: usize = 1024 * 1024;
@@ -53,12 +56,18 @@ struct Pending {
     password: String,
 }
 
+pub enum Activity {
+    PasteTimeout,
+    Copied(Box<crate::clipboard::copy::Completion>),
+}
+
 #[derive(Default)]
 pub struct Broker {
     supported: bool,
     next_id: u64,
     pending: Option<Pending>,
     outbound: VecDeque<String>,
+    writer: Option<crate::clipboard::copy::Writer>,
 }
 
 impl Broker {
@@ -78,6 +87,7 @@ impl Broker {
         let mut remaining = Vec::new();
         for command in outgoing {
             match command {
+                TelegramCommand::CopyText(text) => self.copy(app, text),
                 TelegramCommand::PrepareAttachments(request)
                     if self.supported && request.input == Input::Clipboard =>
                 {
@@ -102,15 +112,83 @@ impl Broker {
             writer.flush()
         })();
         if let Err(error) = result {
-            self.fail(app, format!("Terminal clipboard request failed: {error}"));
+            let error = format!("Terminal clipboard request failed: {error}");
+            app.status_message = Some(error.clone());
+            self.fail(app, error);
         }
     }
 
-    pub async fn expired(&self) {
-        if let Some(pending) = &self.pending {
-            tokio::time::sleep_until(pending.deadline).await;
-        } else {
-            std::future::pending::<()>().await;
+    /// Both clipboard directions remain events of the existing main loop.
+    pub async fn next_activity(&mut self) -> Activity {
+        let deadline = self.pending.as_ref().map(|pending| pending.deadline);
+        let paste = async move {
+            if let Some(deadline) = deadline {
+                tokio::time::sleep_until(deadline).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let copy = async {
+            if let Some(writer) = &mut self.writer {
+                writer.receive().await
+            } else {
+                std::future::pending().await
+            }
+        };
+        tokio::select! {
+            () = paste => Activity::PasteTimeout,
+            result = copy => Activity::Copied(Box::new(result)),
+        }
+    }
+
+    fn copy(&mut self, app: &mut AppState, text: String) {
+        if self.writer.is_none() {
+            match crate::clipboard::copy::Writer::start() {
+                Ok(writer) => self.writer = Some(writer),
+                Err(error) => {
+                    app.status_message = Some(format!("Clipboard writer could not start: {error}"));
+                    return;
+                }
+            }
+        }
+        let result =
+            self.writer
+                .as_mut()
+                .expect("initialized writer")
+                .submit(crate::clipboard::copy::Job {
+                    account: (app.active_account(), app.account_user_id),
+                    text,
+                    remote: remote(),
+                    multiplexed: std::env::var_os("TMUX").is_some()
+                        || std::env::var_os("TMUX_PANE").is_some(),
+                });
+        app.status_message = Some(result.map_or_else(|error| error, |()| "Copying…".to_owned()));
+    }
+
+    pub fn activity(&mut self, app: &mut AppState, activity: Activity) {
+        match activity {
+            Activity::PasteTimeout => self.timeout(app),
+            Activity::Copied(result) => {
+                let status = if let Some(text) = &result.terminal {
+                    self.outbound
+                        .push_back(SetClipboard(text.as_bytes()).to_string());
+                    if result.native.is_ok() {
+                        "Copied · terminal forwarding requested"
+                    } else {
+                        "Clipboard request sent to terminal (OSC 52)"
+                    }
+                    .to_owned()
+                } else {
+                    result
+                        .native
+                        .map_or_else(|error| error, |()| "Copied".to_owned())
+                };
+                if result.account == (app.active_account(), app.account_user_id)
+                    || result.account.0 == 0
+                {
+                    app.status_message = Some(status);
+                }
+            }
         }
     }
 
@@ -463,5 +541,48 @@ mod tests {
                 .is_empty()
         );
         assert!(app.filter.value().is_empty());
+    }
+    #[tokio::test]
+    async fn remote_copy_is_bounded_and_uses_the_single_tty_output_queue() {
+        use crate::clipboard::copy::{Job, MAX_TEXT, Writer};
+        let mut app = AppState::new();
+        app.account_user_id = Some(100);
+        let account = (app.active_account(), app.account_user_id);
+        let job = |text: String| Job {
+            account,
+            text,
+            remote: true,
+            multiplexed: false,
+        };
+        // remote=true deliberately avoids reading or modifying the real clipboard.
+        let mut writer = Writer::start().unwrap();
+        assert!(writer.submit(job(String::new())).is_err());
+        assert!(writer.submit(job("x".repeat(MAX_TEXT + 1))).is_err());
+        writer.submit(job("界🙂\ntext".to_owned())).unwrap();
+        assert!(writer.submit(job("duplicate".to_owned())).is_err());
+        let mut broker = Broker {
+            writer: Some(writer),
+            ..Broker::default()
+        };
+        let event = tokio::time::timeout(Duration::from_secs(2), broker.next_activity())
+            .await
+            .unwrap();
+        broker.activity(&mut app, event);
+        assert_eq!(
+            broker.outbound.pop_front().unwrap(),
+            SetClipboard("界🙂\ntext".as_bytes()).to_string()
+        );
+        assert!(
+            app.status_message
+                .as_ref()
+                .unwrap()
+                .contains("request sent")
+        );
+        broker.cancel();
+        assert!(broker.outbound.is_empty());
+        assert!(
+            broker.writer.is_some(),
+            "account changes retain the clipboard owner"
+        );
     }
 }

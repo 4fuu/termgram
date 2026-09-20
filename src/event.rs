@@ -100,6 +100,13 @@ pub enum TelegramCommand {
         /// native Telegram reply.
         reply_to: Option<i32>,
     },
+    CopyText(String),
+    CopyMessage {
+        chat_id: ChatId,
+        message_id: i32,
+        link: bool,
+        request_id: u64,
+    },
     ReviewDeletion {
         chat_id: ChatId,
         message_id: i32,
@@ -223,6 +230,10 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::CopyMessage { request_id, .. } => NetworkEvent::MessageCopyReady {
+                request_id,
+                result: Err(error),
+            },
             Self::ReviewDeletion {
                 chat_id,
                 message_id,
@@ -416,7 +427,9 @@ impl TelegramCommand {
             TelegramCommand::LoadCachedContext { request_id, .. } => {
                 NetworkEvent::SearchFailed { request_id, error }
             }
-            TelegramCommand::RefreshFolders | Self::RefreshDialogPins => NetworkEvent::Error(error),
+            Self::CopyText(_) | TelegramCommand::RefreshFolders | Self::RefreshDialogPins => {
+                NetworkEvent::Error(error)
+            }
             TelegramCommand::RefreshDialogs => NetworkEvent::DialogsFailed(error),
             TelegramCommand::CancelSearch
             | TelegramCommand::SwitchAccount { .. }
@@ -478,6 +491,19 @@ impl fmt::Debug for TelegramCommand {
                 .field("message_id", message_id)
                 .field("request_id", request_id)
                 .finish_non_exhaustive(),
+            Self::CopyText(_) => formatter.write_str("CopyText(<redacted>)"),
+            Self::CopyMessage {
+                chat_id,
+                message_id,
+                link,
+                request_id,
+            } => formatter
+                .debug_struct("CopyMessage")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("link", link)
+                .field("request_id", request_id)
+                .finish(),
             Self::ReviewDeletion {
                 chat_id,
                 message_id,
@@ -877,6 +903,10 @@ pub enum NetworkEvent {
     NewMessage(Message),
     /// A replayed or edited message that must not change unread state.
     MessageUpdated(Message),
+    MessageCopyReady {
+        request_id: u64,
+        result: Result<String, String>,
+    },
     DeletionReady {
         chat_id: ChatId,
         message_id: i32,

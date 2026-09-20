@@ -198,3 +198,6 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 `saved_messages`（`g s`）打开 Saved Messages。转发预览使用 `forward` 上下文，
 动作是 `send`（Enter）和 `cancel`（Esc/Ctrl-C）；底栏显示 FORWARD 和实际绑定。
 长按按键产生的重复事件不会提交刚打开的转发预览。
+
+桌面提醒使用 Lua 的 `notifications` 表，后端、预览、无声投递和合并方式见
+[通知设置](Notifications.md)。它与底栏名为 `notifications` 的组件分别配置。

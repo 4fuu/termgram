@@ -65,6 +65,7 @@ struct Configuration {
     sidebar: crate::sidebar::Configuration,
     messages: crate::transcript::Configuration,
     attachments: crate::staging::Configuration,
+    notifications: crate::notifications::Configuration,
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +88,7 @@ pub struct Keymap {
     pub sidebar: crate::sidebar::Configuration,
     pub messages: crate::transcript::Configuration,
     pub attachments: crate::staging::Configuration,
+    pub notifications: crate::notifications::Configuration,
     pending: Vec<Key>,
     count: usize,
     context: Option<Context>,
@@ -111,6 +113,7 @@ impl Default for Keymap {
             sidebar: crate::sidebar::Configuration::default(),
             messages: crate::transcript::Configuration::default(),
             attachments: crate::staging::Configuration::default(),
+            notifications: crate::notifications::Configuration::default(),
             ghost_text: "{send} to send".to_owned(),
             nerd_font: false,
             pending: Vec::new(),
@@ -474,6 +477,7 @@ impl Keymap {
         configuration.statusline.validate()?;
         configuration.sidebar.validate()?;
         configuration.messages.validate()?;
+        configuration.notifications.validate()?;
         let mut keymap = Self {
             chats: configuration.chats,
             colors: configuration.colors,
@@ -482,6 +486,7 @@ impl Keymap {
             sidebar: configuration.sidebar,
             messages: configuration.messages,
             attachments: configuration.attachments,
+            notifications: configuration.notifications,
             ..Self::default()
         };
         if let Some(text) = configuration.ghost_text {

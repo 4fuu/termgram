@@ -27,6 +27,7 @@ grammers-client = { version = "=0.10.0", default-features = false, features = ["
 grammers-session = { version = "=0.10.0", default-features = false, features = ["sqlite-storage"] }
 image = { version = "=0.25.10", default-features = false }
 moxcms = "=0.9.1"
+notify-rust = "=4.18.0"
 mlua = { version = "=0.12.1", features = ["lua55", "vendored", "serde", "error-send"] }
 libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
 serde = { version = "1", features = ["derive"] }
@@ -49,6 +50,9 @@ yazi-adapter = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab
 yazi-emulator = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
 yazi-term = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
 yazi-tty = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+quick-xml = "=0.42.0"
 
 [build-dependencies]
 vergen-gitcl = "=10.0.3"

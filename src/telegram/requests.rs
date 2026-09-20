@@ -93,6 +93,7 @@ pub(super) async fn refresh_pending(
 enum Response {
     Search(super::search::Page),
     Muted(i64),
+    AlertSettings(crate::notifications::Resolved),
     Saved(super::forwarding::Destination),
     ForwardReview(Box<super::forwarding::Review>),
     Copied(String),
@@ -123,6 +124,7 @@ pub(super) fn spawn(
 ) {
     let search_id = command.cloud_search_id();
     let chat_id = match &command {
+        TelegramCommand::ResolveAlertSettings { key, .. } => Some(key.chat),
         TelegramCommand::SearchCloud(request) => Some(request.chat_id),
         TelegramCommand::SearchMentions { chat_id, .. }
         | TelegramCommand::ReadMentions { chat_id, .. }
@@ -166,6 +168,13 @@ pub(super) fn spawn(
         _ => None,
     };
     let other_peer = match &command {
+        TelegramCommand::ResolveAlertSettings { key, .. } => key.sender.and_then(|id| {
+            cache
+                .peers
+                .get(&id)
+                .or_else(|| cache.notification_peers.get(&id))
+                .copied()
+        }),
         TelegramCommand::SearchCloud(request) => match &request.filters.sender {
             Some(crate::cloud_search::Sender::Id(id)) => {
                 cache.peers.get(id).copied().or_else(|| {
@@ -217,6 +226,14 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::ResolveAlertSettings { key, .. } => Ok(Response::AlertSettings(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                super::notifications::resolve_alert(client, peer()?, key.sender, other_peer),
+            )
+            .await
+            .context("Notification settings timed out")??,
+        )),
         TelegramCommand::ReadMentions { message_ids, .. } => {
             super::notifications::read_mentions(client, peer()?, message_ids).await?;
             Ok(Response::Applied)
@@ -529,6 +546,18 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::ResolveAlertSettings { key, request_id },
+            Response::AlertSettings(settings),
+        ) => NetworkEvent::AlertSettingsReady {
+            key,
+            request_id,
+            result: if cache.notify_revision == notify_revision {
+                Ok(settings)
+            } else {
+                Err("Notification settings changed; retrying".to_owned())
+            },
+        },
         (
             TelegramCommand::SetChatMute {
                 chat_id,

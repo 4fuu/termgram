@@ -111,6 +111,8 @@ pub struct Mention {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
+    #[serde(skip)]
+    pub notification: Option<crate::notifications::Metadata>,
     #[serde(default)]
     pub mention: Option<Mention>,
     #[serde(default)]

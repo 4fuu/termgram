@@ -218,3 +218,25 @@ above. Text mentions use `messages.readMessageContents` (ordered PTS result) or
 media require explicit consumption. This is an original adapter, not copied
 Desktop source. Cache receipts update existing JSON and protect only snapshots
 still in flight, including messages not yet cached when the receipt arrived.
+
+Desktop notification delivery depends on notify-rust 4.18.0 directly, with its
+pure-Rust zbus backend for Unix desktops. Existing quick-xml 0.42.0 is a direct
+Unix dependency for literal XML body escaping. Native delivery has one bounded
+background worker; it does not implement platform notification protocols.
+The legacy macOS adapter uses `schedule_raw` at the current instant because
+`show` defers to Drop and hides send errors in this crate version. No native
+callback waits or notification-center event loop are introduced.
+
+The terminal OSC 9/BEL choice follows Codex `codex-rs/tui/src/notifications/{mod,
+osc9,bel}.rs` at `78245b47af2a7aafcabe025828ceecca69db4df1`. The original application
+adapter uses existing Yazi `EMULATOR`, `TTY` and `TmuxPassthrough`; no Codex source,
+terminal detection or input handling is copied. Quiet messages do not fall back
+to protocols that cannot suppress sound. Grouping is implemented before delivery
+because replacement IDs do not work uniformly across the native backends.
+
+Eligibility follows Desktop `notifications/notifications_manager.cpp` at the
+Desktop revision above: unmuted chats notify, muted-chat mentions may use their
+sender's notification state, and silent messages/sound-none remain quiet. Server
+preview preferences apply independently. This is an original typed-RPC adapter,
+not copied GPL source. Resolved settings expire and are invalidated by live
+updates; notification-only metadata is never serialized into the message cache.

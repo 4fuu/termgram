@@ -16,7 +16,7 @@ time. Cached messages are available while it reconnects.
 | Navigate Telegram folders | [Folders](Folders.md) |
 | Pin chats or messages, browse pins | [Pins](Pins.md) |
 | Search local or cloud history with filters | [Message search](Search.md) |
-| Mute chats or browse unread mentions | [Notification settings](Notifications.md) |
+| Desktop alerts, chat mute and unread mentions | [Notification settings](Notifications.md) |
 | Color a chat or folder | [Appearance](Appearance.md) |
 | Preview or reveal a file | [Attachments](Attachments.md) |
 | Understand offline behavior or clear the cache | [Cache and synchronization](Synchronization.md) |
@@ -31,7 +31,7 @@ currently uses English text, with configurable composer ghost text.
 
 Broadcast channels, secret chats, calls, stories, reactions, sticker/GIF pickers,
 server-wide message search, contact management, chat creation, group
-administration, polls and desktop alert delivery are outside this revision’s scope.
+administration and polls are outside this revision’s scope.
 Message editing, deletion, copying, forwarding and Saved Messages are supported;
 see [daily workflows](UX.md).
 Folders are created and edited in an official client. Supported messages, links

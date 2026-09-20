@@ -27,6 +27,7 @@ enum RuntimeEvent {
     Preview(Result<Vec<termgram::media::MediaFailure>>),
     DraftError(String),
     Clipboard(termgram::terminal::clipboard::Activity),
+    Notification(termgram::notifications::delivery::Activity),
     Tick,
 }
 
@@ -147,6 +148,7 @@ async fn main() -> Result<()> {
     let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut pending_commands = VecDeque::new();
     let mut clipboard = termgram::terminal::clipboard::Broker::default();
+    let mut notifications = termgram::notifications::delivery::Dispatcher::default();
     let mut redraw = true;
     let mut runtime_error: Option<anyhow::Error> = None;
 
@@ -188,6 +190,8 @@ async fn main() -> Result<()> {
         let mut outgoing = app.request_visible_media();
         outgoing.extend(app.request_visible_replies());
         outgoing.extend(app.request_visible_read());
+        outgoing.extend(app.request_alert_settings());
+        notifications.flush(&mut app);
         let outgoing = clipboard.route(&mut app, outgoing);
         clipboard.flush(&mut app);
         dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
@@ -206,6 +210,7 @@ async fn main() -> Result<()> {
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
+                activity = notifications.next_activity(app.next_alert_deadline()) => RuntimeEvent::Notification(activity),
                 event = network.recv() => RuntimeEvent::Network(Box::new(event)),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
@@ -217,6 +222,7 @@ async fn main() -> Result<()> {
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
+                activity = notifications.next_activity(app.next_alert_deadline()) => RuntimeEvent::Notification(activity),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
                 () = animation_tick => RuntimeEvent::Tick,
@@ -342,6 +348,10 @@ async fn main() -> Result<()> {
                 Vec::new()
             }
             RuntimeEvent::Tick => app.update(AppEvent::Tick),
+            RuntimeEvent::Notification(activity) => {
+                notifications.activity(activity, &mut app);
+                Vec::new()
+            }
             RuntimeEvent::Clipboard(activity) => {
                 clipboard.activity(&mut app, activity);
                 Vec::new()
@@ -395,6 +405,7 @@ async fn main() -> Result<()> {
         synchronize_update_preferences(&mut app, &mut update_preferences, &mut update_check);
     }
 
+    app.cancel_alerts();
     drop(preview);
     drop(terminal);
     if let Some(writer) = draft_writer {

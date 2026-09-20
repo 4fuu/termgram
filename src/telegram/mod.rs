@@ -75,6 +75,8 @@ struct WorkerCache {
     cloud_search: Option<(u64, tokio::task::AbortHandle)>,
     search_sender: Option<PeerRef>,
     notify_revision: u64,
+    notification_peers: HashMap<ChatId, PeerRef>,
+    notification_peer_order: VecDeque<ChatId>,
     transfer_slots: Option<Arc<tokio::sync::Semaphore>>,
     upload_order: HashMap<ChatId, tokio::sync::oneshot::Receiver<()>>,
     dialogs: MetadataRefresh,
@@ -467,6 +469,20 @@ async fn process_update(
             {
                 cache.peers.insert(chat_id, peer);
             }
+            if message.mentioned()
+                && let Some(sender) = message.sender()
+                && let Ok(Some(peer)) = sender.to_ref().await
+                && let Some(id) = peer.id.bot_api_dialog_id().filter(|id| *id > 0)
+            {
+                if cache.notification_peers.insert(id, peer).is_none() {
+                    cache.notification_peer_order.push_back(id);
+                }
+                while cache.notification_peer_order.len() > 256 {
+                    if let Some(old) = cache.notification_peer_order.pop_front() {
+                        cache.notification_peers.remove(&old);
+                    }
+                }
+            }
             let message_id = message.id();
             let after_dialog_snapshot = advance_dialog_watermark(cache, chat_id, message_id);
             let message = map_message(&message, cache)?;
@@ -555,6 +571,9 @@ async fn process_update(
                 tl::enums::Update::NotifySettings(update) => {
                     cache.notify_revision = cache.notify_revision.wrapping_add(1);
                     cache.dialogs.dirty = true;
+                    events
+                        .send(NetworkEvent::NotificationSettingsChanged)
+                        .await?;
                     if let tl::enums::NotifyPeer::Peer(target) = &update.peer
                         && let Some(chat_id) = PeerId::from(target.peer.clone()).bot_api_dialog_id()
                         && let tl::enums::PeerNotifySettings::Settings(settings) =
@@ -1440,7 +1459,8 @@ async fn handle_command(
                 requests::spawn(command, client, cache, requests);
             }
         }
-        command @ (TelegramCommand::ReviewForward { .. }
+        command @ (TelegramCommand::ResolveAlertSettings { .. }
+        | TelegramCommand::ReviewForward { .. }
         | TelegramCommand::ForwardMessage { .. }
         | TelegramCommand::OpenSaved { .. }
         | TelegramCommand::CopyMessage { .. }
@@ -2384,6 +2404,14 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        notification: Some(crate::notifications::Metadata {
+            sender: message
+                .sender_id()
+                .and_then(PeerId::bot_api_dialog_id)
+                .filter(|id| *id > 0),
+            silent: message.silent(),
+            protected: matches!(&message.raw, tl::enums::Message::Message(raw) if raw.noforwards),
+        }),
         mention: message.mentioned().then(|| crate::model::Mention {
             unread: message.media_unread() && !message.outgoing(),
             requires_playback: notifications::requires_playback(message),
@@ -3055,6 +3083,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,
@@ -3117,6 +3146,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,

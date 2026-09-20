@@ -1,5 +1,6 @@
 //! Pure, single-owner application state and transitions.
 
+mod alerts;
 mod appearance;
 mod attachments;
 mod commands;
@@ -217,6 +218,7 @@ pub struct App {
     pub connection: ConnectionStatus,
     pub metrics: crate::statusline::Metrics,
     pub notifications: notifications::State,
+    alerts: alerts::State,
     pub user_name: Option<String>,
     pub account_user_id: Option<i64>,
     pub appearance: crate::appearance::Preferences,
@@ -338,6 +340,7 @@ impl Default for App {
             connection: ConnectionStatus::Connecting,
             metrics: crate::statusline::Metrics::default(),
             notifications: notifications::State::default(),
+            alerts: alerts::State::default(),
             user_name: None,
             account_user_id: None,
             appearance: crate::appearance::Preferences::default(),
@@ -1162,6 +1165,7 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        self.observe_alerts(&event);
         self.observe_search(&event);
         self.observe_deletion(&event);
         self.observe_forward(&event);
@@ -1436,6 +1440,8 @@ impl App {
             | NetworkEvent::PinnedMessagesLoading { .. }
             | NetworkEvent::SyncCheckpoint(_)
             | NetworkEvent::AttachmentDownloadStarted { .. }
+            | NetworkEvent::NotificationSettingsChanged
+            | NetworkEvent::AlertSettingsReady { .. }
             | NetworkEvent::CacheMessage(_) => Vec::new(),
             NetworkEvent::CacheAccountReset { .. } => {
                 self.reset_for_account_switch(self.active_account());
@@ -2636,6 +2642,7 @@ impl App {
     }
 
     fn reset_for_account_switch(&mut self, account: u8) {
+        self.cancel_alerts();
         let settings = self.settings;
         let settings_path = self.settings_path.clone();
         let available_update = self.available_update.clone();
@@ -2774,6 +2781,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,
@@ -2826,6 +2834,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,
@@ -4708,6 +4717,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,
@@ -6992,6 +7002,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,
@@ -7015,6 +7026,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,
@@ -7027,6 +7039,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,

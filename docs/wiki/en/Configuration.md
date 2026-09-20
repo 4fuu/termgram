@@ -228,3 +228,7 @@ forward to yourself, and `saved_messages` (`g s`) opens Saved Messages. The
 `forward` context uses `send` (Enter) and `cancel` (Esc/Ctrl-C). Its footer says
 FORWARD and displays the effective bindings. Repeated key-down events cannot
 submit a newly opened forward preview.
+
+Desktop alert policy uses the Lua `notifications` table; see [Notifications](Notifications.md)
+for backends, previews, quiet delivery and grouping. This is separate from the
+`notifications` statusline item.

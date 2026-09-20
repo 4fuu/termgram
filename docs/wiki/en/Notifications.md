@@ -66,5 +66,63 @@ results and local cache. Slow history/search snapshots cannot restore an older
 unread flag. Mention navigation requires a connection; Ctrl-R retries after
 reconnecting.
 
-Native desktop alert delivery is being implemented separately from Telegram's
-mute settings and mention receipts.
+## Desktop alerts
+
+Desktop alerts are enabled by default for new, unseen incoming messages. Messages
+visible in the focused conversation remain silent, including the interval before
+the read acknowledgement completes. Alerts from the same chat combine for 800 ms;
+the queue has bounded chat/message counts and stays off the input/rendering path.
+
+Set these fields inside the table returned by `config.lua`:
+
+```lua
+notifications = {
+  enabled = true,
+  backend = "auto",
+  when = "unseen",
+  previews = true,
+  sound = true,
+  group_delay_ms = 800,
+},
+```
+
+- `enabled = false` disables local desktop delivery; Telegram's mute settings
+  continue to synchronize.
+- `when = "unseen"` also allows alerts from other chats while Termgram is focused.
+  `"unfocused"` requires the terminal to be unfocused. Both honor read boundaries.
+- `previews = false` hides message text and sender excerpts. When enabled, previews
+  still require Telegram's effective preview setting; protected messages use a
+  generic body. The alert title includes the account and chat.
+- `sound = false` requests quiet native alerts. Telegram silent messages and a
+  chat's sound-none setting also stay quiet. Custom Telegram ringtones are not
+  downloaded; native alerts use the platform's default sound when allowed.
+- `group_delay_ms` is 100–5000 ms. It is a fixed window from the first message,
+  so a busy chat does not postpone delivery forever.
+
+`auto` uses the native desktop on local sessions. Over SSH it uses OSC 9 on
+terminals detected as Ghostty, iTerm2, Kitty, Warp or WezTerm, with BEL otherwise.
+Local native errors can fall back through the terminal. `native`, `osc9` and `bell`
+explicitly choose one backend. Terminal OSC 9 and BEL cannot request a quiet alert,
+so they omit messages whose sound is disabled. Terminal notifications require the
+terminal's own notification permissions; tmux forwarding uses the existing
+[passthrough settings](Terminal.md). Native notifications use notify-rust's
+macOS, Windows and Linux desktop integrations; Linux needs a desktop session bus.
+No native callback waits or second terminal reader are added.
+
+Termgram reads effective Telegram notification preferences asynchronously. A muted
+chat stays quiet except for mentions/replies whose sender is unmuted, following
+Desktop's rule. The chat's preview and sound settings still apply. Unknown or
+failed settings do not produce an alert; requests are bounded and expire. Changes
+from another client invalidate the settings snapshot and queued deliveries.
+
+Startup and reconnection begin a fresh notification window: only messages dated
+after that connection boundary and at most 30 seconds old can alert. Old cached
+or recovered messages, duplicates, outgoing messages and Saved Messages stay
+silent. This intentionally avoids a burst for messages missed while disconnected;
+those messages remain visible in history and unread counts. Notification freshness
+uses the system clock and Telegram message timestamps.
+
+Reading, deleting, muting, switching accounts or quitting cancels applicable
+pending deliveries. Coalescing occurs before desktop delivery; the operating
+system owns notifications already delivered. Notification clicks/replies and
+replacement of already delivered cards are not provided by this interface.

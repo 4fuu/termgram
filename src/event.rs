@@ -201,6 +201,10 @@ pub enum TelegramCommand {
         request_id: u64,
     },
     RefreshDialogs,
+    ResolveAlertSettings {
+        key: crate::notifications::SettingsKey,
+        request_id: u64,
+    },
     SetChatMute {
         chat_id: ChatId,
         mute: crate::notifications::Mute,
@@ -277,6 +281,11 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::ResolveAlertSettings { key, request_id } => NetworkEvent::AlertSettingsReady {
+                key,
+                request_id,
+                result: Err(error),
+            },
             Self::OpenSaved { request_id } => NetworkEvent::SavedReady {
                 request_id,
                 result: Err(error),
@@ -802,6 +811,11 @@ impl fmt::Debug for TelegramCommand {
                 .field("message_id", message_id)
                 .field("request_id", request_id)
                 .finish(),
+            Self::ResolveAlertSettings { key, request_id } => formatter
+                .debug_struct("ResolveAlertSettings")
+                .field("key", key)
+                .field("request_id", request_id)
+                .finish(),
             Self::SetChatMute {
                 chat_id,
                 mute,
@@ -995,6 +1009,12 @@ pub enum NetworkEvent {
         error: String,
     },
     Folders(Vec<crate::folders::Folder>),
+    NotificationSettingsChanged,
+    AlertSettingsReady {
+        key: crate::notifications::SettingsKey,
+        request_id: u64,
+        result: Result<crate::notifications::Resolved, String>,
+    },
     ChatMuteChanged {
         chat_id: ChatId,
         until: i64,

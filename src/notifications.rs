@@ -1,4 +1,5 @@
 //! Notification preferences shared by commands, Telegram and status rendering.
+pub mod delivery;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mute {
@@ -50,4 +51,94 @@ pub fn mute_label(until: i64, now: i64) -> String {
             },
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    #[default]
+    Auto,
+    Native,
+    Osc9,
+    Bell,
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    #[default]
+    Unseen,
+    Unfocused,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Configuration {
+    pub enabled: bool,
+    pub backend: Backend,
+    pub previews: bool,
+    pub sound: bool,
+    pub when: When,
+    pub group_delay_ms: u64,
+}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: Backend::Auto,
+            previews: true,
+            sound: true,
+            when: When::Unseen,
+            group_delay_ms: 800,
+        }
+    }
+}
+
+impl Configuration {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (100..=5000).contains(&self.group_delay_ms),
+            "notifications.group_delay_ms must be 100–5000"
+        );
+        Ok(())
+    }
+}
+
+/// Transient delivery metadata. Cached history never produces notification intents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Metadata {
+    pub sender: Option<crate::model::ChatId>,
+    pub silent: bool,
+    pub protected: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SettingsKey {
+    pub chat: crate::model::ChatId,
+    pub sender: Option<crate::model::ChatId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Preferences {
+    pub mute_until: i64,
+    pub previews: bool,
+    pub sound: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Resolved {
+    pub chat: Preferences,
+    pub sender_mute_until: Option<i64>,
+}
+
+pub struct Alert {
+    pub account: i64,
+    pub chat: crate::model::ChatId,
+    pub ids: Vec<i32>,
+    pub title: String,
+    pub body: String,
+    pub sound: bool,
+    pub valid: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub expires: std::time::Instant,
 }

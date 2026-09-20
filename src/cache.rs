@@ -1041,6 +1041,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            notification: None,
             mention: None,
             edited_at: None,
             pinned: false,

@@ -104,6 +104,76 @@ pub(super) async fn read_mentions(client: &Client, peer: PeerRef, ids: &[i32]) -
     Ok(())
 }
 
+pub(super) async fn resolve_alert(
+    client: &Client,
+    peer: PeerRef,
+    sender_id: Option<i64>,
+    sender: Option<PeerRef>,
+) -> Result<crate::notifications::Resolved> {
+    let chat = alert_preferences(client, peer).await?;
+    let sender_mute_until = if chat.mute_until > chrono::Utc::now().timestamp() {
+        if let Some(sender) = sender.filter(|peer| peer.id.bot_api_dialog_id() == sender_id) {
+            Some(alert_preferences(client, sender).await?.mute_until)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(crate::notifications::Resolved {
+        chat,
+        sender_mute_until,
+    })
+}
+
+async fn alert_preferences(
+    client: &Client,
+    peer: PeerRef,
+) -> Result<crate::notifications::Preferences> {
+    let tl::enums::PeerNotifySettings::Settings(settings) = client
+        .invoke(&tl::functions::account::GetNotifySettings {
+            peer: tl::types::InputNotifyPeer { peer: peer.into() }.into(),
+        })
+        .await?;
+    // Every optional field inherits independently. The current dialog scope is
+    // users and groups; broadcast-specific defaults are added with channel UX.
+    let defaults = if settings.mute_until.is_none()
+        || settings.show_previews.is_none()
+        || settings.other_sound.is_none()
+    {
+        let tl::enums::PeerNotifySettings::Settings(defaults) = client
+            .invoke(&tl::functions::account::GetNotifySettings {
+                peer: if peer.id.kind() == grammers_session::types::PeerKind::User {
+                    tl::enums::InputNotifyPeer::InputNotifyUsers
+                } else {
+                    tl::enums::InputNotifyPeer::InputNotifyChats
+                },
+            })
+            .await?;
+        Some(defaults)
+    } else {
+        None
+    };
+    Ok(crate::notifications::Preferences {
+        mute_until: i64::from(
+            settings
+                .mute_until
+                .or_else(|| defaults.as_ref().and_then(|default| default.mute_until))
+                .unwrap_or(0),
+        ),
+        previews: settings
+            .show_previews
+            .or_else(|| defaults.as_ref().and_then(|default| default.show_previews))
+            .unwrap_or(true),
+        sound: !matches!(
+            settings.other_sound.as_ref().or_else(|| defaults
+                .as_ref()
+                .and_then(|default| default.other_sound.as_ref())),
+            Some(tl::enums::NotificationSound::None)
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

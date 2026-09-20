@@ -1889,6 +1889,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,
@@ -2253,6 +2254,7 @@ mod tests {
         let mut app = populated_app();
         app.messages.get_mut(&7).unwrap().extend([
             Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,
@@ -2276,6 +2278,7 @@ mod tests {
                 buttons: Vec::new(),
             },
             Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,
@@ -2520,6 +2523,7 @@ mod tests {
         let mut app = populated_app();
         let messages = (0_i32..30)
             .map(|id| Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,
@@ -2550,6 +2554,7 @@ mod tests {
             .get_mut(&7)
             .expect("active history")
             .push(Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,
@@ -2588,6 +2593,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                notification: None,
                 mention: None,
                 edited_at: None,
                 pinned: false,

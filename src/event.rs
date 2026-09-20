@@ -671,6 +671,10 @@ pub enum NetworkEvent {
     AccountIdentity {
         user_id: i64,
     },
+    LocalDrafts {
+        user_id: i64,
+        drafts: Vec<crate::drafts::Stored>,
+    },
     CacheMessage(Message),
     CacheInvalidated {
         chat_id: Option<ChatId>,

@@ -4,6 +4,7 @@ mod appearance;
 mod attachments;
 mod commands;
 mod composition;
+mod drafts;
 mod message_pins;
 mod pins;
 mod replies;
@@ -265,10 +266,10 @@ pub struct App {
     /// Ignore late prompts from an authentication attempt after the user has
     /// explicitly restarted it, until the worker confirms the phone phase.
     auth_restart_pending: bool,
-    drafts: BTreeMap<ChatId, TextInput>,
-    /// Per-chat reply context travels with its draft and is consumed only
-    /// after a send is queued successfully.
-    reply_targets: BTreeMap<ChatId, ReplyInfo>,
+    drafts: BTreeMap<crate::drafts::Key, crate::drafts::Draft>,
+    draft_accounts: BTreeSet<i64>,
+    draft_modified_accounts: BTreeSet<i64>,
+    drafts_dirty: bool,
     retry_message_ids: BTreeMap<ChatId, i32>,
     retry_attachments: BTreeMap<(ChatId, i32), AttachmentRetry>,
     mode_before_help: Mode,
@@ -367,7 +368,9 @@ impl Default for App {
             qr_render_mode: QrRenderMode::default(),
             auth_restart_pending: false,
             drafts: BTreeMap::new(),
-            reply_targets: BTreeMap::new(),
+            draft_accounts: BTreeSet::new(),
+            draft_modified_accounts: BTreeSet::new(),
+            drafts_dirty: false,
             retry_message_ids: BTreeMap::new(),
             retry_attachments: BTreeMap::new(),
             mode_before_help: Mode::Navigate,
@@ -1139,6 +1142,10 @@ impl App {
                 self.account_user_id = Some(user_id);
                 Vec::new()
             }
+            NetworkEvent::LocalDrafts { user_id, drafts } => {
+                self.restore_drafts(user_id, drafts);
+                Vec::new()
+            }
             NetworkEvent::SearchResults { request_id, page } => {
                 self.finish_search(request_id, Ok(page));
                 Vec::new()
@@ -1686,13 +1693,14 @@ impl App {
 
     #[must_use]
     pub fn active_draft(&self) -> Option<&TextInput> {
-        self.active_chat_id.and_then(|id| self.drafts.get(&id))
+        self.active_chat_id.and_then(|id| self.draft_for(id))
     }
 
     #[must_use]
     pub fn active_reply_target(&self) -> Option<&ReplyInfo> {
         self.active_chat_id
-            .and_then(|id| self.reply_targets.get(&id))
+            .and_then(|id| self.draft_data(id))
+            .and_then(|draft| draft.reply.as_ref())
     }
 
     /// Explicit selection, otherwise the last visible message in the conversation.
@@ -1711,7 +1719,7 @@ impl App {
 
     #[must_use]
     pub fn draft_for(&self, chat_id: ChatId) -> Option<&TextInput> {
-        self.drafts.get(&chat_id)
+        self.draft_data(chat_id).map(|draft| &draft.input)
     }
 
     #[must_use]
@@ -1843,13 +1851,12 @@ impl App {
                 (self.active_chat_id, dropped_file_paths(&normalized))
         {
             let caption = (self.mode == Mode::Compose)
-                .then(|| self.drafts.get_mut(&chat_id))
-                .flatten()
+                .then(|| &mut self.draft_data_mut(chat_id).input)
                 .filter(|draft| !draft.value().trim().is_empty())
                 .map(TextInput::take)
                 .unwrap_or_default();
             let reply_to = (self.mode == Mode::Compose)
-                .then(|| self.reply_targets.remove(&chat_id))
+                .then(|| self.draft_data_mut(chat_id).reply.take())
                 .flatten();
             return self.send_dropped_files(chat_id, paths, caption, reply_to);
         }
@@ -1861,10 +1868,7 @@ impl App {
             }
             Screen::Main if self.mode == Mode::Compose => {
                 if let Some(chat_id) = self.active_chat_id {
-                    self.drafts
-                        .entry(chat_id)
-                        .or_default()
-                        .insert_str(&normalized);
+                    self.draft_data_mut(chat_id).input.insert_str(&normalized);
                 }
             }
             Screen::Main if self.mode == Mode::Search && self.search.editing => {
@@ -2116,7 +2120,7 @@ impl App {
             return Vec::new();
         };
         if action == KeyAction::Escape {
-            if self.reply_targets.remove(&chat_id).is_some() {
+            if self.draft_data_mut(chat_id).reply.take().is_some() {
                 self.selected_message = None;
                 self.status_message = Some("Reply cancelled · draft kept".to_owned());
                 return Vec::new();
@@ -2127,7 +2131,7 @@ impl App {
         if action == KeyAction::Enter {
             return self.send_draft(chat_id);
         }
-        let draft = self.drafts.entry(chat_id).or_default();
+        let draft = &mut self.draft_data_mut(chat_id).input;
         match action {
             KeyAction::Character(character) => draft.insert(character),
             KeyAction::Newline => draft.insert('\n'),
@@ -2404,11 +2408,20 @@ impl App {
         let appearance = self.appearance.clone();
         let navigation = self.navigation.clone();
         let sidebar_hidden = self.sidebar_hidden;
+        let mut drafts = std::mem::take(&mut self.drafts);
+        drafts.retain(|key, _| key.account != 0);
+        let draft_accounts = std::mem::take(&mut self.draft_accounts);
+        let draft_modified_accounts = std::mem::take(&mut self.draft_modified_accounts);
+        let drafts_dirty = self.drafts_dirty;
         let mut commands = std::mem::take(&mut self.commands);
         commands.reset_session();
         let mut keymap = self.keymap.clone();
         keymap.reset();
         *self = Self {
+            drafts,
+            draft_accounts,
+            draft_modified_accounts,
+            drafts_dirty,
             appearance,
             navigation,
             sidebar_hidden,
@@ -2485,26 +2498,24 @@ impl App {
 
     fn start_plain_composing(&mut self) -> Vec<TelegramCommand> {
         if let Some(chat_id) = self.active_chat_id {
-            self.reply_targets.remove(&chat_id);
+            self.draft_data_mut(chat_id).reply.take();
         }
         self.start_composing()
     }
 
     fn insert_active(&mut self, character: char) {
         if let Some(chat_id) = self.active_chat_id {
-            self.drafts.entry(chat_id).or_default().insert(character);
+            self.draft_data_mut(chat_id).input.insert(character);
         }
     }
 
     fn send_draft(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
-        let Some(draft) = self.drafts.get_mut(&chat_id) else {
-            return Vec::new();
-        };
+        let draft = &mut self.draft_data_mut(chat_id).input;
         if draft.value().trim().is_empty() {
             return Vec::new();
         }
         let text = draft.take();
-        let reply_to = self.reply_targets.remove(&chat_id);
+        let reply_to = self.draft_data_mut(chat_id).reply.take();
         let replacing_failed = self.retry_message_ids.remove(&chat_id);
         if let Some(failed_id) = replacing_failed
             && let Some(messages) = self.messages.get_mut(&chat_id)
@@ -2657,15 +2668,11 @@ impl App {
                 Some("Wait for this message to finish sending before replying".to_owned());
             return Vec::new();
         }
-        self.reply_targets.insert(
+        self.draft_data_mut(chat_id).reply = Some(ReplyInfo {
+            message_id: target.id,
             chat_id,
-            ReplyInfo {
-                message_id: target.id,
-                chat_id,
-                sender: Some(target.sender),
-            },
-        );
-        self.drafts.entry(chat_id).or_default();
+            sender: Some(target.sender),
+        });
         self.mode = Mode::Compose;
         self.focus = Focus::Conversation;
         self.selected_message = Some(target.id);
@@ -3752,14 +3759,16 @@ impl App {
         if !failed_visible {
             return Vec::new();
         }
-        let has_new_reply = self.reply_targets.contains_key(&chat_id);
-        let draft = self.drafts.entry(chat_id).or_default();
+        let has_new_reply = self
+            .draft_data(chat_id)
+            .is_some_and(|draft| draft.reply.is_some());
+        let draft = &mut self.draft_data_mut(chat_id).input;
         let retry_available = draft.is_empty() && !has_new_reply;
         if retry_available {
             draft.set_value(sanitize_terminal_text(text));
             self.retry_message_ids.insert(chat_id, local_id);
             if let Some(reply_to) = reply_to {
-                self.reply_targets.insert(chat_id, reply_to);
+                self.draft_data_mut(chat_id).reply = Some(reply_to);
             }
         }
         let error = sanitize_terminal_line(error);
@@ -3943,18 +3952,17 @@ impl App {
         if self.retry_message_ids.get(&chat_id) == Some(&local_id) {
             self.retry_message_ids.remove(&chat_id);
             if self
-                .drafts
-                .get(&chat_id)
+                .draft_for(chat_id)
                 .is_some_and(|draft| draft.value() == text)
             {
-                self.drafts.entry(chat_id).or_default().clear();
+                self.draft_data_mut(chat_id).input.clear();
                 if self
-                    .reply_targets
-                    .get(&chat_id)
+                    .draft_data(chat_id)
+                    .and_then(|draft| draft.reply.as_ref())
                     .map(|reply| reply.message_id)
                     == reply_to
                 {
-                    self.reply_targets.remove(&chat_id);
+                    self.draft_data_mut(chat_id).reply.take();
                 }
             }
             if self.active_chat_id == Some(chat_id) {
@@ -4022,12 +4030,6 @@ impl App {
                 .then_some(chat_id)
         }));
         self.messages.retain(|chat_id, _| keep.contains(chat_id));
-        self.drafts.retain(|chat_id, draft| {
-            !draft.is_empty() || keep.contains(chat_id) || Some(*chat_id) == active
-        });
-        self.reply_targets.retain(|chat_id, _| {
-            self.drafts.contains_key(chat_id) || keep.contains(chat_id) || Some(*chat_id) == active
-        });
     }
 }
 
@@ -4584,8 +4586,7 @@ mod tests {
         open_first(&mut app);
         app.message_scroll = 4;
         app.selected_message = Some(8);
-        app.drafts
-            .insert(1, crate::input::TextInput::from_value("Unsent draft"));
+        app.draft_data_mut(1).input = crate::input::TextInput::from_value("Unsent draft");
         app.handle_key(&KeyEvent::new(KeyCode::Char(':'), Modifiers::empty()));
         assert_eq!(app.mode, Mode::Command);
         app.commands.input.set_value("sta");
@@ -4623,6 +4624,62 @@ mod tests {
         app.run_binding("compose", 1);
         app.handle_key(&KeyEvent::new(KeyCode::Char(':'), Modifiers::empty()));
         assert!(app.active_draft().unwrap().value().ends_with(':'));
+    }
+
+    #[test]
+    fn restored_drafts_preserve_cursor_reply_and_account_identity() {
+        let mut app = ready_app();
+        let saved = crate::drafts::Stored {
+            chat: 1,
+            topic: 0,
+            text: "a界🙂 old draft".to_owned(),
+            cursor: 1,
+            reply: Some(ReplyInfo {
+                chat_id: 1,
+                message_id: 5,
+                sender: Some("Original author".to_owned()),
+            }),
+        };
+        app.handle_network(NetworkEvent::LocalDrafts {
+            user_id: 100,
+            drafts: vec![saved.clone()],
+        });
+        app.handle_network(NetworkEvent::AccountIdentity { user_id: 100 });
+        open_first(&mut app);
+        assert_eq!(app.active_draft().unwrap().cursor(), 1);
+        assert_eq!(app.active_reply_target().unwrap().message_id, 5);
+        app.run_binding("compose", 1);
+        app.handle_action(KeyAction::Character('X'));
+        assert_eq!(app.active_draft().unwrap().value(), "aX界🙂 old draft");
+        app.handle_network(NetworkEvent::CacheInvalidated { chat_id: None });
+        assert_eq!(app.active_reply_target().unwrap().message_id, 5);
+        app.reset_for_account_switch(2);
+        app.handle_network(NetworkEvent::LocalDrafts {
+            user_id: 200,
+            drafts: vec![crate::drafts::Stored {
+                text: "Second account".to_owned(),
+                ..saved.clone()
+            }],
+        });
+        app.handle_network(NetworkEvent::AccountIdentity { user_id: 200 });
+        assert_eq!(app.draft_for(1).unwrap().value(), "Second account");
+        let pending = app.take_draft_snapshot().unwrap();
+        assert_eq!(pending[&100][0].text, "aX界🙂 old draft");
+        assert!(
+            !pending.contains_key(&200),
+            "merely loading another account must not rewrite it"
+        );
+        app.reset_for_account_switch(1);
+        app.handle_network(NetworkEvent::LocalDrafts {
+            user_id: 100,
+            drafts: vec![saved],
+        });
+        app.handle_network(NetworkEvent::AccountIdentity { user_id: 100 });
+        assert_eq!(app.draft_for(1).unwrap().value(), "aX界🙂 old draft");
+        assert_eq!(app.draft_for(1).unwrap().cursor(), 2);
+        app.draft_data_mut(1).input.clear();
+        app.draft_data_mut(1).reply = None;
+        assert!(app.take_draft_snapshot().unwrap()[&100].is_empty());
     }
 
     #[test]
@@ -6653,7 +6710,7 @@ mod tests {
         app.handle_mouse(click(5, 4));
         assert_eq!(app.mode, Mode::Navigate);
         assert_eq!(app.active_chat_id, Some(2));
-        assert_eq!(app.drafts[&1].value(), "x");
+        assert_eq!(app.draft_for(1).unwrap().value(), "x");
     }
 
     #[test]
@@ -6802,7 +6859,7 @@ mod tests {
             ..Folder::default()
         });
         app.active_chat_id = Some(3);
-        app.drafts.insert(3, TextInput::from_value("draft"));
+        app.draft_data_mut(3).input = TextInput::from_value("draft");
         app.run_binding("folder_next", 1);
         assert_eq!(
             app.visible_chats()
@@ -6812,7 +6869,7 @@ mod tests {
             vec![2, 1]
         );
         assert_eq!(app.active_chat_id, Some(3));
-        assert_eq!(app.drafts.get(&3).unwrap().value(), "draft");
+        assert_eq!(app.draft_for(3).unwrap().value(), "draft");
         app.keymap.chats.insert("three".to_owned(), 3);
         app.run_binding("jump three", 1);
         assert_eq!(app.folder_id, 0);
@@ -6929,7 +6986,7 @@ mod tests {
         let mut app = ready_app();
         app.active_chat_id = Some(1);
         app.focus = Focus::Conversation;
-        app.drafts.insert(1, TextInput::from_value("unsent"));
+        app.draft_data_mut(1).input = TextInput::from_value("unsent");
         let mut pin = message(20, 1, "target", false);
         pin.pinned = true;
         let commands = app.run_binding("pins", 1);
@@ -7004,7 +7061,7 @@ mod tests {
             let mut app = ready_app();
             app.active_chat_id = Some(1);
             app.focus = Focus::Conversation;
-            app.drafts.insert(1, TextInput::from_value("unsent"));
+            app.draft_data_mut(1).input = TextInput::from_value("unsent");
             let mut pin = message(20, 1, "obsolete", false);
             pin.pinned = true;
             let commands = app.run_binding("pins", 1);
@@ -7080,7 +7137,7 @@ mod tests {
     fn local_search_ignores_stale_results_and_preserves_drafts_and_query() {
         let mut app = ready_app();
         app.active_chat_id = Some(1);
-        app.drafts.insert(1, TextInput::from_value("unsent"));
+        app.draft_data_mut(1).input = TextInput::from_value("unsent");
         app.run_binding("search", 1);
         app.update(AppEvent::Paste("error.*".to_owned()));
         let commands = app.run_binding("open", 1);
@@ -7124,7 +7181,7 @@ mod tests {
         assert_eq!(app.selected_message, Some(21));
         app.run_binding("search", 1);
         assert_eq!(app.search.query.value(), "error.*");
-        assert_eq!(app.drafts.get(&1).unwrap().value(), "unsent");
+        assert_eq!(app.draft_for(1).unwrap().value(), "unsent");
     }
     #[test]
     fn colors_follow_configuration_and_isolate_accounts_and_cancel_edits() {

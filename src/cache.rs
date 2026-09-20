@@ -44,7 +44,7 @@ impl Store {
     pub async fn open(path: &Path) -> Result<Self> {
         let mut lock_path = path.as_os_str().to_os_string();
         lock_path.push("-lock");
-        prepare_file(Path::new(&lock_path))?;
+        crate::config::prepare_private_file(Path::new(&lock_path))?;
         let owner = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -52,7 +52,7 @@ impl Store {
         owner
             .try_lock()
             .context("this account cache is already open in another Termgram process")?;
-        prepare_file(path)?;
+        crate::config::prepare_private_file(path)?;
         let database = libsql::Builder::new_local(path).build().await?;
         let connection = database.connect()?;
         connection.busy_timeout(Duration::from_secs(5))?;
@@ -823,32 +823,6 @@ async fn set_metadata(connection: &Connection, key: &str, value: &str) -> Result
             params![key, value],
         )
         .await?;
-    Ok(())
-}
-
-fn prepare_file(path: &Path) -> Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
-            bail!("message cache must be a regular file")
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(path)?;
-        }
-        Err(error) => return Err(error.into()),
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
     Ok(())
 }
 

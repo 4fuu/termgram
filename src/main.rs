@@ -25,6 +25,7 @@ enum RuntimeEvent {
     },
     ShutdownSignal(io::Result<()>),
     Preview(Result<Vec<termgram::media::MediaFailure>>),
+    DraftError(String),
     Tick,
 }
 
@@ -141,12 +142,18 @@ async fn main() -> Result<()> {
         }
     };
 
+    let mut draft_writer = base_config.clone().map(termgram::drafts::Writer::spawn);
     let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut pending_commands = VecDeque::new();
     let mut redraw = true;
     let mut runtime_error: Option<anyhow::Error> = None;
 
     loop {
+        if let Some(writer) = &draft_writer
+            && let Some(snapshot) = app.take_draft_snapshot()
+        {
+            writer.queue(snapshot);
+        }
         if redraw && let Err(error) = draw_interface(&mut terminal, &mut preview, &mut app) {
             runtime_error = Some(error);
             break;
@@ -178,6 +185,7 @@ async fn main() -> Result<()> {
             tokio::select! {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
                 result = preview.finished() => RuntimeEvent::Preview(result),
+                error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 event = network.recv() => RuntimeEvent::Network(Box::new(event)),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
@@ -187,6 +195,7 @@ async fn main() -> Result<()> {
             tokio::select! {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
                 result = preview.finished() => RuntimeEvent::Preview(result),
+                error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
                 () = animation_tick => RuntimeEvent::Tick,
@@ -289,6 +298,10 @@ async fn main() -> Result<()> {
                 }
                 Vec::new()
             }
+            RuntimeEvent::DraftError(error) => {
+                app.status_message = Some(error);
+                Vec::new()
+            }
             RuntimeEvent::Tick => app.update(AppEvent::Tick),
         };
 
@@ -338,6 +351,14 @@ async fn main() -> Result<()> {
 
     drop(preview);
     drop(terminal);
+    if let Some(writer) = draft_writer {
+        if let Some(snapshot) = app.take_draft_snapshot() {
+            writer.queue(snapshot);
+        }
+        if let Err(error) = writer.finish().await {
+            runtime_error = Some(error.context("could not save drafts before exit"));
+        }
+    }
     drop(commands.take());
     // Stop back-pressuring a worker that may be trying to report its final
     // status while the UI is no longer consuming network events.
@@ -531,6 +552,13 @@ async fn wait_for_animation_tick(enabled: bool) {
         sleep(ANIMATION_INTERVAL).await;
     } else {
         std::future::pending::<()>().await;
+    }
+}
+
+async fn wait_for_draft_error(writer: &mut Option<termgram::drafts::Writer>) -> String {
+    match writer {
+        Some(writer) => writer.next_error().await,
+        None => std::future::pending().await,
     }
 }
 

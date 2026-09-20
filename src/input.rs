@@ -74,6 +74,22 @@ impl TextInput {
         Self { value, cursor }
     }
 
+    /// Restore a saved byte cursor, clamping malformed offsets to a complete
+    /// grapheme boundary inside the bounded input.
+    #[must_use]
+    pub fn with_cursor(value: impl Into<String>, cursor: usize) -> Self {
+        let mut input = Self::from_value(value);
+        input.cursor = input
+            .value
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .chain(std::iter::once(input.value.len()))
+            .take_while(|&index| index <= cursor)
+            .last()
+            .unwrap_or(0);
+        input
+    }
+
     #[must_use]
     pub fn value(&self) -> &str {
         &self.value

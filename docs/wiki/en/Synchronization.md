@@ -28,6 +28,19 @@ the `.session` file, `settings.conf` and `appearance.json` to preserve login and
 preferences. Only one process may own a given account cache at a time.
 The next launch reconnects and starts a fresh message cache.
 
+Drafts live in a separate database: the base session path followed by
+`.state.sqlite3` (for example, `termgram.session.state.sqlite3`). All account
+slots share this file, with records keyed by Telegram user ID, chat and optional
+topic ID. It contains local message text and reply targets, not authentication
+keys, and is not encrypted. **Keep this file when clearing message caches.**
+Drafts are excluded from message-cache eviction and gap invalidation.
+
+Cached accounts load their drafts before showing conversations. SQLite reads
+and coalesced writes run off the terminal thread. Normal exit flushes the latest
+snapshot; a failed save is reported and retried while the app remains open. A
+failed database transaction preserves the previous drafts. Draft text, replies
+and Unicode cursor positions return together after a restart.
+
 Full update batches and their covered cursor are committed in order. Restarting
 after an interrupted write may replay updates, but must never skip uncommitted
 messages. Session peer metadata is separate from this message checkpoint.

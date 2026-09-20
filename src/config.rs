@@ -418,6 +418,8 @@ pub struct Config {
     pub api_id: i32,
     pub api_hash: String,
     pub session_path: PathBuf,
+    /// Durable drafts and later user-authored state shared across account slots.
+    pub state_path: PathBuf,
     /// Enable bounded background Ping observations for the Lua statusline.
     pub measure_latency: bool,
 }
@@ -429,6 +431,7 @@ impl std::fmt::Debug for Config {
             .field("api_id", &self.api_id)
             .field("api_hash", &"[redacted]")
             .field("session_path", &self.session_path)
+            .field("state_path", &self.state_path)
             .field("measure_latency", &self.measure_latency)
             .finish()
     }
@@ -479,9 +482,12 @@ impl Config {
             choose_default_session_path(current, legacy)
         };
 
+        let mut state_path = session_path.as_os_str().to_os_string();
+        state_path.push(".state.sqlite3");
         Ok(Self {
             api_id,
             api_hash,
+            state_path: PathBuf::from(state_path),
             session_path,
             measure_latency: false,
         })
@@ -518,6 +524,7 @@ impl Config {
         Ok(Self {
             api_id: self.api_id,
             api_hash: self.api_hash.clone(),
+            state_path: self.state_path.clone(),
             session_path,
             measure_latency: self.measure_latency,
         })
@@ -638,6 +645,41 @@ fn choose_default_session_path(current: PathBuf, legacy: Option<PathBuf>) -> Pat
         Some(path) if !current.exists() && path.exists() => path,
         _ => current,
     }
+}
+
+pub(crate) fn prepare_private_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            bail!("local storage must be a regular file")
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let metadata = std::fs::symlink_metadata(path)?;
+                    if !metadata.is_file() || metadata.file_type().is_symlink() {
+                        bail!("local storage must be a regular file");
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -791,6 +833,7 @@ mod tests {
     #[test]
     fn debug_output_redacts_the_api_hash() {
         let config = Config {
+            state_path: PathBuf::from("unused-state"),
             measure_latency: false,
             api_id: 42,
             api_hash: "super-secret".to_owned(),
@@ -804,6 +847,7 @@ mod tests {
     #[test]
     fn additional_accounts_use_distinct_sibling_session_files() {
         let base = Config {
+            state_path: PathBuf::from("unused-state"),
             measure_latency: false,
             api_id: 42,
             api_hash: "secret".to_owned(),
@@ -865,6 +909,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("temporary directory");
         let session_path = root.join("session.db");
         let config = Config {
+            state_path: PathBuf::from("unused-state"),
             measure_latency: false,
             api_id: 42,
             api_hash: "secret".to_owned(),
@@ -905,6 +950,7 @@ mod tests {
         let symlink_path = root.join("symlink.session");
         symlink(&symlink_target, &symlink_path).expect("create session symlink");
         let unsafe_config = Config {
+            state_path: PathBuf::from("unused-state"),
             session_path: symlink_path.clone(),
             ..config.clone()
         };

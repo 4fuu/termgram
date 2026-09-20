@@ -100,7 +100,8 @@ impl App {
                 Some("No conversation available · open a chat after synchronization".to_owned());
             return commands;
         };
-        self.drafts.entry(chat_id).or_default();
+        let key = self.draft_key(chat_id);
+        self.drafts.entry(key).or_default();
         self.mode = Mode::Compose;
         self.focus = Focus::Conversation;
         self.narrow_conversation = true;

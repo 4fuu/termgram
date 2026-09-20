@@ -20,6 +20,7 @@ use tokio::{
     time::{Duration, MissedTickBehavior},
 };
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn serve(
     config: Config,
     mut commands: mpsc::Receiver<TelegramCommand>,
@@ -30,8 +31,17 @@ pub(super) async fn serve(
     let mut cache_path = config.session_path.as_os_str().to_os_string();
     cache_path.push(".cache.sqlite3");
     let mut store = Store::open(std::path::Path::new(&cache_path)).await?;
+    let state_path = config.state_path.clone();
+    let mut loaded_drafts = std::collections::BTreeSet::new();
     let (user_name, chats) = store.snapshot().await?;
     if let Some(user_id) = store.account_id().await? {
+        events
+            .send(NetworkEvent::LocalDrafts {
+                user_id,
+                drafts: crate::drafts::load(state_path.clone(), user_id).await?,
+            })
+            .await?;
+        loaded_drafts.insert(user_id);
         events
             .send(NetworkEvent::AccountIdentity { user_id })
             .await?;
@@ -100,6 +110,9 @@ pub(super) async fn serve(
                     return tasks.join_next().await.transpose()?.unwrap_or(Ok(()));
                 };
                 match &event {
+                    NetworkEvent::AccountIdentity { user_id } if loaded_drafts.insert(*user_id) => {
+                        events.send(NetworkEvent::LocalDrafts { user_id: *user_id, drafts: crate::drafts::load(state_path.clone(), *user_id).await? }).await?;
+                    }
                     NetworkEvent::Ready { .. } => ready = true,
                     NetworkEvent::Auth(_) => ready = false,
                     NetworkEvent::CacheAccountReset { .. } => { pending.clear(); search.cancel(); },

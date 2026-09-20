@@ -42,8 +42,13 @@ restart. If it is unavailable, the highlighted chat is used; an empty list shows
 a synchronization hint. The composer shows a configurable ghost hint when empty,
 without a second permanent row repeating the send key. Enter sends; Shift-Enter
 or Ctrl-J inserts a newline. Bot commands are typed here, including their `/`.
-Each open chat has its own in-memory draft. Esc preserves it; drafts are not
-persisted across process restarts or account switches.
+Each chat has its own local draft, including its text, reply target and cursor.
+Esc, account switches and normal restarts preserve it. Drafts are keyed by the
+Telegram user identity, so reusing a local account slot does not expose another
+account's draft. Background saves coalesce edits over 400 ms; normal exit flushes
+the final edit. A forced kill or power loss can lose edits not yet committed.
+These drafts are local to this installation; cloud draft synchronization is not
+part of this revision.
 
 Select a message and press `i` or `R` to reply, or use `R` with no selection for the
 latest message. Clicking the composer preserves an existing reply draft without
@@ -88,4 +93,5 @@ to the previous view. `?` shows effective bindings instead of a static cheat she
 `a` opens the account picker; select an account or its add row and press Enter.
 F2 cycles existing slots and F3 adds a slot, up to eight. Only the active account
 has a running network worker. Sessions, messages, media, and color overrides are
-isolated; switching clears in-memory drafts and searches from the previous account.
+isolated. Switching resets searches and conversation views while retaining each
+account's local drafts.

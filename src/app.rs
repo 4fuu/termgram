@@ -648,6 +648,9 @@ impl App {
         match run {
             Action::CommandLine => return self.begin_command(),
             Action::Attachments => return self.open_attachments(),
+            Action::FirstUnread => return self.first_unread(),
+            Action::MarkRead => return self.mark_focused_chat(false),
+            Action::MarkUnread => return self.mark_focused_chat(true),
             Action::PasteClipboard => return self.paste_clipboard(),
             Action::Attach => {
                 self.begin_command();
@@ -763,16 +766,20 @@ impl App {
                 let target = index.saturating_add(count).min(messages.len() - 1);
                 let id = messages[target].id;
                 self.select_message_id(id, true);
+                if target == self.active_messages().len().saturating_sub(1) {
+                    return self.next_unread_page();
+                }
                 return Vec::new();
             }
             Action::Up if self.mode == Mode::Navigate => return self.move_up(count),
             Action::Down if self.mode == Mode::Navigate => return self.move_down(count),
             Action::PageUp => return self.move_up(PAGE_STEP.saturating_mul(count)),
             Action::PageDown => return self.move_down(PAGE_STEP.saturating_mul(count)),
-            Action::Latest if self.browsing_older && self.focus == Focus::Conversation => {
-                return self
-                    .active_chat_id
-                    .map_or_else(Vec::new, |id| self.open_chat_by_id(id));
+            Action::Latest
+                if (self.browsing_older || self.reads.entry.is_some())
+                    && self.focus == Focus::Conversation =>
+            {
+                return self.latest_history();
             }
             Action::Latest => return self.move_to_end(),
             Action::Oldest => return self.move_to_start(),
@@ -903,6 +910,14 @@ impl App {
         combined.dedup_by_key(|message| message.id);
         combined.truncate(MAX_MESSAGES_PER_CHAT.saturating_sub(pending.len()));
         combined.extend(pending);
+        if self.reads.entry.is_some() || self.reads.forward.is_some() {
+            self.reads.forward = combined
+                .iter()
+                .filter(|message| message.id > 0)
+                .map(|message| message.id)
+                .max()
+                .map(|id| (chat_id, id));
+        }
         self.messages.insert(chat_id, combined);
         self.browsing_older = true;
         self.loading_history = false;
@@ -1255,6 +1270,31 @@ impl App {
                 self.clamp_chat_selection();
                 Vec::new()
             }
+            NetworkEvent::ChatUnreadChanged { chat_id, unread } => {
+                if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                    crate::read_state::unread_mark(chat, unread);
+                }
+                self.clamp_chat_selection();
+                Vec::new()
+            }
+            NetworkEvent::ChatUnreadFinished {
+                chat_id,
+                unread,
+                request_id,
+                snapshot,
+                error,
+            } => {
+                if error.is_none()
+                    && let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id)
+                {
+                    crate::read_state::unread_mark(chat, unread);
+                    if let Some(snapshot) = &snapshot {
+                        crate::read_state::acknowledge(chat, snapshot.max_id, Some(snapshot));
+                    }
+                }
+                self.finish_chat_unread(chat_id, request_id, unread, error);
+                Vec::new()
+            }
             NetworkEvent::CachedSnapshot { user_name, chats } => {
                 self.user_name = user_name;
                 self.screen = Screen::Main;
@@ -1267,8 +1307,10 @@ impl App {
                 request_id,
                 messages,
             } => {
-                if self.active_history_request == Some((chat_id, request_id)) {
+                if self.active_history_request == Some((chat_id, request_id)) && !self.reads.paging
+                {
                     self.merge_history(chat_id, messages, self.history_target_message);
+                    self.position_unread_entry(chat_id, false);
                 }
                 Vec::new()
             }
@@ -1310,6 +1352,7 @@ impl App {
                     commands.push(TelegramCommand::LoadHistory {
                         chat_id: active,
                         request_id,
+                        after_id: None,
                     });
                 }
                 commands
@@ -3202,6 +3245,7 @@ impl App {
     }
 
     fn focus_reply_target(&mut self, message_id: i32) {
+        self.clear_unread_navigation();
         self.selected_message = Some(message_id);
         self.selected_action = 0;
         self.viewport_anchor_message = Some(message_id);
@@ -3266,9 +3310,11 @@ impl App {
         self.history_target_message = selected_message;
         self.status_message = None;
         self.remember_chat(chat_id);
+        self.prepare_unread_entry(chat_id, false);
         vec![TelegramCommand::LoadHistory {
             chat_id,
             request_id,
+            after_id: None,
         }]
     }
 
@@ -3294,9 +3340,12 @@ impl App {
         self.history_changes.clear();
         self.history_read_max = 0;
         self.history_target_message = None;
+        let after_id = self.prepare_unread_entry(chat_id, true);
+        self.position_unread_entry(chat_id, false);
         vec![TelegramCommand::LoadHistory {
             chat_id,
             request_id,
+            after_id,
         }]
     }
 
@@ -3366,7 +3415,7 @@ impl App {
         self.new_messages_while_scrolled = 0;
         self.new_messages_to_anchor = 0;
         self.clear_viewport_anchor();
-        Vec::new()
+        self.next_unread_page()
     }
 
     fn clamp_chat_selection(&mut self) {
@@ -3410,6 +3459,8 @@ impl App {
                 self.history_read_max = self.history_read_max.max(*max_id);
             }
             NetworkEvent::ReadMarked { chat_id, .. }
+            | NetworkEvent::ChatUnreadChanged { chat_id, .. }
+            | NetworkEvent::ChatUnreadFinished { chat_id, .. }
             | NetworkEvent::UnreadChanged { chat_id, .. }
                 if self.refresh_dialogs_pending =>
             {
@@ -3438,6 +3489,7 @@ impl App {
                     chat.last_activity = current.last_activity;
                     chat.last_message_id = current.last_message_id;
                     chat.unread = current.unread;
+                    chat.membership.unread_mark = current.membership.unread_mark;
                     chat.read_inbox_max_id = chat.read_inbox_max_id.max(current.read_inbox_max_id);
                 } else if let Some(message) = self
                     .messages
@@ -3514,12 +3566,23 @@ impl App {
         let reply_to = message.reply_to.as_ref().map(|reply| reply.message_id);
         let timestamp = message.timestamp;
         let active = self.active_chat_id == Some(chat_id);
-        let detached = active && self.message_scroll > 0;
+        let outside_forward_page = active
+            && self
+                .reads
+                .forward
+                .is_some_and(|(chat, after)| chat == chat_id && message.id > after);
+        let detached = active && (self.message_scroll > 0 || outside_forward_page);
         let message_id = message.id;
         let was_new = self
             .messages
             .get(&chat_id)
             .is_none_or(|messages| !messages.iter().any(|current| current.id == message_id));
+        let was_new = was_new
+            && (!outside_forward_page
+                || self
+                    .active_chat()
+                    .and_then(|chat| chat.last_message_id)
+                    .is_none_or(|id| message_id > id));
         let reconciled_local_id = (reconcile_accepted && was_new && message_id > 0 && outgoing)
             .then(|| {
                 self.messages
@@ -3530,7 +3593,11 @@ impl App {
         if let Some(local_id) = reconciled_local_id {
             self.clear_reconciled_retry(chat_id, local_id, &text, reply_to);
         }
-        let retained = {
+        let retained = if outside_forward_page {
+            // Keep a contiguous history window while reading forward. The
+            // coordinator already persisted the arrival for the later page.
+            true
+        } else {
             let messages = self.messages.entry(chat_id).or_default();
             if let Some(preserved_id) = active.then_some(self.selected_message).flatten() {
                 upsert_message_preserving(messages, message, preserved_id);
@@ -3543,7 +3610,9 @@ impl App {
         self.prune_message_cache();
         if genuinely_new && count_as_new && detached {
             self.new_messages_while_scrolled = self.new_messages_while_scrolled.saturating_add(1);
-            self.new_messages_to_anchor = self.new_messages_to_anchor.saturating_add(1);
+            if !outside_forward_page {
+                self.new_messages_to_anchor = self.new_messages_to_anchor.saturating_add(1);
+            }
         }
 
         let selected_id = self.selected_chat_entry().map(|chat| chat.id);
@@ -3552,11 +3621,13 @@ impl App {
         };
         {
             let chat = &mut self.chats[chat_index];
-            chat.last_message = text;
-            if message_id > 0 {
-                chat.last_message_id = Some(message_id);
+            if message_id < 0 || chat.last_message_id.is_none_or(|last| message_id >= last) {
+                chat.last_message = text;
+                if message_id > 0 {
+                    chat.last_message_id = Some(message_id);
+                }
+                chat.last_activity = Some(timestamp);
             }
-            chat.last_activity = Some(timestamp);
             if genuinely_new
                 && count_as_new
                 && !outgoing
@@ -3616,20 +3687,66 @@ impl App {
         match result {
             Ok(messages) => {
                 let mut messages = messages;
+                let forward = self.reads.paging
+                    || self
+                        .reads
+                        .entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.chat_id == chat_id && !entry.confirmed);
+                if forward {
+                    let last = messages
+                        .iter()
+                        .filter(|message| message.id > 0)
+                        .map(|message| message.id)
+                        .max();
+                    self.reads.forward = last
+                        .filter(|last| {
+                            self.active_chat()
+                                .and_then(|chat| chat.last_message_id)
+                                .is_some_and(|top| top > *last)
+                                && messages.len() >= crate::telegram::HISTORY_LIMIT
+                        })
+                        .map(|id| (chat_id, id));
+                    self.browsing_older = self.reads.forward.is_some();
+                }
                 messages.retain(|message| !self.history_changes.contains_key(&message.id));
-                messages.extend(self.history_changes.values().flatten().cloned());
+                messages.extend(
+                    self.history_changes
+                        .values()
+                        .flatten()
+                        .filter(|message| {
+                            self.reads.forward.is_none_or(|(_, end)| message.id <= end)
+                        })
+                        .cloned(),
+                );
                 for message in &mut messages {
                     if message.outgoing && message.id > 0 && message.id <= self.history_read_max {
                         message.delivery = Delivery::Read;
                     }
                 }
-                self.merge_history(chat_id, messages, self.history_target_message);
+                if self.reads.paging {
+                    let mut combined = self.active_messages().to_vec();
+                    combined.retain(|message| {
+                        !self
+                            .history_changes
+                            .get(&message.id)
+                            .is_some_and(Option::is_none)
+                    });
+                    for message in messages {
+                        upsert_message(&mut combined, message);
+                    }
+                    self.merge_history(chat_id, combined, self.history_target_message);
+                } else {
+                    self.merge_history(chat_id, messages, self.history_target_message);
+                    self.position_unread_entry(chat_id, true);
+                }
                 self.status_message = None;
             }
             Err(error) => self.status_message = Some(sanitize_terminal_line(&error)),
         }
         self.active_history_request = None;
         self.history_changes.clear();
+        self.reads.paging = false;
         self.history_target_message = None;
         self.loading_history = false;
         Vec::new()
@@ -3884,11 +4001,17 @@ impl App {
         let preserved = (self.active_chat_id == Some(chat_id))
             .then_some(self.selected_message)
             .flatten();
-        let messages = self.messages.entry(chat_id).or_default();
-        if let Some(preserved_id) = preserved {
-            upsert_message_preserving(messages, message, preserved_id);
-        } else {
-            upsert_message(messages, message);
+        if !self
+            .reads
+            .forward
+            .is_some_and(|(chat, end)| chat == chat_id && message_id > end)
+        {
+            let messages = self.messages.entry(chat_id).or_default();
+            if let Some(preserved_id) = preserved {
+                upsert_message_preserving(messages, message, preserved_id);
+            } else {
+                upsert_message(messages, message);
+            }
         }
         if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id)
             && chat.last_message_id.map_or_else(
@@ -4467,6 +4590,13 @@ mod tests {
     }
 
     fn open_first(app: &mut App) {
+        // General interaction fixtures start in an already-read conversation.
+        // Unread-entry tests open an explicit server boundary separately.
+        app.chats
+            .iter_mut()
+            .find(|chat| chat.id == 1)
+            .unwrap()
+            .unread = 0;
         app.handle_action(KeyAction::Enter);
         app.handle_network(NetworkEvent::History {
             chat_id: 1,
@@ -4475,6 +4605,149 @@ mod tests {
                 .map(|id| message(id, 1, &format!("message {id}"), false))
                 .collect(),
         });
+    }
+
+    #[test]
+    fn unread_entry_verifies_cached_position_and_pages_without_live_message_gaps() {
+        let mut app = ready_app();
+        app.chats[0].read_inbox_max_id = Some(10);
+        app.chats[0].last_message_id = Some(200);
+        app.chats[0].unread = 190;
+        assert_eq!(
+            app.handle_action(KeyAction::Enter),
+            vec![TelegramCommand::LoadHistory {
+                chat_id: 1,
+                request_id: 1,
+                after_id: Some(10),
+            }]
+        );
+        app.handle_network(NetworkEvent::CachedHistory {
+            chat_id: 1,
+            request_id: 1,
+            messages: vec![message(150, 1, "cached gap", false)],
+        });
+        app.set_visible_read_boundary(1, Some(150));
+        assert!(app.request_visible_read().is_empty());
+        app.handle_network(NetworkEvent::History {
+            chat_id: 1,
+            request_id: 1,
+            messages: (11..=90).map(|id| message(id, 1, "page", false)).collect(),
+        });
+        assert_eq!(app.unread_separator(), Some(11));
+        assert_eq!(app.viewport_anchor_message, Some(11));
+        app.handle_network(NetworkEvent::ReadMarked {
+            chat_id: 1,
+            max_id: 20,
+            snapshot: None,
+        });
+        assert_eq!(app.unread_separator(), Some(11));
+        app.handle_network(NetworkEvent::NewMessage(message(201, 1, "live", false)));
+        app.handle_network(NetworkEvent::MessageUpdated(message(
+            201,
+            1,
+            "live edit",
+            false,
+        )));
+        assert!(
+            !app.active_messages()
+                .iter()
+                .any(|message| message.id == 201)
+        );
+        assert_eq!(app.new_messages_to_anchor, 0);
+        app.selected_message = Some(90);
+        let next = app.run_binding("message_down", 1);
+        assert!(matches!(
+            next.as_slice(),
+            [TelegramCommand::LoadHistory {
+                after_id: Some(90),
+                ..
+            }]
+        ));
+        let request_id = app.active_history_request.unwrap().1;
+        app.handle_network(NetworkEvent::History {
+            chat_id: 1,
+            request_id,
+            messages: (91..=170).map(|id| message(id, 1, "next", false)).collect(),
+        });
+        assert!(app.active_messages().iter().any(|message| message.id == 90));
+        assert!(
+            app.active_messages()
+                .iter()
+                .any(|message| message.id == 170)
+        );
+        assert!(
+            !app.active_messages()
+                .iter()
+                .any(|message| message.id == 201)
+        );
+        assert!(matches!(
+            app.run_binding("latest", 1).as_slice(),
+            [TelegramCommand::LoadHistory { after_id: None, .. }]
+        ));
+        assert_eq!(app.unread_separator(), None);
+        assert_eq!(app.message_scroll, 0);
+    }
+
+    #[test]
+    fn unread_reminder_keeps_its_captured_target_and_never_rewinds_receipts() {
+        let mut app = ready_app();
+        app.chats[0].read_inbox_max_id = Some(20);
+        app.chats[0].last_message_id = Some(20);
+        app.chats[0].unread = 0;
+        app.run_binding("command", 1);
+        app.commands.input.set_value("mark-unread");
+        app.chats.reverse();
+        app.selected_chat = 0;
+        let outgoing = app.run_binding("open", 1);
+        let [
+            TelegramCommand::SetChatUnread {
+                chat_id: 1,
+                unread: true,
+                read_history: false,
+                request_id,
+            },
+        ] = outgoing.as_slice()
+        else {
+            panic!("captured target")
+        };
+        let request_id = *request_id;
+        assert!(
+            !app.chats
+                .iter()
+                .find(|chat| chat.id == 1)
+                .unwrap()
+                .membership
+                .unread_mark
+        );
+        app.handle_network(NetworkEvent::ChatUnreadFinished {
+            chat_id: 1,
+            unread: true,
+            request_id,
+            snapshot: None,
+            error: None,
+        });
+        let chat = app.chats.iter().find(|chat| chat.id == 1).unwrap();
+        assert!(chat.membership.unread_mark);
+        assert_eq!(chat.read_inbox_max_id, Some(20));
+        let open = app.open_chat_by_id(1);
+        let [TelegramCommand::LoadHistory { request_id, .. }] = open.as_slice() else {
+            panic!("history request")
+        };
+        app.handle_network(NetworkEvent::History {
+            chat_id: 1,
+            request_id: *request_id,
+            messages: vec![message(20, 1, "already read", false)],
+        });
+        app.set_visible_read_boundary(1, Some(20));
+        assert!(matches!(
+            app.request_visible_read().as_slice(),
+            [TelegramCommand::SetChatUnread {
+                chat_id: 1,
+                unread: false,
+                read_history: false,
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -5697,6 +5970,7 @@ mod tests {
             vec![TelegramCommand::LoadHistory {
                 chat_id: 2,
                 request_id: 1,
+                after_id: Some(0),
             },]
         );
         assert_eq!(app.focus, Focus::Conversation);

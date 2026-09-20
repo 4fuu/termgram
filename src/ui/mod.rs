@@ -576,11 +576,18 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let mut media_rows = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         let start = lines.len();
+        if app.unread_separator() == Some(message.id) {
+            lines.push(Line::styled(
+                "  ── Unread messages ──",
+                Style::default().fg(ACCENT),
+            ));
+        }
+        let content_start = lines.len();
         let rendered = transcript::render(message, message_width, app);
         let body_action = rendered.body_action;
         let body_height = rendered.body_height;
         let mut hit_rows: Vec<_> = (0..body_height)
-            .map(|row| (start.saturating_add(row), None))
+            .map(|row| (content_start.saturating_add(row), None))
             .collect();
         // Pointer lookup walks backward: specific action rows must win over
         // the enclosing message (a reply quote may accompany an attachment).
@@ -588,7 +595,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             rendered
                 .action_rows
                 .into_iter()
-                .map(|(row, action)| (start.saturating_add(row), Some(action))),
+                .map(|(row, action)| (content_start.saturating_add(row), Some(action))),
         );
         lines.extend(rendered.lines);
         if message.id > 0
@@ -766,7 +773,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
                 .map(|message| message.id)
         })
         .max();
-    app.set_visible_read_boundary(chat_id, visible_read);
+    app.set_visible_read_boundary(chat_id, visible_read.or((available > 0).then_some(0)));
     app.set_message_hit_regions(hit_regions);
     render_new_message_badge(frame, inner, app.new_messages_while_scrolled);
 }
@@ -1382,6 +1389,44 @@ mod tests {
 
     fn populated_app() -> AppState {
         populated_app_with_settings(Settings::default())
+    }
+
+    #[test]
+    fn unread_separator_keeps_message_hit_rows_on_the_message() {
+        use crate::event::NetworkEvent;
+        use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = populated_app();
+        let messages = app.active_messages().to_vec();
+        app.handle_action(KeyAction::Enter);
+        app.handle_network(NetworkEvent::History {
+            chat_id: 7,
+            request_id: 1,
+            messages,
+        });
+        let text = render_text_mut(&mut app, 80, 24);
+        assert!(text.contains("Unread messages"));
+        assert_eq!(app.unread_separator(), Some(11));
+        app.sidebar_hidden = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let separator = (0..24)
+            .find(|&y| {
+                (0..80)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("Unread messages")
+            })
+            .unwrap();
+        let click = |row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 8,
+            row,
+            modifiers: Modifiers::empty(),
+        };
+        app.handle_mouse(click(separator));
+        assert_eq!(app.selected_message, None);
+        app.handle_mouse(click(separator + 1));
+        assert_eq!(app.selected_message, Some(11));
     }
 
     #[test]

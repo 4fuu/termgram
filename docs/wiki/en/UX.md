@@ -13,6 +13,23 @@ Use `j/k` to select messages, arrows to scroll their rendered rows, and `G` to
 return to the latest page. While you read earlier messages, new arrivals retain
 your reading position and show a count instead of pulling the view down.
 
+Chats with unread messages open at the saved incoming read boundary. A compact
+`Unread messages` separator stays at that entry point while receipts advance.
+Local pages appear provisionally; Telegram verifies the position before automatic
+receipts start. Use `g u` or `:unread` to locate the current first unread message
+again. Continue with `j`, Down or PageDown at the end of a page to load newer
+history without skipping the intervening messages. The footer shows `continue`
+and `latest` hints while more history remains. `G` explicitly returns to the
+latest page. A failed position lookup keeps the cache visible; retry with `g u`
+or choose `G` to leave that position.
+
+`g r` / `:read` marks the entire target chat read. `g U` / `:mark-unread` sets
+Telegram's unread reminder, shown as a colored dot when there is no actual
+unread count. It does not change receipts already sent to other participants.
+Reopening and displaying that chat clears the reminder; ordinary visible-message
+receipts remain bounded. Commands retain the selected chat even if the list
+reorders while the command line is open.
+
 `[`/`]` in the list switch [folders](Folders.md). `/` filters titles in that
 folder. A [configured chat alias](Configuration.md) opens a stable Telegram ID
 from All chats. `g i` shows the selected chat and folder IDs for configuration.

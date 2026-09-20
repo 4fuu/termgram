@@ -35,6 +35,9 @@ to disk. Multiline paste cannot execute a series of commands.
 | `paste` | Paste native clipboard files, an image or text into the captured chat draft |
 | `attachments` | Review the open conversation’s staged files |
 | `latest` | Return the open conversation to its latest messages |
+| `unread` | Open the first incoming message after the chat's saved read boundary |
+| `read` | Explicitly mark the entire captured chat read and clear its unread reminder |
+| `mark-unread` | Set Telegram's unread reminder without rewinding message receipts |
 | `reply` | Reply to an explicitly selected message |
 | `preview` | Expand a selected image or sticker |
 | `reveal` | Download if needed and reveal the selected attachment in Finder, Explorer or the file manager |

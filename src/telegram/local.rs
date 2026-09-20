@@ -295,8 +295,15 @@ async fn serve_cached(
         TelegramCommand::LoadHistory {
             chat_id,
             request_id,
+            after_id,
         } => {
-            let messages = store.history(*chat_id, None, super::HISTORY_LIMIT).await?;
+            let messages = if let Some(after) = after_id {
+                store
+                    .history_after(*chat_id, *after, super::HISTORY_LIMIT)
+                    .await?
+            } else {
+                store.history(*chat_id, None, super::HISTORY_LIMIT).await?
+            };
             if !messages.is_empty() {
                 events
                     .send(NetworkEvent::CachedHistory {

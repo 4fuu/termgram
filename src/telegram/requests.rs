@@ -101,6 +101,7 @@ enum Response {
     Button(Option<String>, Option<String>),
     Applied,
     Read(Option<crate::read_state::Snapshot>),
+    ChatUnread(Option<crate::read_state::Snapshot>),
 }
 
 /// Capture only the peer needed by this request. The complete cache stays with
@@ -123,7 +124,8 @@ pub(super) fn spawn(
         | TelegramCommand::LoadReplyPreviews { chat_id, .. }
         | TelegramCommand::SendMessage { chat_id, .. }
         | TelegramCommand::ActivateButton { chat_id, .. }
-        | TelegramCommand::MarkRead { chat_id, .. } => Some(*chat_id),
+        | TelegramCommand::MarkRead { chat_id, .. }
+        | TelegramCommand::SetChatUnread { chat_id, .. } => Some(*chat_id),
         _ => None,
     };
     let peer = chat_id.and_then(|id| cache.peers.get(&id).copied());
@@ -241,19 +243,26 @@ async fn execute(
             ))
         }
         TelegramCommand::LoadHistory { .. } | TelegramCommand::LoadOlder { .. } => {
+            let after = match command {
+                TelegramCommand::LoadHistory { after_id, .. } => *after_id,
+                _ => None,
+            };
             let before = match command {
                 TelegramCommand::LoadOlder { before_id, .. } => *before_id,
                 _ => 0,
             };
             let mut iter = client
                 .iter_messages(peer()?)
-                .offset_id(before)
+                .offset_id(after.unwrap_or(before))
+                .reverse(after.is_some())
                 .limit(HISTORY_LIMIT);
             let mut messages = Vec::new();
             while let Some(message) = iter.next().await? {
                 messages.push(message);
             }
-            messages.reverse();
+            if after.is_none() {
+                messages.reverse();
+            }
             Ok(Response::History(messages))
         }
         TelegramCommand::LoadReplyPreviews {
@@ -323,6 +332,13 @@ async fn execute(
         TelegramCommand::MarkRead { max_id, .. } => Ok(Response::Read(
             super::reads::mark(client, peer()?, *max_id).await?,
         )),
+        TelegramCommand::SetChatUnread {
+            unread,
+            read_history,
+            ..
+        } => Ok(Response::ChatUnread(
+            super::reads::set_unread(client, peer()?, *unread, *read_history).await?,
+        )),
         _ => unreachable!("only RPC commands are submitted to request tasks"),
     }
 }
@@ -334,6 +350,11 @@ pub(super) async fn complete(
     events: &mpsc::Sender<NetworkEvent>,
 ) -> Result<()> {
     let Completion { command, result } = completion;
+    if matches!(command, TelegramCommand::SetChatUnread { .. }) {
+        // A failed second RPC may follow a successful first RPC. Refresh even
+        // on partial failure so the authoritative mark/count can settle.
+        cache.dialogs.dirty = true;
+    }
     if matches!(
         command,
         TelegramCommand::LoadPinnedMessages { request_id: 0, .. }
@@ -513,6 +534,7 @@ pub(super) async fn complete(
             TelegramCommand::LoadHistory {
                 chat_id,
                 request_id,
+                ..
             },
             Response::History(raw),
         ) => {
@@ -606,6 +628,24 @@ pub(super) async fn complete(
             message,
             url,
         },
+        (
+            TelegramCommand::SetChatUnread {
+                chat_id,
+                unread,
+                request_id,
+                ..
+            },
+            Response::ChatUnread(snapshot),
+        ) => {
+            cache.dialogs.dirty = true;
+            NetworkEvent::ChatUnreadFinished {
+                chat_id,
+                unread,
+                request_id,
+                snapshot,
+                error: None,
+            }
+        }
         (TelegramCommand::MarkRead { chat_id, max_id }, Response::Read(snapshot)) => {
             NetworkEvent::ReadMarked {
                 chat_id,

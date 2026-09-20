@@ -25,6 +25,30 @@ pub(super) async fn mark(client: &Client, peer: PeerRef, max_id: i32) -> Result<
             })
             .await?;
     }
+    Ok(snapshot(client, peer).await)
+}
+
+pub(super) async fn set_unread(
+    client: &Client,
+    peer: PeerRef,
+    unread: bool,
+    read_history: bool,
+) -> Result<Option<Snapshot>> {
+    if read_history {
+        // Only an explicit :read action may acknowledge the whole history.
+        client.mark_as_read(peer).await?;
+    }
+    client
+        .invoke(&tl::functions::messages::MarkDialogUnread {
+            unread,
+            parent_peer: None,
+            peer: tl::types::InputDialogPeer { peer: peer.into() }.into(),
+        })
+        .await?;
+    Ok(snapshot(client, peer).await)
+}
+
+async fn snapshot(client: &Client, peer: PeerRef) -> Option<Snapshot> {
     // Retrieve this peer's actual remaining count, without a full dialog scan.
     // Count lookup failure does not undo a successful read acknowledgement.
     let result = tokio::time::timeout(
@@ -35,14 +59,14 @@ pub(super) async fn mark(client: &Client, peer: PeerRef, max_id: i32) -> Result<
     )
     .await;
     let Ok(Ok(tl::enums::messages::PeerDialogs::Dialogs(dialogs))) = result else {
-        return Ok(None);
+        return None;
     };
-    Ok(dialogs.dialogs.into_iter().find_map(|dialog| match dialog {
+    dialogs.dialogs.into_iter().find_map(|dialog| match dialog {
         tl::enums::Dialog::Dialog(dialog) => Some(Snapshot {
             max_id: dialog.read_inbox_max_id.max(0),
             unread: u32::try_from(dialog.unread_count.max(0)).unwrap_or_default(),
             top_message: dialog.top_message,
         }),
         tl::enums::Dialog::Folder(_) => None,
-    }))
+    })
 }

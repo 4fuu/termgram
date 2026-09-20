@@ -36,7 +36,7 @@ use crate::model::{
     MessageButtonKind, MessageLink, ReplyInfo, sanitize_terminal_line, sanitize_terminal_text,
 };
 
-const HISTORY_LIMIT: usize = 80;
+pub(crate) const HISTORY_LIMIT: usize = 80;
 const COMMAND_QUEUE_CAPACITY: usize = 32;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const TRANSIENT_SENDER_NAME_LIMIT: usize = 256;
@@ -542,10 +542,23 @@ async fn process_update(
                     cache.folders.dirty = true;
                 }
                 tl::enums::Update::NotifySettings(_)
-                | tl::enums::Update::DialogUnreadMark(_)
                 | tl::enums::Update::PeerSettings(_)
                 | tl::enums::Update::ReadMessagesContents(_)
                 | tl::enums::Update::ChannelReadMessagesContents(_) => {
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::DialogUnreadMark(update) => {
+                    if update.saved_peer_id.is_none()
+                        && let tl::enums::DialogPeer::Peer(peer) = &update.peer
+                        && let Some(chat_id) = PeerId::from(peer.peer.clone()).bot_api_dialog_id()
+                    {
+                        events
+                            .send(NetworkEvent::ChatUnreadChanged {
+                                chat_id,
+                                unread: update.unread,
+                            })
+                            .await?;
+                    }
                     cache.dialogs.dirty = true;
                 }
                 tl::enums::Update::FolderPeers(update) => {
@@ -1258,9 +1271,8 @@ fn apply_dialogs(
         if let Some(pts) = raw.pts {
             cache.channel_pts.insert(id, pts);
         }
-        let (unread, unread_mark, top_message, read_outbox) = (
+        let (unread, top_message, read_outbox) = (
             u32::try_from(raw.unread_count.max(0)).unwrap_or(u32::MAX),
-            raw.unread_mark,
             raw.top_message,
             raw.read_outbox_max_id,
         );
@@ -1285,7 +1297,7 @@ fn apply_dialogs(
                 Peer::Group(_) => ChatKind::Group,
                 Peer::Channel(_) => unreachable!("broadcast channels are filtered above"),
             },
-            unread: unread.max(u32::from(unread_mark)),
+            unread,
             last_message_id: (top_message > 0).then_some(top_message),
             last_message: last_message.map(message_preview).unwrap_or_default(),
             last_activity: last_message.map(TelegramMessage::date),
@@ -1364,6 +1376,7 @@ async fn handle_command(
         | TelegramCommand::SendMessage { .. }
         | TelegramCommand::ResolveTelegramLink { .. }
         | TelegramCommand::ActivateButton { .. }
+        | TelegramCommand::SetChatUnread { .. }
         | TelegramCommand::MarkRead { .. }) => {
             if let TelegramCommand::LoadPinnedMessages {
                 chat_id,
@@ -1386,6 +1399,7 @@ async fn handle_command(
             if let TelegramCommand::LoadHistory {
                 chat_id,
                 request_id,
+                ..
             }
             | TelegramCommand::LoadOlder {
                 chat_id,

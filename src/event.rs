@@ -75,6 +75,8 @@ pub enum TelegramCommand {
     LoadHistory {
         chat_id: ChatId,
         request_id: u64,
+        /// Oldest-to-newest page strictly after this incoming read boundary.
+        after_id: Option<i32>,
     },
     /// Fetch one message for reply navigation when it is outside the bounded
     /// in-memory history window.
@@ -140,6 +142,12 @@ pub enum TelegramCommand {
         chat_id: ChatId,
         max_id: i32,
     },
+    SetChatUnread {
+        chat_id: ChatId,
+        unread: bool,
+        read_history: bool,
+        request_id: u64,
+    },
     RefreshDialogs,
     RefreshDialogPins,
     LoadPinnedMessages {
@@ -191,6 +199,18 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::SetChatUnread {
+                chat_id,
+                unread,
+                request_id,
+                ..
+            } => NetworkEvent::ChatUnreadFinished {
+                chat_id,
+                unread,
+                request_id,
+                snapshot: None,
+                error: Some(error),
+            },
             Self::LoadPinnedMessages {
                 chat_id,
                 request_id,
@@ -295,6 +315,7 @@ impl TelegramCommand {
             TelegramCommand::LoadHistory {
                 chat_id,
                 request_id,
+                ..
             } => NetworkEvent::HistoryFailed {
                 chat_id,
                 request_id,
@@ -351,6 +372,18 @@ impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SetChatUnread {
+                chat_id,
+                unread,
+                request_id,
+                read_history,
+            } => formatter
+                .debug_struct("SetChatUnread")
+                .field("chat_id", chat_id)
+                .field("unread", unread)
+                .field("read_history", read_history)
+                .field("request_id", request_id)
+                .finish(),
             Self::LoadOlder {
                 chat_id,
                 request_id,
@@ -378,8 +411,10 @@ impl fmt::Debug for TelegramCommand {
             Self::LoadHistory {
                 chat_id,
                 request_id,
+                after_id,
             } => formatter
                 .debug_struct("LoadHistory")
+                .field("after_id", after_id)
                 .field("chat_id", chat_id)
                 .field("request_id", request_id)
                 .finish(),
@@ -559,6 +594,17 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    ChatUnreadChanged {
+        chat_id: ChatId,
+        unread: bool,
+    },
+    ChatUnreadFinished {
+        chat_id: ChatId,
+        unread: bool,
+        request_id: u64,
+        snapshot: Option<crate::read_state::Snapshot>,
+        error: Option<String>,
+    },
     ReplyPreviewsLoading {
         chat_id: ChatId,
         request_id: u64,

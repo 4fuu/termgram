@@ -280,6 +280,26 @@ impl Store {
         Ok(messages)
     }
 
+    /// A provisional ascending page; the server still verifies its boundary.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn history_after(
+        &self,
+        chat_id: ChatId,
+        after: i32,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        let mut rows = self.connection.query(
+            "SELECT data FROM messages WHERE chat_id=?1 AND id>?2 AND data IS NOT NULL ORDER BY id LIMIT ?3",
+            params![chat_id, after, i64::try_from(limit.min(500)).unwrap_or(500)],
+        ).await?;
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next().await? {
+            messages.push(serde_json::from_str(&row.get::<String>(0)?)?);
+        }
+        Ok(messages)
+    }
+
     /// A cache page is reusable only when this boundary was fetched completely.
     /// # Errors
     /// Returns database or decoding errors.
@@ -468,6 +488,7 @@ impl Store {
                             chat.last_activity = current.last_activity;
                             chat.last_message_id = current.last_message_id;
                             chat.unread = current.unread;
+                            chat.membership.unread_mark = current.membership.unread_mark;
                             chat.read_inbox_max_id =
                                 chat.read_inbox_max_id.max(current.read_inbox_max_id);
                         }
@@ -645,6 +666,31 @@ impl Store {
                             message.delivery = Delivery::Read;
                             write_message(&transaction, &message, revision, revision).await?;
                         }
+                    }
+                }
+                NetworkEvent::ChatUnreadChanged { chat_id, unread } => {
+                    if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
+                        crate::read_state::unread_mark(&mut chat, *unread);
+                        write_chat(&transaction, &chat, revision).await?;
+                    }
+                }
+                NetworkEvent::ChatUnreadFinished {
+                    chat_id,
+                    unread,
+                    snapshot,
+                    error: None,
+                    ..
+                } => {
+                    if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
+                        crate::read_state::unread_mark(&mut chat, *unread);
+                        if let Some(snapshot) = snapshot {
+                            crate::read_state::acknowledge(
+                                &mut chat,
+                                snapshot.max_id,
+                                Some(snapshot),
+                            );
+                        }
+                        write_chat(&transaction, &chat, revision).await?;
                     }
                 }
                 NetworkEvent::ReadMarked {
@@ -1345,6 +1391,16 @@ mod tests {
         assert_eq!(chats[0].unread, 1);
         assert_eq!(chats[0].last_message_id, Some(2));
         assert_eq!(chats[0].last_message, "second");
+        assert_eq!(
+            store
+                .history_after(42, 1, 80)
+                .await
+                .unwrap()
+                .iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
         store
             .apply(&[NetworkEvent::ReadMarked {
                 chat_id: 42,
@@ -1371,6 +1427,10 @@ mod tests {
                     max_id: 2,
                     unread: 0,
                 },
+                NetworkEvent::ChatUnreadChanged {
+                    chat_id: 42,
+                    unread: true,
+                },
             ])
             .await
             .unwrap();
@@ -1381,5 +1441,6 @@ mod tests {
         assert_eq!(chats[0].unread, 0);
         assert_eq!(chats[0].last_message_id, None);
         assert_eq!(chats[0].read_inbox_max_id, Some(2));
+        assert!(chats[0].membership.unread_mark);
     }
 }

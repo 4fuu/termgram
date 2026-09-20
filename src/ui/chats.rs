@@ -124,13 +124,14 @@ fn row(
         title_width.saturating_sub(icon.width() + pin.width()),
     );
     let mut title_style = Style::default().fg(app.color(Target::Chat(chat.id)));
-    if chat.unread > 0 || is_selected {
+    if chat.unread > 0 || chat.membership.unread_mark || is_selected {
         title_style = title_style.bold();
     }
     if is_selected && focused {
         title_style = title_style.add_modifier(Modifier::UNDERLINED);
     }
     let count = match chat.unread {
+        0 if chat.membership.unread_mark => "•".to_owned(),
         0 => String::new(),
         1..=999 => chat.unread.to_string(),
         _ => "999+".to_owned(),

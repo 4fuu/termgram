@@ -14,7 +14,7 @@ pub fn inbox_update(chat: &mut Chat, max_id: i32, unread: u32) {
         return;
     }
     chat.read_inbox_max_id = Some(max_id.max(0));
-    chat.unread = unread.max(u32::from(chat.membership.unread_mark));
+    chat.unread = unread;
 }
 
 pub fn acknowledge(chat: &mut Chat, max_id: i32, snapshot: Option<&Snapshot>) {
@@ -28,6 +28,10 @@ pub fn acknowledge(chat: &mut Chat, max_id: i32, snapshot: Option<&Snapshot>) {
     {
         inbox_update(chat, snapshot.max_id, snapshot.unread);
     } else if chat.last_message_id.is_some_and(|id| id <= max_id) {
-        chat.unread = u32::from(chat.membership.unread_mark);
+        chat.unread = 0;
     }
+}
+
+pub fn unread_mark(chat: &mut Chat, unread: bool) {
+    chat.membership.unread_mark = unread;
 }

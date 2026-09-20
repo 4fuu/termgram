@@ -31,6 +31,8 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Conversation | Up/Down | Scroll rendered rows |
 | Conversation | PageUp/PageDown | Scroll ten rendered rows |
 | Conversation | G or End | Return to latest messages and follow incoming messages |
+| Conversation | g u | Resume from the first unread message |
+| Chats / Conversation | g r / g U | Mark the entire chat read / mark unread as a reminder |
 | Conversation | g g or Home | Oldest message in the loaded window |
 | Conversation | i | Reply to an explicitly selected message; otherwise compose |
 | Conversation | Enter | Activate the selection; compose if nothing is selected |

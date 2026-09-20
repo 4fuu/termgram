@@ -216,6 +216,10 @@ fn context(app: &AppState, narrow: bool) -> String {
             return String::new();
         };
         let mut hints = Vec::new();
+        if app.has_newer_history() {
+            hints.push(format!("{} continue", hint("message_down")));
+            hints.push(format!("{} latest", hint("latest")));
+        }
         if app.message_actions(message).get(app.selected_action) == Some(&MessageAction::Reply) {
             hints.push(format!("{} original", hint("open")));
         }
@@ -249,6 +253,14 @@ fn context(app: &AppState, narrow: bool) -> String {
     } else {
         Context::Conversation
     };
+    if app.focus == Focus::Conversation && app.has_newer_history() {
+        return format!(
+            "{} continue · {} latest · {} commands",
+            app.keymap.hint(context, "message_down"),
+            app.keymap.hint(context, "latest"),
+            app.keymap.hint(context, "command")
+        );
+    }
     let back = if app.sidebar_hidden {
         format!(
             "{} chats · ",

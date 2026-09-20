@@ -18,6 +18,7 @@ pub enum Kind {
     Status,
     Attach,
     Paste,
+    Read(bool),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +75,8 @@ impl Spec {
             Kind::Color => Some(Action::ChatColor),
             Kind::Attach => Some(Action::Attach),
             Kind::Paste => Some(Action::PasteClipboard),
+            Kind::Read(true) => Some(Action::MarkUnread),
+            Kind::Read(false) => Some(Action::MarkRead),
         }
     }
 }
@@ -92,6 +95,30 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "unread",
+        None,
+        "",
+        Kind::Action(Action::FirstUnread),
+        Conversation,
+        ""
+    ),
+    command!(
+        "read",
+        None,
+        "",
+        Kind::Read(false),
+        Chat,
+        "Mark this entire chat read"
+    ),
+    command!(
+        "mark-unread",
+        None,
+        "",
+        Kind::Read(true),
+        Chat,
+        "Mark this chat unread as a reminder"
+    ),
     command!(
         "paste",
         None,

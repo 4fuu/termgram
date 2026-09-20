@@ -240,7 +240,7 @@ impl App {
 
     fn command_unavailable(&self, spec: &Spec) -> Option<String> {
         self.target_error(spec.target).or_else(|| {
-            (matches!(spec.kind, Kind::Pin(_) | Kind::Archive(_))
+            (matches!(spec.kind, Kind::Pin(_) | Kind::Archive(_) | Kind::Read(_))
                 && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
@@ -632,6 +632,9 @@ impl App {
         self.mode = Mode::Navigate;
         self.status_message = None;
         let outgoing = match &spec.kind {
+            Kind::Read(unread) => {
+                self.set_chat_unread(origin.chat.expect("validated chat"), *unread)
+            }
             Kind::Action(action) => self.run_action(action, 1),
             Kind::Attach | Kind::Paste => {
                 let id = origin.chat.expect("validated chat target");

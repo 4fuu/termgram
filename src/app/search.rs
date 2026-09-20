@@ -247,6 +247,7 @@ impl App {
         }
         self.search.loading = false;
         self.mode = Mode::Navigate;
+        self.clear_unread_navigation();
         self.focus = Focus::Conversation;
         self.narrow_conversation = true;
         self.active_history_request = None;

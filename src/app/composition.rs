@@ -15,6 +15,22 @@ pub(super) struct Navigation {
 }
 
 impl App {
+    /// Resolve explicit navigation through the current folder ordering, rather
+    /// than treating a raw chat index as a filtered position.
+    pub(super) fn open_chat_by_id(&mut self, id: ChatId) -> Vec<TelegramCommand> {
+        let Some(chat) = self.chats.iter().find(|chat| chat.id == id) else {
+            return Vec::new();
+        };
+        self.filter.clear();
+        self.folder_id = i32::from(chat.membership.archived);
+        if self.folder_id == 1 && !self.folders.iter().any(|folder| folder.id == 1) {
+            self.folders.push(crate::folders::Folder::archive());
+        }
+        self.mode = Mode::Navigate;
+        self.preserve_chat_selection(Some(id));
+        self.open_selected_chat()
+    }
+
     /// Load navigation preferences without replacing malformed files.
     ///
     /// # Errors

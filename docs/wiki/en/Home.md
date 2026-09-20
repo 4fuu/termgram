@@ -10,6 +10,7 @@ time. Cached messages are available while it reconnects.
 | --- | --- |
 | Install, sign in, or build from source | [Get started](Getting-Started.md) |
 | Learn the keys or migrate older bindings | [Keybindings](Keybindings.md) |
+| Browse commands and complete chat or folder names | [Commands](Commands.md) |
 | Remap keys, jump to a saved chat, change ghost text | [Lua configuration](Configuration.md) |
 | Read, reply, send files, and switch accounts | [Daily workflows](UX.md) |
 | Navigate Telegram folders | [Folders](Folders.md) |

@@ -167,3 +167,8 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `noop` | 移除指定上下文中的绑定 |
 
 默认按键见[快捷键](Keybindings.md)，`colors` 表及应用内覆盖优先级见[外观](Appearance.md)。
+
+导航模式的 `command` 动作打开[冒号命令](Commands.md)。新增 `command` 上下文，
+可重绑 `complete_next`、`complete_previous`、`history_previous`、`history_next`、
+`open`、`cancel` 及输入编辑动作。底栏的模式会显示 COMMAND。
+命令栏默认用 Ctrl-C 取消；其他上下文仍用 Ctrl-C 退出。

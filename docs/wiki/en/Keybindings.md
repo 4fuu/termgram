@@ -51,6 +51,10 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Image preview | Esc or q / i / O | Close / reply / reveal original file |
 | Navigation | g i / Ctrl-R | Show chat and folder IDs / refresh lists |
 | Navigation | ? / s / a / q | Help / settings / accounts / quit |
+| Navigation | : | Open the [command line](Commands.md) |
+| Commands | Tab/Shift-Tab or Ctrl-N/Ctrl-P | Complete next/previous candidate |
+| Commands | Up/Down | Prefix-matching command history |
+| Commands | Enter / Esc or Ctrl-C | Execute / cancel |
 | Composer | Enter | Send |
 | Composer | Shift-Enter or Ctrl-J | Newline |
 | Composer | Esc | Cancel reply first; then leave with draft kept |

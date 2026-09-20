@@ -26,6 +26,7 @@ pub enum Context {
     Chats,
     Conversation,
     Compose,
+    Command,
     Input,
     Overlay,
     Preview,
@@ -125,6 +126,7 @@ impl Default for Keymap {
             (
                 Context::Chats,
                 &[
+                    (":", "command"),
                     ("j", "down"),
                     ("k", "up"),
                     ("<Down>", "down"),
@@ -159,6 +161,7 @@ impl Default for Keymap {
             (
                 Context::Conversation,
                 &[
+                    (":", "command"),
                     ("p", "pin"),
                     ("P", "pins"),
                     ("c", "chat_color"),
@@ -286,7 +289,33 @@ impl Default for Keymap {
                     .expect("valid builtin binding");
             }
         }
-        for context in [Context::Compose, Context::Input, Context::Search] {
+        for (key, run) in [
+            ("<Esc>", "cancel"),
+            ("<C-c>", "cancel"),
+            ("<Enter>", "open"),
+            ("<Tab>", "complete_next"),
+            ("<C-n>", "complete_next"),
+            ("<S-Tab>", "complete_previous"),
+            ("<C-p>", "complete_previous"),
+            ("<Up>", "history_previous"),
+            ("<Down>", "history_next"),
+        ] {
+            result
+                .insert(BindingSpec {
+                    context: Context::Command,
+                    on: vec![key.to_owned()],
+                    run: run.to_owned(),
+                    count: 1,
+                    desc: None,
+                })
+                .expect("valid command binding");
+        }
+        for context in [
+            Context::Compose,
+            Context::Input,
+            Context::Search,
+            Context::Command,
+        ] {
             for (key, run) in [
                 ("<C-a>", "home"),
                 ("<C-e>", "end"),

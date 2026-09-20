@@ -2,6 +2,7 @@
 
 mod appearance;
 mod attachments;
+mod commands;
 mod composition;
 mod message_pins;
 mod pins;
@@ -157,6 +158,8 @@ pub enum Mode {
     #[default]
     Navigate,
     Compose,
+    Command,
+    Status,
     Preview,
     Filter,
     Search,
@@ -225,6 +228,7 @@ pub struct App {
     pub selected_action: usize,
     pub filter: TextInput,
     pub search: search::State,
+    pub commands: commands::State,
     pub narrow_conversation: bool,
     pub sidebar_hidden: bool,
     pub should_quit: bool,
@@ -335,6 +339,7 @@ impl Default for App {
             selected_action: 0,
             filter: TextInput::new(),
             search: search::State::default(),
+            commands: commands::State::default(),
             narrow_conversation: false,
             sidebar_hidden: false,
             should_quit: false,
@@ -522,6 +527,7 @@ impl App {
         self.chat_hit_regions.clear();
         self.settings_hit_regions.clear();
         self.account_hit_regions.clear();
+        self.commands.hit_regions.clear();
         self.chat_pane_region = None;
         self.composer_region = None;
         self.conversation_pane_region = None;
@@ -544,13 +550,17 @@ impl App {
         } else {
             match self.mode {
                 Mode::Compose => Context::Compose,
+                Mode::Command => Context::Command,
                 Mode::Preview => Context::Preview,
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
                 Mode::PinnedMessages => Context::Pins,
-                Mode::PinPrompt | Mode::Help | Mode::Settings | Mode::Accounts | Mode::Colors => {
-                    Context::Overlay
-                }
+                Mode::PinPrompt
+                | Mode::Help
+                | Mode::Settings
+                | Mode::Accounts
+                | Mode::Colors
+                | Mode::Status => Context::Overlay,
                 Mode::Navigate if self.focus == Focus::Chats => Context::Chats,
                 Mode::Navigate => Context::Conversation,
             }
@@ -577,8 +587,10 @@ impl App {
             }
             Resolution::Unbound => {}
         }
-        if (matches!(context, Context::Compose | Context::Input)
-            || (context == Context::Search && self.search.editing))
+        if (matches!(
+            context,
+            Context::Compose | Context::Input | Context::Command
+        ) || (context == Context::Search && self.search.editing))
             && key.kind != yazi_term::event::KeyEventKind::Release
             && let Some(text) = key.text(&mut [0; 4])
         {
@@ -598,6 +610,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.command_binding(run) {
+            return commands;
+        }
         self.older_motion = None;
         if let Some(commands) = self.pin_binding(run.name(), count) {
             return commands;
@@ -609,15 +624,8 @@ impl App {
         }
         if let Action::Jump(alias) = run {
             if let Some(id) = self.keymap.chats.get(alias).copied() {
-                if let Some(index) = self.chats.iter().position(|chat| chat.id == id) {
-                    self.filter.clear();
-                    self.folder_id = i32::from(self.chats[index].membership.archived);
-                    if self.folder_id == 1 && !self.folders.iter().any(|folder| folder.id == 1) {
-                        self.folders.push(crate::folders::Folder::archive());
-                    }
-                    self.mode = Mode::Navigate;
-                    self.preserve_chat_selection(Some(id));
-                    return self.open_selected_chat();
+                if self.chats.iter().any(|chat| chat.id == id) {
+                    return self.open_chat_by_id(id);
                 }
                 self.status_message = Some(format!(
                     "Chat alias {alias} is not in cached conversations yet"
@@ -626,6 +634,7 @@ impl App {
             return Vec::new();
         }
         match run {
+            Action::CommandLine => return self.begin_command(),
             Action::ToggleSidebar => {
                 if self.screen != Screen::Main
                     || !matches!(self.mode, Mode::Navigate | Mode::Compose)
@@ -740,15 +749,9 @@ impl App {
             Action::PageUp => return self.move_up(PAGE_STEP.saturating_mul(count)),
             Action::PageDown => return self.move_down(PAGE_STEP.saturating_mul(count)),
             Action::Latest if self.browsing_older && self.focus == Focus::Conversation => {
-                if let Some(id) = self.active_chat_id
-                    && let Some(index) = self.chats.iter().position(|chat| chat.id == id)
-                {
-                    self.filter.clear();
-                    self.folder_id = 0;
-                    self.selected_chat = index;
-                    return self.open_selected_chat();
-                }
-                return Vec::new();
+                return self
+                    .active_chat_id
+                    .map_or_else(Vec::new, |id| self.open_chat_by_id(id));
             }
             Action::Latest => return self.move_to_end(),
             Action::Oldest => return self.move_to_start(),
@@ -897,9 +900,19 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
+        if self.mode == Mode::Command {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && let Some(index) =
+                    pointer_row_hit(&self.commands.hit_regions, mouse.column, mouse.row)
+            {
+                self.click_command(index);
+            }
+            return Vec::new();
+        }
         if matches!(
             self.mode,
             Mode::Help
+                | Mode::Status
                 | Mode::Search
                 | Mode::Colors
                 | Mode::PinnedMessages
@@ -1818,6 +1831,10 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> Vec<TelegramCommand> {
+        if self.screen == Screen::Main && self.mode == Mode::Command {
+            self.paste_command(text);
+            return Vec::new();
+        }
         let normalized = sanitize_terminal_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
         if matches!(self.screen, Screen::Main)
             && matches!(self.mode, Mode::Navigate | Mode::Compose)
@@ -1966,6 +1983,13 @@ impl App {
         match self.mode {
             Mode::Navigate => self.handle_navigation(action),
             Mode::Compose => self.handle_compose(action),
+            Mode::Command => self.edit_command(action),
+            Mode::Status => {
+                if action == KeyAction::Escape {
+                    self.mode = Mode::Navigate;
+                }
+                Vec::new()
+            }
             Mode::Preview => {
                 if action == KeyAction::Escape {
                     self.mode = Mode::Navigate;
@@ -2380,12 +2404,15 @@ impl App {
         let appearance = self.appearance.clone();
         let navigation = self.navigation.clone();
         let sidebar_hidden = self.sidebar_hidden;
+        let mut commands = std::mem::take(&mut self.commands);
+        commands.reset_session();
         let mut keymap = self.keymap.clone();
         keymap.reset();
         *self = Self {
             appearance,
             navigation,
             sidebar_hidden,
+            commands,
             keymap,
             settings,
             settings_path,
@@ -4485,6 +4512,117 @@ mod tests {
                 .map(|id| message(id, 1, &format!("message {id}"), false))
                 .collect(),
         });
+    }
+
+    #[test]
+    fn commands_keep_stable_targets_and_never_guess_incomplete_commands() {
+        let mut app = ready_app();
+        app.account_user_id = Some(42);
+        app.run_binding("command", 1);
+        app.commands.input.set_value("pin");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.commands.input.value(), "pin ");
+        app.commands.input.set_value("pin chat");
+        app.chats.reverse();
+        app.selected_chat = 0;
+        assert!(matches!(
+            app.run_binding("open", 1).as_slice(),
+            [TelegramCommand::ChangeDialogPin {
+                chat_id: 1,
+                action: crate::pins::DialogAction::Set(true),
+                ..
+            }]
+        ));
+        app.pins.dialogs.main = vec![1];
+        app.preserve_chat_selection(Some(1));
+        app.run_binding("command", 1);
+        app.commands.input.set_value("pin chat");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.status_message.as_deref(), Some("Already pinned"));
+        app.run_binding("command", 1);
+        app.commands.input.set_value("qui");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert!(!app.should_quit);
+        app.commands.input.set_value("archive");
+        app.account_user_id = Some(43);
+        assert!(app.run_binding("open", 1).is_empty());
+        assert!(
+            app.commands
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("account changed")
+        );
+        app.run_binding("cancel", 1);
+        app.chats
+            .iter_mut()
+            .find(|chat| chat.id == 2)
+            .unwrap()
+            .membership
+            .archived = true;
+        app.run_binding("command", 1);
+        app.commands.input.set_value("chat 2");
+        app.run_binding("open", 1);
+        assert_eq!(app.active_chat_id, Some(2));
+        app.browsing_older = true;
+        app.run_binding("command", 1);
+        app.commands.input.set_value("latest");
+        assert!(
+            app.run_binding("open", 1)
+                .iter()
+                .any(|command| matches!(command, TelegramCommand::LoadHistory { chat_id: 2, .. }))
+        );
+        assert_eq!(app.active_chat_id, Some(2));
+    }
+
+    #[test]
+    fn command_completion_history_and_paste_preserve_editor_context() {
+        use yazi_term::event::KeyCode;
+        let mut app = ready_app();
+        app.account_user_id = Some(42);
+        open_first(&mut app);
+        app.message_scroll = 4;
+        app.selected_message = Some(8);
+        app.drafts
+            .insert(1, crate::input::TextInput::from_value("Unsent draft"));
+        app.handle_key(&KeyEvent::new(KeyCode::Char(':'), Modifiers::empty()));
+        assert_eq!(app.mode, Mode::Command);
+        app.commands.input.set_value("sta");
+        app.handle_key(&KeyEvent::new(KeyCode::Tab, Modifiers::empty()));
+        assert_eq!(app.commands.input.value(), "status");
+        app.handle_key(&KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL));
+        assert_eq!(app.mode, Mode::Navigate);
+        assert!(!app.should_quit);
+        assert_eq!(app.selected_message, Some(8));
+        assert_eq!(app.message_scroll, 4);
+        assert_eq!(app.active_draft().unwrap().value(), "Unsent draft");
+        app.run_binding("command", 1);
+        app.commands.input.set_value("search ");
+        app.update(AppEvent::Paste("\\b中文\\s+  ".to_owned()));
+        let outgoing = app.run_binding("open", 1);
+        assert!(
+            matches!(&outgoing[0], TelegramCommand::SearchCached(request) if request.pattern == "\\b中文\\s+  ")
+        );
+        app.run_binding("cancel", 1);
+        app.run_binding("command", 1);
+        app.commands.input.set_value("se");
+        app.handle_key(&KeyEvent::new(KeyCode::Up, Modifiers::empty()));
+        assert_eq!(app.commands.input.value(), "search \\b中文\\s+  ");
+        app.handle_key(&KeyEvent::new(KeyCode::Down, Modifiers::empty()));
+        assert_eq!(app.commands.input.value(), "se");
+        app.run_binding("cancel", 1);
+        app.account_user_id = Some(43);
+        app.run_binding("command", 1);
+        app.handle_key(&KeyEvent::new(KeyCode::Up, Modifiers::empty()));
+        assert!(app.commands.input.is_empty());
+        app.update(AppEvent::Paste("quit\nquit".to_owned()));
+        assert!(!app.should_quit);
+        assert!(!app.commands.input.value().contains('\n'));
+        app.run_binding("cancel", 1);
+        app.run_binding("compose", 1);
+        app.handle_key(&KeyEvent::new(KeyCode::Char(':'), Modifiers::empty()));
+        assert!(app.active_draft().unwrap().value().ends_with(':'));
     }
 
     #[test]

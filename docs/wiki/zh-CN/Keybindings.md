@@ -77,3 +77,6 @@ Lua 解析之后不再有另一套硬编码按键兜底。
 
 点击回复引用区跳到原消息。选中回复时 Enter 默认跳转该目标，`g n` / `g p`
 切换其他操作。点击媒体会选中附件，此时 Enter 激活附件操作。
+
+导航模式按 `:` 打开[冒号命令](Commands.md)。Tab/Shift-Tab 或 Ctrl-N/Ctrl-P
+补全前后候选；Up/Down 召回匹配前缀的历史；Enter 执行；Esc/Ctrl-C 取消。

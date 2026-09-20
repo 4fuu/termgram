@@ -34,6 +34,11 @@ macro_rules! actions {
 
 actions! {
     Quit => ("quit", "Exit Termgram"),
+    CommandLine => ("command", "Browse and run application commands"),
+    CompleteNext => ("complete_next", "Complete the next command candidate"),
+    CompletePrevious => ("complete_previous", "Complete the previous command candidate"),
+    HistoryPrevious => ("history_previous", "Recall an older command with this prefix"),
+    HistoryNext => ("history_next", "Recall a newer command with this prefix"),
     Help => ("help", "Show effective keyboard shortcuts"),
     Settings => ("settings", "Open application settings"),
     Accounts => ("accounts", "Switch Telegram accounts"),

@@ -1,5 +1,12 @@
 # Upstream code
 
+Command metadata and candidate layout in `src/commands.rs` and
+`src/ui/commands.rs` follow the finite command registry in Codex's
+`codex-rs/tui/src/slash_command.rs` and `bottom_pane/command_popup.rs` at
+`78245b47af2a7aafcabe025828ceecca69db4df1`. These are original application
+adapters: no Codex source or plugin runtime is copied. The existing Yazi key
+parser, Termgram `TextInput` and Ratatui widgets retain input/rendering ownership.
+
 Conversation shading in `src/transcript.rs` follows the theme-relative design
 of Codex `codex-rs/tui/src/style.rs` at
 `78245b47af2a7aafcabe025828ceecca69db4df1` (https://github.com/openai/codex).

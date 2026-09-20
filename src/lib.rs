@@ -2,6 +2,7 @@ pub mod actions;
 pub mod app;
 pub mod appearance;
 pub mod cache;
+pub mod commands;
 pub mod config;
 pub mod event;
 pub mod folders;

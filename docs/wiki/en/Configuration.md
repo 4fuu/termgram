@@ -24,7 +24,7 @@ return {
 }
 ```
 
-Contexts are `global`, `chats`, `conversation`, `compose`, `input` (login and chat
+Contexts are `global`, `chats`, `conversation`, `compose`, `command`, `input` (login and chat
 filter), `overlay`, `preview`, `pins`, and `search`. A context takes precedence over global bindings. Rebinding
 an existing key replaces that binding. Use `run = "noop"` to remove a binding.
 A chord is a list of individual keys, such as `{ "g", "w" }`; ambiguous prefixes
@@ -74,7 +74,7 @@ statusline = {
 
 | Item | Meaning |
 | --- | --- |
-| `mode` | CHATS, NORMAL, SELECT, INSERT or the current overlay mode |
+| `mode` | CHATS, NORMAL, SELECT, INSERT, COMMAND or the current overlay mode |
 | `app` | Termgram |
 | `account` | Local account slot and Telegram display name |
 | `message` | Selected/last-visible message time, delivery, pin and media state |
@@ -194,3 +194,8 @@ binding can become visible again.
 
 Use [Keybindings](Keybindings.md) for defaults and [Appearance](Appearance.md)
 for the `colors` table and the precedence of in-app overrides.
+
+The `command` action opens the [command line](Commands.md) in navigation. Its
+`command` context can rebind `complete_next`, `complete_previous`,
+`history_previous`, `history_next`, `open`, `cancel` and input editing actions.
+Ctrl-C cancels command entry by default; it still quits in other contexts.

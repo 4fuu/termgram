@@ -17,6 +17,18 @@ impl App {
         if self.focus != Focus::Chats || self.mode != Mode::Navigate {
             return Vec::new();
         }
+        let Some(chat) = self.selected_chat_entry() else {
+            return Vec::new();
+        };
+        let (chat_id, archived) = (chat.id, !chat.membership.archived);
+        self.set_chat_archived(chat_id, archived)
+    }
+
+    pub(super) fn set_chat_archived(
+        &mut self,
+        chat_id: i64,
+        archived: bool,
+    ) -> Vec<TelegramCommand> {
         if self.connection != ConnectionStatus::Online {
             self.status_message = Some("Connect to Telegram to change the archive".to_owned());
             return Vec::new();
@@ -24,10 +36,6 @@ impl App {
         if self.pins.pending_dialog.is_some() {
             return Vec::new();
         }
-        let Some(chat) = self.selected_chat_entry() else {
-            return Vec::new();
-        };
-        let (chat_id, archived) = (chat.id, !chat.membership.archived);
         self.pins.next_request += 1;
         let request_id = self.pins.next_request;
         self.pins.pending_dialog = Some(request_id);
@@ -41,7 +49,11 @@ impl App {
     }
     #[must_use]
     pub fn chat_pin_position(&self, chat_id: i64) -> Option<usize> {
-        let order = match self.folder_id {
+        self.chat_pin_position_in(self.folder_id, chat_id)
+    }
+
+    pub(super) fn chat_pin_position_in(&self, folder: i32, chat_id: i64) -> Option<usize> {
+        let order = match folder {
             0 => &self.pins.dialogs.main,
             1 => &self.pins.dialogs.archive,
             id => &self.folders.iter().find(|folder| folder.id == id)?.pinned,
@@ -51,13 +63,6 @@ impl App {
 
     pub(super) fn change_chat_pin(&mut self, run: &str) -> Vec<TelegramCommand> {
         if self.focus != Focus::Chats || self.mode != Mode::Navigate {
-            return Vec::new();
-        }
-        if self.connection != ConnectionStatus::Online {
-            self.status_message = Some("Connect to Telegram to change pins".to_owned());
-            return Vec::new();
-        }
-        if self.pins.pending_dialog.is_some() {
             return Vec::new();
         }
         let Some(chat) = self.selected_chat_entry() else {
@@ -79,6 +84,22 @@ impl App {
             1 => DialogScope::Archive,
             id => DialogScope::Filter(id),
         };
+        self.request_chat_pin(chat_id, scope, action)
+    }
+
+    pub(super) fn request_chat_pin(
+        &mut self,
+        chat_id: i64,
+        scope: DialogScope,
+        action: DialogAction,
+    ) -> Vec<TelegramCommand> {
+        if self.connection != ConnectionStatus::Online {
+            self.status_message = Some("Connect to Telegram to change pins".to_owned());
+            return Vec::new();
+        }
+        if self.pins.pending_dialog.is_some() {
+            return Vec::new();
+        }
         self.pins.next_request += 1;
         let request_id = self.pins.next_request;
         self.pins.pending_dialog = Some(request_id);

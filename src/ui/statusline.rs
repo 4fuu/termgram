@@ -104,6 +104,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
         Item::Mode => (
             match app.mode {
                 Mode::Compose => " INSERT ",
+                Mode::Command => " COMMAND ",
                 Mode::Filter | Mode::Search => " SEARCH ",
                 Mode::Navigate if app.focus == Focus::Chats => " CHATS ",
                 Mode::Navigate if app.selected_message.is_some() => " SELECT ",
@@ -191,6 +192,18 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
 }
 
 fn context(app: &AppState, narrow: bool) -> String {
+    if app.mode == Mode::Status {
+        return format!("{} close", app.keymap.hint(Context::Overlay, "cancel"));
+    }
+    if app.mode == Mode::Command {
+        let hint = |action| app.keymap.hint(Context::Command, action);
+        return format!(
+            "{} complete · {} run · {} cancel",
+            hint("complete_next"),
+            hint("open"),
+            hint("cancel")
+        );
+    }
     if app.status_message.is_some() {
         return String::new();
     }
@@ -255,7 +268,11 @@ fn context(app: &AppState, narrow: bool) -> String {
     } else {
         String::new()
     };
-    format!("{back}{} help", app.keymap.hint(context, "help"))
+    format!(
+        "{back}{} commands · {} help",
+        app.keymap.hint(context, "command"),
+        app.keymap.hint(context, "help")
+    )
 }
 
 fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {

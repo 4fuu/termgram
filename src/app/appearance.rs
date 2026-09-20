@@ -51,27 +51,31 @@ impl App {
             .map(|chat| (Target::Chat(chat.id), format!("Chat: {}", chat.title)))
         };
         if let Some((target, label)) = target {
-            let selected = self
-                .account_user_id
-                .and_then(|account| self.appearance.accounts.get(&account))
-                .and_then(|colors| colors.get(target));
-            let selection = selected
-                .and_then(|color| {
-                    TerminalColor::ALL
-                        .iter()
-                        .position(|candidate| *candidate == color)
-                })
-                .map_or(0, |index| index + 1);
-            self.status_message = None;
-            self.color_picker = Some(Picker {
-                target,
-                label,
-                selection,
-                previous_mode: self.mode,
-            });
-            self.mode = Mode::Colors;
+            self.begin_color_picker_for(target, label);
         }
         Vec::new()
+    }
+
+    pub(super) fn begin_color_picker_for(&mut self, target: Target, label: String) {
+        let selected = self
+            .account_user_id
+            .and_then(|account| self.appearance.accounts.get(&account))
+            .and_then(|colors| colors.get(target));
+        let selection = selected
+            .and_then(|color| {
+                TerminalColor::ALL
+                    .iter()
+                    .position(|candidate| *candidate == color)
+            })
+            .map_or(0, |index| index + 1);
+        self.status_message = None;
+        self.color_picker = Some(Picker {
+            target,
+            label,
+            selection,
+            previous_mode: self.mode,
+        });
+        self.mode = Mode::Colors;
     }
     pub(super) fn handle_colors(&mut self, action: KeyAction) -> Vec<TelegramCommand> {
         if action == KeyAction::Escape {

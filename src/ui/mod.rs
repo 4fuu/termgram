@@ -1,5 +1,6 @@
 mod appearance;
 mod chats;
+mod commands;
 mod icons;
 mod pins;
 mod preview;
@@ -458,7 +459,11 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     statusline::render(frame, rows[2], app);
 
-    if app.mode == Mode::Preview {
+    if app.mode == Mode::Command {
+        commands::render(frame, area, app);
+    } else if app.mode == Mode::Status {
+        commands::render_status(frame, area, app);
+    } else if app.mode == Mode::Preview {
         preview::render(frame, area, app);
     } else if app.mode == Mode::Colors {
         appearance::render_colors(frame, area, app);
@@ -478,6 +483,8 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     if matches!(
         app.mode,
         Mode::Search
+            | Mode::Command
+            | Mode::Status
             | Mode::Colors
             | Mode::Help
             | Mode::Settings
@@ -1347,6 +1354,38 @@ mod tests {
 
     fn populated_app() -> AppState {
         populated_app_with_settings(Settings::default())
+    }
+
+    #[test]
+    fn command_popup_adapts_and_pointer_completion_does_not_execute() {
+        use yazi_term::event::{
+            KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        for (width, height) in [(40, 10), (80, 24), (160, 42)] {
+            let mut app = populated_app();
+            app.handle_key(&KeyEvent::new(KeyCode::Char(':'), Modifiers::empty()));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            assert!(!app.commands.hit_regions.is_empty());
+            let (x, _, y, _) = app.commands.hit_regions[0];
+            assert!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: y,
+                    modifiers: Modifiers::empty()
+                })
+                .is_empty()
+            );
+            assert_eq!(app.mode, Mode::Command);
+            assert!(!app.commands.input.is_empty());
+            app.commands.input.set_value("界".repeat(100));
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            app.handle_key(&KeyEvent::new(KeyCode::Escape, Modifiers::empty()));
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            assert!(app.commands.hit_regions.is_empty());
+            assert_eq!(app.mode, Mode::Navigate);
+        }
     }
 
     #[test]

@@ -27,7 +27,7 @@ use yazi_tty::{
         DisableBracketedPaste, DisableColorSchemeUpdates, DisableFocusChange, DisableMouseCapture,
         EnableBracketedPaste, EnableColorSchemeUpdates, EnableFocusChange, EnableMouseCapture,
         EndSyncUpdate, EnterAlternateScreen, LeaveAlternateScreen, PopKeyboardFlags,
-        PushKeyboardFlags, RequestCellPixelSize, RestoreCursorStyle, ShowCursor,
+        PushKeyboardFlags, RequestBgColor, RequestCellPixelSize, RestoreCursorStyle, ShowCursor,
     },
 };
 
@@ -129,7 +129,18 @@ impl TerminalGuard {
             tokio::select! {
                 event = self.input.next() => {
                     match event {
-                        Some(Ok(Event::Report(report))) => self.report(&report),
+                        Some(Ok(Event::Report(report))) => {
+                            self.report(&report);
+                            // Forward parsed colors, never raw protocol text, so the UI
+                            // can shade messages without starting another terminal reader.
+                            if matches!(report, Report::BackgroundColor(_)) {
+                                return Some(Ok(Event::Report(report)));
+                            }
+                            if matches!(report, Report::ColorScheme(_)) {
+                                let _ = write!(TTY.writer(), "{RequestBgColor}");
+                                let _ = TTY.writer().flush();
+                            }
+                        }
                         Some(Ok(event @ Event::Resize(_))) => {
                             // Font changes can change pixel dimensions without changing
                             // the terminal brand or negotiated graphics protocol.

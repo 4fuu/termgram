@@ -1,5 +1,11 @@
 # Upstream code
 
+Conversation shading in `src/transcript.rs` follows the theme-relative design
+of Codex `codex-rs/tui/src/style.rs` at
+`78245b47af2a7aafcabe025828ceecca69db4df1` (https://github.com/openai/codex).
+It is a small original adapter, not copied source: Yazi's existing background
+report supplies the color, with no Codex probing code or additional input reader.
+
 Yazi is pinned to `9203fd2604f867ab5ec18f24203b918975c4c00a` from
 https://github.com/sxyazi/yazi. All Yazi crates except `yazi-term` are Git
 dependencies at that revision.

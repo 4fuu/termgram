@@ -70,19 +70,37 @@ See [Lua configuration](Configuration.md) for width and semantic color options.
 
 ## Conversation layout
 
-Each message has a separate author header, with local time, outgoing delivery
-state and optional message ID aligned on the right. Incoming authors use stable
-colors from the terminal palette; outgoing authors use green. Body text keeps the
-terminal's default foreground and background. Earlier dates include month/day;
-other years include the year. On very narrow headers, optional IDs yield space to
-the author and delivery/time information.
+Each message has a separate author header. Full user names include both first and
+last names, and long names wrap instead of being cut off by metadata. Incoming
+authors use stable terminal colors; outgoing authors use green. Body text keeps
+the terminal's default foreground.
+
+Messages have no empty separator row by default. Alternating backgrounds use a
+subtle shade of the terminal's reported background, working with dark and light
+themes. Until a terminal reports its background, both use the default background.
+Configure density or choose an ANSI background explicitly:
+
+```lua
+messages = {
+  spacing = 0, -- 0–2 blank rows
+  alternating = true,
+  -- alternate_background = "dark_gray", -- omit for automatic theme shading
+},
+```
+
+The bottom bar's `message` item shows the selected message, or the last visible
+message when no selection is active: local time/date, optional message ID,
+delivery, pin and download/preview state. Select a message to inspect its details;
+`context` supplies the effective Lua keys. On small terminals lower-priority
+segments yield space and details can be shortened.
 
 Replies occupy their own row above text/media. A thin left marker identifies the
 selected message; the current reply, attachment or link action also gains emphasis.
-Body, action rows and inline media share a small two-column gutter. A blank line
-separates messages. File labels describe the file and active transfer state;
-selection-specific keys belong in the bottom bar. `o` expands selected media,
-`i` replies, and `g n` / `g p` move among actions.
+Body, action rows and inline media share a small two-column gutter. Inline images
+do not repeat a `photo` or `sticker` filename above the preview. While an image is
+not available, a small placeholder preserves its target; preview status appears
+in the bottom bar. `o` expands selected media, `O` reveals its original in the
+system file manager, `i` replies, and `g n` / `g p` move among actions.
 
 Resizing and sidebar toggles retain the anchored message. If reflow removes the
 old physical row, the viewport returns to that message's header rather than its

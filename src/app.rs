@@ -245,6 +245,7 @@ pub struct App {
     /// Last rendered conversation width, used to detect a wrapping change.
     pub viewport_width: u16,
     pub terminal_focused: bool,
+    pub terminal_background: Option<[u8; 3]>,
     settings: Settings,
     settings_path: Option<PathBuf>,
     settings_selection: usize,
@@ -347,6 +348,7 @@ impl Default for App {
             viewport_anchor_row: 0,
             viewport_width: 0,
             terminal_focused: true,
+            terminal_background: None,
             settings: Settings::default(),
             settings_path: None,
             settings_selection: 0,
@@ -1651,6 +1653,20 @@ impl App {
             .and_then(|id| self.reply_targets.get(&id))
     }
 
+    /// Explicit selection, otherwise the last visible message in the conversation.
+    #[must_use]
+    pub fn inspected_message(&self) -> Option<&Message> {
+        if self.focus != Focus::Conversation {
+            return None;
+        }
+        let id = self
+            .selected_message
+            .or_else(|| self.message_hit_regions.last().map(|region| region.3.0))?;
+        self.active_messages()
+            .iter()
+            .find(|message| message.id == id)
+    }
+
     #[must_use]
     pub fn draft_for(&self, chat_id: ChatId) -> Option<&TextInput> {
         self.drafts.get(&chat_id)
@@ -2330,6 +2346,7 @@ impl App {
         let settings_path = self.settings_path.clone();
         let available_update = self.available_update.clone();
         let terminal_focused = self.terminal_focused;
+        let terminal_background = self.terminal_background;
         let qr_render_mode = self.qr_render_mode;
         let appearance = self.appearance.clone();
         let navigation = self.navigation.clone();
@@ -2345,6 +2362,7 @@ impl App {
             settings_path,
             available_update,
             terminal_focused,
+            terminal_background,
             qr_render_mode,
             status_message: Some(format!("Switching to Account {account}…")),
             force_redraw: true,

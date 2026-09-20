@@ -564,7 +564,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let mut lines = Vec::new();
     let mut layouts = Vec::with_capacity(messages.len());
     let mut media_rows = Vec::new();
-    for message in messages {
+    for (index, message) in messages.iter().enumerate() {
         let start = lines.len();
         let rendered = transcript::render(message, message_width, app);
         let body_action = rendered.body_action;
@@ -609,7 +609,17 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
                 }));
             }
         }
-        lines.push(Line::default());
+        let background = app
+            .keymap
+            .messages
+            .background(index % 2 == 1, app.terminal_background);
+        for line in &mut lines[start..] {
+            line.style = line.style.bg(background);
+            line.spans.push(Span::raw(
+                " ".repeat(message_width.saturating_sub(line.width())),
+            ));
+        }
+        lines.extend((0..app.keymap.messages.spacing).map(|_| Line::default()));
         layouts.push(MessageLayout {
             id: message.id,
             start,
@@ -697,16 +707,16 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             offset,
             size: ratatui::layout::Size::new(width, height),
         });
-        let status = app
+        let pending = app
             .media_previews
             .get(&(chat_id, message_id))
-            .map_or("Loading preview…", |p| p.status.as_str());
-        if !status.is_empty() {
+            .is_none_or(|preview| preview.path.is_none());
+        if pending {
             let y = inner
                 .y
                 .saturating_add(clamp_u16(row.saturating_sub(scroll)));
             frame.render_widget(
-                Paragraph::new(status).style(Style::default().fg(MUTED)),
+                Paragraph::new("▧").style(Style::default().fg(MUTED)),
                 Rect::new(viewport.x, y, width, 1),
             );
         }
@@ -1337,6 +1347,39 @@ mod tests {
     }
 
     #[test]
+    fn compact_messages_keep_full_authors_and_use_theme_relative_backgrounds() {
+        let mut app = populated_app();
+        app.focus = Focus::Conversation;
+        app.sidebar_hidden = true;
+        let mut first = app.active_messages()[0].clone();
+        first.sender = "Long author name with 中文 and a complete ApellidoFinal".to_owned();
+        first.text = "First body".to_owned();
+        let mut second = first.clone();
+        second.id += 1;
+        second.sender = "Second author".to_owned();
+        second.text = "Second body".to_owned();
+        app.messages.insert(7, vec![first, second]);
+        for background in [[25, 28, 35], [240, 240, 240]] {
+            app.terminal_background = Some(background);
+            let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<_> = (0..20)
+                .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect();
+            assert!(rows.iter().any(|line| line.contains("ApellidoFinal")));
+            let first = rows
+                .iter()
+                .position(|line| line.contains("First body"))
+                .unwrap();
+            assert!(rows[first + 1].contains("Second author"));
+            let y = u16::try_from(first + 1).unwrap();
+            assert_ne!(buffer[(3, y)].bg, Color::Reset);
+            assert_eq!(buffer[(3, y)].bg, buffer[(38, y)].bg);
+        }
+    }
+
+    #[test]
     fn transcript_separates_metadata_reply_and_body_and_aligns_media() {
         use crate::event::TelegramCommand;
         use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -1374,12 +1417,13 @@ mod tests {
                     .collect::<String>()
             };
             assert!(row(1).contains("Me"));
-            assert!(row(1).contains("#11"));
+            assert!(!row(1).contains("#11"));
             assert!(!row(1).contains("Readable body"));
             assert!(row(2).contains("↩ #42 Bob"));
-            assert!(row(4).contains("Readable body"));
-            assert_eq!(buffer[(3, 4)].fg, Color::Reset);
-            assert_eq!(buffer[(1, 4)].symbol(), "▎");
+            assert!(row(3).contains("Readable body"));
+            assert_eq!(buffer[(3, 3)].fg, Color::Reset);
+            assert_eq!(buffer[(1, 3)].symbol(), "▎");
+            assert!(!row(3).contains("photo"));
             assert_eq!(app.media_slots.len(), 1);
             assert_eq!(app.media_slots[0].viewport.x, 3);
             assert!(app.media_slots[0].viewport.right() < width);
@@ -1530,7 +1574,12 @@ mod tests {
         });
         let narrow = render_text(&app, 40, 10);
         assert!(narrow.contains("SELECT"));
-        assert!(narrow.contains("o preview · i reply"));
+        assert!(narrow.contains("o preview"));
+        assert!(
+            narrow.contains("O Finder")
+                || narrow.contains("O Explorer")
+                || narrow.contains("O files")
+        );
         app.keymap.statusline.enabled = false;
         app.status_message = Some("Failed to send".to_owned());
         let hidden = render_text(&app, 40, 10);
@@ -1924,7 +1973,7 @@ mod tests {
     }
 
     #[test]
-    fn replies_render_target_metadata_and_optional_header_ids() {
+    fn replies_render_target_metadata_and_optional_statusline_ids() {
         let mut app = populated_app();
         let message = app.messages.get_mut(&7).unwrap().first_mut().unwrap();
         message.reply_to = Some(ReplyInfo {
@@ -1942,6 +1991,8 @@ mod tests {
             ..Settings::default()
         };
         let mut app = populated_app_with_settings(settings);
+        app.focus = Focus::Conversation;
+        app.selected_message = Some(11);
         let message = app.messages.get_mut(&7).unwrap().first_mut().unwrap();
         message.reply_to = Some(ReplyInfo {
             message_id: 42,
@@ -2015,11 +2066,8 @@ mod tests {
         ]);
 
         let output = render_text_mut(&mut app, 120, 36);
-        assert!(output.contains("[photo] image.jpg · 2.0 KiB"));
-        // TestBackend retains the continuation cell for a wide emoji, so the
-        // exact amount of padding between these two tokens is backend-specific.
-        assert!(output.contains("🙂"));
-        assert!(output.contains("[sticker]"));
+        assert!(!output.contains("[photo]"));
+        assert!(!output.contains("[sticker]"));
         assert_eq!(app.media_slots.len(), 2);
         assert_eq!(app.request_visible_media().len(), 2);
         app.message_scroll = 3;
@@ -2284,7 +2332,7 @@ mod tests {
         assert!(after.contains(&format!("message-{anchor:02}")));
         assert!(!after.contains("new-three"));
         assert!(after.contains("1 new"));
-        assert_eq!(app.message_scroll, 10); // Header, three body lines and spacing.
+        assert_eq!(app.message_scroll, 9); // Header and three body lines, no separator.
         assert_eq!(app.new_messages_to_anchor, 0);
 
         let anchored_scroll = app.message_scroll;

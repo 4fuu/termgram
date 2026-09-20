@@ -67,7 +67,7 @@ segments; omitted fields keep these defaults:
 ```lua
 statusline = {
   enabled = true,
-  left = { "mode", "app", "account", "context" },
+  left = { "mode", "app", "account", "message", "context" },
   right = { "connection", "latency", "dc", "position" },
 },
 ```
@@ -77,6 +77,7 @@ statusline = {
 | `mode` | CHATS, NORMAL, SELECT, INSERT or the current overlay mode |
 | `app` | Termgram |
 | `account` | Local account slot and Telegram display name |
+| `message` | Selected/last-visible message time, delivery, pin and media state |
 | `context` | Effective selection/help keys or an available update |
 | `connection` | Connecting, online, reconnecting or offline |
 | `latency` | Latest completed primary-connection Ping in milliseconds |

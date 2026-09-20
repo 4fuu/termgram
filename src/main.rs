@@ -211,6 +211,12 @@ async fn main() -> Result<()> {
                 preview.invalidate();
                 app.handle_action(termgram::input::KeyAction::Redraw)
             }
+            RuntimeEvent::Terminal(Some(Ok(Event::Report(
+                yazi_term::event::Report::BackgroundColor(rgb),
+            )))) => {
+                app.terminal_background = Some(rgb.map(|channel| (channel >> 8) as u8));
+                Vec::new()
+            }
             RuntimeEvent::Terminal(Some(Ok(_))) => Vec::new(),
             RuntimeEvent::Terminal(Some(Err(error))) => {
                 runtime_error = Some(anyhow::Error::from(error).context("terminal input failed"));

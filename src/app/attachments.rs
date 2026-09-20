@@ -53,7 +53,6 @@ impl App {
             .active_messages()
             .iter()
             .find(|message| Some(message.id) == self.selected_message)
-            .or_else(|| self.active_messages().last())
             .cloned();
         let Some(message) =
             message.filter(|message| message.id > 0 && message.attachment.is_some())

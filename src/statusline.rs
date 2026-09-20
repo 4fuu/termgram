@@ -13,6 +13,7 @@ pub enum Item {
     Latency,
     Dc,
     Position,
+    Message,
     Context,
 }
 
@@ -28,7 +29,13 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             enabled: true,
-            left: vec![Item::Mode, Item::App, Item::Account, Item::Context],
+            left: vec![
+                Item::Mode,
+                Item::App,
+                Item::Account,
+                Item::Message,
+                Item::Context,
+            ],
             right: vec![Item::Connection, Item::Latency, Item::Dc, Item::Position],
         }
     }

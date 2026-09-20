@@ -14,6 +14,7 @@ pub mod sidebar;
 pub mod statusline;
 pub mod telegram;
 pub mod terminal;
+pub mod transcript;
 pub mod ui;
 pub mod update;
 

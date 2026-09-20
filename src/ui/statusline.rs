@@ -3,9 +3,10 @@
 
 use super::{ACCENT, DANGER, MUTED, SUCCESS, WARNING, clamp_u16, truncate_cells};
 use crate::{
-    app::{AppState, Focus, Mode},
+    app::{AppState, AttachmentState, Focus, MessageAction, Mode},
     event::ConnectionStatus,
     keymap::Context,
+    model::Delivery,
     statusline::Item,
 };
 use ratatui::{
@@ -55,9 +56,13 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         };
         if entry.priority >= 90 {
             let excess = total_width(&segments).saturating_sub(width);
-            segments[index].text =
-                truncate_cells(&entry.text, entry.text.width().saturating_sub(excess));
-            break;
+            let remaining = entry.text.width().saturating_sub(excess);
+            if remaining == 0 {
+                segments.remove(index);
+            } else {
+                segments[index].text = truncate_cells(&entry.text, remaining);
+            }
+            continue;
         }
         segments.remove(index);
     }
@@ -159,6 +164,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
             };
             (text, MUTED, 40)
         }
+        Item::Message => message_metadata(app)?,
         Item::Context => (context(app, narrow), MUTED, 90),
     };
     if text.is_empty() {
@@ -193,17 +199,31 @@ fn context(app: &AppState, narrow: bool) -> String {
         && app.selected_message.is_some()
     {
         let hint = |action| app.keymap.hint(Context::Conversation, action);
-        let media = app
-            .active_messages()
-            .iter()
-            .find(|message| Some(message.id) == app.selected_message)
-            .and_then(|message| message.attachment.as_ref())
-            .is_some_and(crate::model::Attachment::supports_preview);
-        return if media {
-            format!("{} preview · {} reply", hint("preview"), hint("compose"))
-        } else {
-            format!("{} reply · {} clear", hint("compose"), hint("cancel"))
+        let Some(message) = app.inspected_message() else {
+            return String::new();
         };
+        let mut hints = Vec::new();
+        if app.message_actions(message).get(app.selected_action) == Some(&MessageAction::Reply) {
+            hints.push(format!("{} original", hint("open")));
+        }
+        if let Some(attachment) = &message.attachment {
+            if attachment.supports_preview() {
+                hints.push(format!("{} preview", hint("preview")));
+            }
+            let manager = if cfg!(target_os = "macos") {
+                "Finder"
+            } else if cfg!(windows) {
+                "Explorer"
+            } else {
+                "files"
+            };
+            hints.push(format!("{} {manager}", hint("reveal")));
+        }
+        hints.push(format!("{} reply", hint("compose")));
+        if hints.len() == 1 {
+            hints.push(format!("{} clear", hint("cancel")));
+        }
+        return hints.join(" · ");
     }
     if let Some(version) = app.available_update() {
         return format!("Update {version} available · run tg update");
@@ -236,4 +256,65 @@ fn context(app: &AppState, narrow: bool) -> String {
         String::new()
     };
     format!("{back}{} help", app.keymap.hint(context, "help"))
+}
+
+fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {
+    use chrono::{Datelike, Local};
+    let message = app.inspected_message()?;
+    let timestamp = message.timestamp.with_timezone(&Local);
+    let now = Local::now();
+    let mut parts = Vec::new();
+    if app.settings().show_message_ids {
+        parts.push(format!("#{}", message.id));
+    }
+    parts.push(
+        timestamp
+            .format(if timestamp.date_naive() == now.date_naive() {
+                "%H:%M"
+            } else if timestamp.year() == now.year() {
+                "%m-%d %H:%M"
+            } else {
+                "%Y-%m-%d %H:%M"
+            })
+            .to_string(),
+    );
+    let mut color = MUTED;
+    if message.outgoing {
+        let (state, tone) = match message.delivery {
+            Delivery::Pending => ("sending", WARNING),
+            Delivery::Sent => ("sent", MUTED),
+            Delivery::Read => ("read", SUCCESS),
+            Delivery::Failed => ("failed", DANGER),
+        };
+        color = tone;
+        parts.push(state.to_owned());
+    }
+    if message.pinned {
+        parts.push(format!(
+            "{} pinned",
+            super::icons::Icons(app.keymap.nerd_font).pin()
+        ));
+    }
+    if let Some(attachment) = &message.attachment {
+        // Actual filenames matter; Telegram's generated photo.jpg does not.
+        if let Some(name) = &attachment.file_name
+            && !(attachment.kind == crate::model::AttachmentKind::Photo && name == "photo.jpg")
+        {
+            parts.push(name.clone());
+        }
+        if let Some(size) = attachment.size {
+            parts.push(super::transcript::human_size(size));
+        }
+        match app.attachment_state(message.chat_id, message.id) {
+            AttachmentState::Downloading => parts.push("downloading".to_owned()),
+            AttachmentState::Downloaded => parts.push("downloaded".to_owned()),
+            AttachmentState::Ready => {}
+        }
+        if let Some(preview) = app.media_previews.get(&(message.chat_id, message.id))
+            && !preview.status.is_empty()
+        {
+            parts.push(preview.status.clone());
+        }
+    }
+    Some((parts.join(" · "), color, 90))
 }

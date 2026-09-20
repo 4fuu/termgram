@@ -264,7 +264,7 @@ async fn run(
             events.send(NetworkEvent::CacheAccountReset { user_id }).await?;
         }
         events.send(NetworkEvent::AccountIdentity { user_id }).await?;
-        let user_name = safe_name(me.first_name(), "You");
+        let user_name = safe_name(Some(&me.full_name()), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
         observations.spawn(telemetry::observe(client.clone(), session.clone(), events.clone(), config.measure_latency));
 
@@ -1246,7 +1246,7 @@ fn apply_dialogs(
         cache.peers.insert(id, dialog.peer_ref());
         cache
             .names
-            .insert(dialog.peer_id(), safe_name(dialog.peer().name(), "Unknown"));
+            .insert(dialog.peer_id(), peer_display_name(dialog.peer()));
         let RawDialog::Dialog(raw) = &dialog.raw else {
             unreachable!("folder placeholders are filtered above")
         };
@@ -1273,7 +1273,7 @@ fn apply_dialogs(
         chats.push(Chat {
             membership: folders::membership(&dialog, defaults),
             id,
-            title: safe_name(dialog.peer().name(), "Unknown"),
+            title: peer_display_name(dialog.peer()),
             kind: match dialog.peer() {
                 Peer::User(_) => ChatKind::Direct,
                 Peer::Group(_) => ChatKind::Group,
@@ -2023,7 +2023,7 @@ async fn resolve_telegram_link(
             let chat = Chat {
                 membership: crate::folders::ChatMembership::default(),
                 id,
-                title: safe_name(resolved.name(), "Unknown"),
+                title: peer_display_name(&resolved),
                 kind: match &resolved {
                     Peer::User(_) => ChatKind::Direct,
                     Peer::Group(_) => ChatKind::Group,
@@ -2298,7 +2298,7 @@ fn resolve_sender(message: &TelegramMessage, cache: &mut WorkerCache) -> (String
         return ("Unknown".to_owned(), "Unknown".to_owned());
     };
     if let Some(peer) = message.sender() {
-        let name = safe_name(peer.name(), "Unknown");
+        let name = peer_display_name(peer);
         let reply_sender = username_or_sender(peer.username(), &name);
         cache_sender_name(cache, sender_id, name.clone());
         return (name, reply_sender);
@@ -2627,6 +2627,20 @@ fn safe_name(value: Option<&str>, fallback: &str) -> String {
         fallback.to_owned()
     } else {
         value
+    }
+}
+
+fn peer_display_name(peer: &Peer) -> String {
+    match peer {
+        Peer::User(user) => safe_name(
+            Some(&user.full_name()),
+            if user.deleted() {
+                "Deleted account"
+            } else {
+                "Unknown"
+            },
+        ),
+        _ => safe_name(peer.name(), "Unknown"),
     }
 }
 

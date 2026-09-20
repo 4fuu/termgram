@@ -1,6 +1,6 @@
 //! Account-specific color overrides, separate from discardable caches and Lua.
 use crate::model::ChatId;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
@@ -156,17 +156,7 @@ impl Preferences {
     /// # Errors
     /// Returns read or format errors without replacing the existing preferences.
     pub fn load(path: &Path) -> Result<Self> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if text.len() > 1024 * 1024 {
-            bail!("appearance preferences exceed 1 MiB");
-        }
-        Ok(serde_json::from_str(&text)?)
+        crate::config::read_preferences(path)
     }
     /// # Errors
     /// Returns write errors; uses the existing atomic settings writer.

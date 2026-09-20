@@ -48,7 +48,7 @@ impl ReleaseChannel {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DownloadBehavior {
-    /// Enter/click keeps the file in Termgram's managed cache. The separate
+    /// Enter keeps the file in Termgram's managed cache. The separate
     /// explicit reveal action remains available.
     CacheOnly,
     /// A second explicit activation reveals the containing folder or selects
@@ -197,6 +197,22 @@ impl Settings {
             self.account_count,
         )
     }
+}
+
+/// Read bounded JSON preferences, using defaults only when the file is absent.
+///
+/// # Errors
+/// Returns read or format errors without replacing an existing file.
+pub(crate) fn read_preferences<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(error) => return Err(error.into()),
+    };
+    if text.len() > 1024 * 1024 {
+        bail!("preferences exceed 1 MiB");
+    }
+    Ok(serde_json::from_str(&text)?)
 }
 
 /// Shared atomic writer for managed preferences, with the same platform cleanup

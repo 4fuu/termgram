@@ -24,7 +24,7 @@ return {
 ```
 
 上下文包括 `global`、`chats`、`conversation`、`compose`、`input`（登录与聊天过滤）
-、`overlay`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
+、`overlay`、`preview`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
 `run = "noop"` 删除绑定。组合键用独立按键列表表示，例如 `{ "g", "w" }`。
 配置会检查前缀冲突。组合键一秒后过期，Escape 可以取消尚未完成的组合键。
 按键表示法沿用 Yazi，例如 `<C-s>`、`<A-x>`、`<S-Enter>`、`<Tab>`、`<Esc>`。
@@ -53,7 +53,8 @@ return {
 
 ## 文件路径
 
-`config.lua`、`settings.conf`、`appearance.json` 位于配置目录；会话、消息库和媒体位于
+`config.lua`、`settings.conf`、`appearance.json`、`navigation.json` 位于配置目录；
+`navigation.json` 按 Telegram 账号 ID 记录上次聊天，不保存草稿文字。会话、消息库和媒体位于
 数据目录。默认值如下：
 
 | 系统 | 配置目录 | 数据目录 |
@@ -93,7 +94,8 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `up`、`down`、`page_up`、`page_down` | 列表选择、显示行滚动或搜索选择，支持 `count` |
 | `message_up`、`message_down` | 会话消息光标，支持 `count` |
 | `oldest`、`latest` | 首末聊天，或已加载历史起点/最新会话 |
-| `compose`、`send`、`newline` | 会话与输入框 |
+| `compose`、`send`、`newline` | 进入草稿或回复会话中明确选中的消息 / 发送 / 换行 |
+| `preview` | 展开所选图片或贴纸；大图通过 `preview` 上下文配置按键 |
 | `home`、`end`、`left`、`right`、`backspace`、`delete`、`clear`、`delete_word` | 编辑器 |
 | `filter`、`refresh`、`chat_info` | 导航；标题过滤、列表刷新、显示 ID |
 | `folder_previous`、`folder_next` | 聊天列表文件夹 |

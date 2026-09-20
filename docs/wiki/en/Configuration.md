@@ -25,7 +25,7 @@ return {
 ```
 
 Contexts are `global`, `chats`, `conversation`, `compose`, `input` (login and chat
-filter), `overlay`, `pins`, and `search`. A context takes precedence over global bindings. Rebinding
+filter), `overlay`, `preview`, `pins`, and `search`. A context takes precedence over global bindings. Rebinding
 an existing key replaces that binding. Use `run = "noop"` to remove a binding.
 A chord is a list of individual keys, such as `{ "g", "w" }`; ambiguous prefixes
 are rejected. Chords expire after one second; Escape cancels a pending chord.
@@ -61,7 +61,8 @@ chat, folder, archive, pin and attachment icons; `false` is the default. See
 
 ## File locations
 
-`config.lua`, `settings.conf` and `appearance.json` use the configuration directory.
+`config.lua`, `settings.conf`, `appearance.json` and `navigation.json` use the configuration directory.
+`navigation.json` remembers the last opened chat by Telegram account ID; it stores no draft text.
 The session, message database and media use the data directory. Defaults:
 
 | OS | Configuration directory | Data directory |
@@ -108,7 +109,8 @@ binding can become visible again.
 | `up`, `down`, `page_up`, `page_down` | List selection, rendered-row scrolling, or search selection; accept `count` |
 | `message_up`, `message_down` | Conversation message cursor; accept `count` |
 | `oldest`, `latest` | First/last chat, or loaded-history start/latest conversation |
-| `compose`, `send`, `newline` | Conversation/editor |
+| `compose`, `send`, `newline` | Enter a draft or reply to the explicit conversation selection / send / newline |
+| `preview` | Expand a selected image or sticker; `preview` context controls the expanded view |
 | `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |
 | `filter`, `refresh`, `chat_info` | Navigation; title filter, lists refresh, IDs |
 | `folder_previous`, `folder_next` | Chat list folders |

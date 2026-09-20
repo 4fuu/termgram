@@ -3,7 +3,7 @@
 [简体中文](../zh-CN/Keybindings.md) · [Guide](Home.md)
 
 These are defaults. `?` displays the current Lua bindings. Uppercase keys mean
-Shift plus that letter. `g g`, `g i`, and `g o` are successive presses; a pending
+Shift plus that letter. `g g`, `g i`, `g n`, and `g p` are successive presses; a pending
 chord times out after one second and Esc cancels it. Keys apply to the focused
 pane or overlay, so ordinary letters in an editor remain text.
 
@@ -15,6 +15,7 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Login | Tab or Shift-Tab | Start QR login or change QR display |
 | Chats | j/k or Down/Up | Select next/previous chat |
 | Chats | Enter or Right | Open selected chat |
+| Chats | i | Compose in the current chat, or resume the last chat for this account |
 | Chats | G / g g | Last / first chat in the filtered list |
 | Chats | PageDown/PageUp | Move ten chats |
 | Chats | / | Filter titles in this folder |
@@ -30,10 +31,11 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Conversation | PageUp/PageDown | Scroll ten rendered rows |
 | Conversation | G or End | Return to latest messages and follow incoming messages |
 | Conversation | g g or Home | Oldest message in the loaded window |
-| Conversation | i | Compose |
+| Conversation | i | Reply to an explicitly selected message; otherwise compose |
 | Conversation | Enter | Activate the selection; compose if nothing is selected |
 | Conversation | R / r | Reply to selection/latest / open its reply target |
-| Conversation | o / g o | Next / previous actionable item |
+| Conversation | o | Expand selected image or sticker |
+| Conversation | g n / g p | Next / previous actionable item |
 | Conversation | l | Open the selected or first supported link |
 | Conversation | O | Reveal attachment in the system file manager |
 | Conversation | / / c | Local regex search / chat color |
@@ -43,7 +45,9 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Pinned messages | p / U | Confirm unpin / unpin all |
 | Pinned messages | Ctrl-R | Refresh pins |
 | Navigation | Tab or Shift-Tab | Switch between chat list and conversation |
-| Conversation | Esc or Left | Focus/return to the chat list |
+| Conversation | Esc | Clear message selection first; then return to the chat list |
+| Conversation | Left | Return to the chat list |
+| Image preview | Esc or q / i / O | Close / reply / reveal original file |
 | Navigation | g i / Ctrl-R | Show chat and folder IDs / refresh lists |
 | Navigation | ? / s / a / q | Help / settings / accounts / quit |
 | Composer | Enter | Send |
@@ -67,6 +71,7 @@ start of a group. `G` reloads the latest page when reading older history.
 
 Changed defaults from earlier Termgram versions: conversation `/` now opens
 local search; type bot `/commands` after `i`. Uppercase `O` now reveals files;
-previous action moves to `g o`. Use the account picker with arrows and Enter;
+action cycling moves to `g n` / `g p`, and `o` expands an image preview.
+`i` also works from the chat list and replies when a message is explicitly selected. Use the account picker with arrows and Enter;
 digit keys in navigation are counts, and the old account-number hints are gone.
 There is no separate hardcoded keyboard fallback after Lua resolution.

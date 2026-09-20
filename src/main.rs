@@ -100,6 +100,9 @@ async fn main() -> Result<()> {
     if let Err(error) = app.load_appearance() {
         startup_warning = Some(format!("Could not load appearance preferences: {error:#}"));
     }
+    if let Err(error) = app.load_navigation() {
+        startup_warning = Some(format!("Could not load navigation preferences: {error:#}"));
+    }
     if let Some(warning) = &startup_warning {
         app.handle_network(NetworkEvent::Error(warning.clone()));
     }

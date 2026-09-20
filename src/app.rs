@@ -2,6 +2,7 @@
 
 mod appearance;
 mod attachments;
+mod composition;
 mod message_pins;
 mod pins;
 mod search;
@@ -17,6 +18,7 @@ use crate::{
     config::{DownloadBehavior, MAX_ACCOUNTS, Settings},
     event::{AppEvent, AuthPrompt, ConnectionStatus, NetworkEvent, TelegramCommand},
     input::{KeyAction, TextInput},
+    keymap::Context,
     model::{
         Attachment, AttachmentKind, Chat, ChatId, Delivery, Message, MessageLink, ReplyInfo,
         sanitize_terminal_line, sanitize_terminal_text,
@@ -153,6 +155,7 @@ pub enum Mode {
     #[default]
     Navigate,
     Compose,
+    Preview,
     Filter,
     Search,
     PinnedMessages,
@@ -200,6 +203,7 @@ pub struct App {
     pub user_name: Option<String>,
     pub account_user_id: Option<i64>,
     pub appearance: crate::appearance::Preferences,
+    navigation: composition::Navigation,
     pub color_picker: Option<appearance::Picker>,
     pub chats: Vec<Chat>,
     pub folders: Vec<crate::folders::Folder>,
@@ -291,6 +295,7 @@ pub struct App {
     account_hit_regions: Vec<(u16, u16, u16, usize)>,
     /// Frame-local pane bounds used to route wheel events by pointer location.
     chat_pane_region: Option<(u16, u16, u16, u16)>,
+    composer_region: Option<(u16, u16, u16, u16)>,
     conversation_pane_region: Option<(u16, u16, u16, u16)>,
 }
 
@@ -306,6 +311,7 @@ impl Default for App {
             user_name: None,
             account_user_id: None,
             appearance: crate::appearance::Preferences::default(),
+            navigation: composition::Navigation::default(),
             color_picker: None,
             chats: Vec::new(),
             folders: vec![crate::folders::Folder::all()],
@@ -375,6 +381,7 @@ impl Default for App {
             settings_hit_regions: Vec::new(),
             account_hit_regions: Vec::new(),
             chat_pane_region: None,
+            composer_region: None,
             conversation_pane_region: None,
         }
     }
@@ -496,6 +503,7 @@ impl App {
         self.settings_hit_regions.clear();
         self.account_hit_regions.clear();
         self.chat_pane_region = None;
+        self.composer_region = None;
         self.conversation_pane_region = None;
     }
 
@@ -516,6 +524,7 @@ impl App {
         } else {
             match self.mode {
                 Mode::Compose => Context::Compose,
+                Mode::Preview => Context::Preview,
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
                 Mode::PinnedMessages => Context::Pins,
@@ -690,7 +699,8 @@ impl App {
                 self.mode = Mode::Filter;
                 return Vec::new();
             }
-            "compose" => return self.start_composing(),
+            "compose" => return self.compose_or_reply(),
+            "preview" => return self.preview_selected_media(),
             "send" => {
                 return self
                     .active_chat_id
@@ -826,7 +836,12 @@ impl App {
         }
         if matches!(
             self.mode,
-            Mode::Help | Mode::Search | Mode::Colors | Mode::PinnedMessages | Mode::PinPrompt
+            Mode::Help
+                | Mode::Search
+                | Mode::Colors
+                | Mode::PinnedMessages
+                | Mode::PinPrompt
+                | Mode::Preview
         ) {
             return Vec::new();
         }
@@ -867,13 +882,17 @@ impl App {
             MouseEventKind::ScrollUp
                 if pointer_in_region(self.chat_pane_region, mouse.column, mouse.row) =>
             {
-                self.focus = Focus::Chats;
+                if self.mode != Mode::Compose {
+                    self.focus = Focus::Chats;
+                }
                 self.move_chat_up(3)
             }
             MouseEventKind::ScrollDown
                 if pointer_in_region(self.chat_pane_region, mouse.column, mouse.row) =>
             {
-                self.focus = Focus::Chats;
+                if self.mode != Mode::Compose {
+                    self.focus = Focus::Chats;
+                }
                 self.move_chat_down(3)
             }
             MouseEventKind::ScrollUp
@@ -892,11 +911,15 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Right) => self.handle_reply_click(mouse),
             MouseEventKind::Down(MouseButton::Left) => {
+                if pointer_in_region(self.composer_region, mouse.column, mouse.row) {
+                    return self.start_composing();
+                }
                 if let Some(selection) =
                     pointer_row_hit(&self.chat_hit_regions, mouse.column, mouse.row)
                 {
                     self.selected_chat = selection;
                     self.focus = Focus::Chats;
+                    self.mode = Mode::Navigate;
                     self.narrow_conversation = false;
                     self.selected_message = None;
                     return self.open_selected_chat();
@@ -906,17 +929,16 @@ impl App {
                 {
                     self.focus = Focus::Conversation;
                     self.narrow_conversation = true;
-                    self.selected_message = Some(message_id);
-                    if let Some(action_index) = action_index {
-                        self.selected_action = action_index;
-                        return self.activate_selected_message();
-                    }
+                    self.mode = Mode::Navigate;
                     self.select_message_id(message_id, false);
+                    self.selected_action = action_index.unwrap_or(0);
                     return Vec::new();
                 }
                 if pointer_in_region(self.conversation_pane_region, mouse.column, mouse.row) {
                     self.focus = Focus::Conversation;
                     self.narrow_conversation = true;
+                    self.mode = Mode::Navigate;
+                    self.selected_message = None;
                 }
                 Vec::new()
             }
@@ -1642,6 +1664,10 @@ impl App {
         self.chat_pane_region = Some(region);
     }
 
+    pub const fn set_composer_region(&mut self, region: (u16, u16, u16, u16)) {
+        self.composer_region = Some(region);
+    }
+
     pub const fn set_conversation_pane_region(&mut self, region: (u16, u16, u16, u16)) {
         self.conversation_pane_region = Some(region);
     }
@@ -1828,6 +1854,13 @@ impl App {
         match self.mode {
             Mode::Navigate => self.handle_navigation(action),
             Mode::Compose => self.handle_compose(action),
+            Mode::Preview => {
+                if action == KeyAction::Escape {
+                    self.mode = Mode::Navigate;
+                    self.force_redraw = true;
+                }
+                Vec::new()
+            }
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
             Mode::PinnedMessages | Mode::PinPrompt => Vec::new(),
@@ -1870,9 +1903,7 @@ impl App {
                 self.insert_active('/');
                 Vec::new()
             }
-            KeyAction::Character('i') if self.focus == Focus::Conversation => {
-                self.start_composing()
-            }
+            KeyAction::Character('i') => self.compose_or_reply(),
             KeyAction::Tab | KeyAction::BackTab => {
                 self.toggle_focus();
                 if self.focus == Focus::Conversation && self.message_scroll == 0 {
@@ -1880,6 +1911,10 @@ impl App {
                 } else {
                     Vec::new()
                 }
+            }
+            KeyAction::Escape if self.selected_message.is_some() => {
+                self.selected_message = None;
+                Vec::new()
             }
             KeyAction::Escape | KeyAction::Left => {
                 self.narrow_conversation = false;
@@ -1904,10 +1939,10 @@ impl App {
                 }
             }
             KeyAction::Character('o') if self.focus == Focus::Conversation => {
-                self.select_actionable_message(true)
+                self.preview_selected_media()
             }
             KeyAction::Character('O') if self.focus == Focus::Conversation => {
-                self.select_actionable_message(false)
+                self.reveal_selected_attachment()
             }
             KeyAction::Character('l') if self.focus == Focus::Conversation => {
                 self.activate_selected_link()
@@ -2229,10 +2264,12 @@ impl App {
         let terminal_focused = self.terminal_focused;
         let qr_render_mode = self.qr_render_mode;
         let appearance = self.appearance.clone();
+        let navigation = self.navigation.clone();
         let mut keymap = self.keymap.clone();
         keymap.reset();
         *self = Self {
             appearance,
+            navigation,
             keymap,
             settings,
             settings_path,
@@ -2297,16 +2334,6 @@ impl App {
             Focus::Chats
         };
         self.narrow_conversation = self.focus == Focus::Conversation;
-    }
-
-    fn start_composing(&mut self) -> Vec<TelegramCommand> {
-        if let Some(chat_id) = self.active_chat_id {
-            self.drafts.entry(chat_id).or_default();
-            self.mode = Mode::Compose;
-            self.focus = Focus::Conversation;
-            self.selected_message = None;
-        }
-        Vec::new()
     }
 
     fn start_plain_composing(&mut self) -> Vec<TelegramCommand> {
@@ -2450,28 +2477,28 @@ impl App {
             self.viewport_anchor_row = 0;
             self.message_scroll = 1;
         }
-        self.status_message = Some(format!(
-            "Selected #{message_id} · {} reply",
-            self.keymap
-                .hint(crate::keymap::Context::Conversation, "reply")
-        ));
+        self.status_message = None;
     }
 
     fn start_replying_to_selected(&mut self) -> Vec<TelegramCommand> {
+        if self.mode == Mode::Preview && self.selected_message.is_none() {
+            self.status_message = Some(format!(
+                "Previewed message is no longer available · {} close",
+                self.keymap.hint(Context::Preview, "cancel")
+            ));
+            return Vec::new();
+        }
         let Some(chat_id) = self.active_chat_id else {
             return Vec::new();
         };
         let target = self
-            .selected_message
-            .and_then(|message_id| {
-                self.messages
-                    .get(&chat_id)
-                    .and_then(|messages| messages.iter().find(|message| message.id == message_id))
-            })
-            .or_else(|| {
-                self.messages
-                    .get(&chat_id)
-                    .and_then(|messages| messages.iter().rev().find(|message| message.id > 0))
+            .messages
+            .get(&chat_id)
+            .and_then(|messages| {
+                self.selected_message.map_or_else(
+                    || messages.iter().rev().find(|message| message.id > 0),
+                    |id| messages.iter().find(|message| message.id == id),
+                )
             })
             .cloned();
         let Some(target) = target else {
@@ -2640,7 +2667,11 @@ impl App {
         if message.id > 0
             && let Some(attachment) = message.attachment.as_ref().filter(|a| a.supports_preview())
         {
-            // A click retries a failed inline download; it never opens a modal.
+            self.mode = Mode::Preview;
+            self.focus = Focus::Conversation;
+            self.status_message = None;
+            // Explicit activation can retry a failed inline download while the
+            // same renderer expands the preview into the available viewport.
             if self
                 .media_previews
                 .get(&(chat_id, message_id))
@@ -2767,11 +2798,17 @@ impl App {
     }
 
     pub fn media_preview_failed(&mut self, chat_id: ChatId, message_id: i32, error: &str) {
+        let context = if self.mode == Mode::Preview {
+            Context::Preview
+        } else {
+            Context::Conversation
+        };
         if let Some(preview) = self.media_previews.get_mut(&(chat_id, message_id)) {
             preview.path = None;
             preview.loading = false;
             preview.status = format!(
-                "Preview unavailable · click to retry: {}",
+                "Preview unavailable · {} retry: {}",
+                self.keymap.hint(context, "preview"),
                 sanitize_terminal_line(error)
             );
         }
@@ -2888,7 +2925,11 @@ impl App {
             })
             .cloned()
         else {
-            self.status_message = Some("Select a reply with o first".to_owned());
+            self.status_message = Some(format!(
+                "Select a reply with {} first",
+                self.keymap
+                    .hint(crate::keymap::Context::Conversation, "next_action")
+            ));
             return Vec::new();
         };
         let Some(reply) = message.reply_to else {
@@ -3007,6 +3048,7 @@ impl App {
             chat.unread = 0;
         }
         self.status_message = None;
+        self.remember_chat(chat_id);
         let mut commands = vec![TelegramCommand::LoadHistory {
             chat_id,
             request_id,
@@ -3020,6 +3062,7 @@ impl App {
             return Vec::new();
         };
         self.active_chat_id = Some(chat_id);
+        self.remember_chat(chat_id);
         self.selected_message = None;
         self.focus = Focus::Conversation;
         self.narrow_conversation = true;
@@ -5485,7 +5528,7 @@ mod tests {
         }];
         app.handle_network(NetworkEvent::NewMessage(actionable));
 
-        app.handle_action(KeyAction::Character('o'));
+        app.run_binding("next_action", 1);
         assert_eq!(app.selected_message, Some(21));
         assert_eq!(app.selected_action, 0);
         assert_eq!(
@@ -5495,7 +5538,7 @@ mod tests {
             }]
         );
 
-        app.handle_action(KeyAction::Character('o'));
+        app.run_binding("next_action", 1);
         assert_eq!(app.selected_action, 1);
         assert_eq!(
             app.handle_action(KeyAction::Enter),
@@ -5536,7 +5579,10 @@ mod tests {
         assert_eq!(app.viewport_anchor_message, Some(5));
         assert_eq!(app.selected_message, Some(5));
         app.handle_action(KeyAction::Character('i'));
-        assert_eq!(app.selected_message, None);
+        assert_eq!(
+            app.active_reply_target().map(|reply| reply.message_id),
+            Some(5)
+        );
 
         app.handle_network(NetworkEvent::History {
             chat_id: 99,
@@ -5600,7 +5646,7 @@ mod tests {
                 })
                 .collect(),
         );
-        app.handle_action(KeyAction::Character('o'));
+        app.run_binding("next_action", 1);
         assert_eq!(app.selected_message, Some(2));
         assert_eq!(app.viewport_anchor_message, Some(2));
         assert!(app.message_scroll > 0);
@@ -5627,7 +5673,7 @@ mod tests {
             sender: Some("Them".to_owned()),
         });
 
-        assert!(app.handle_action(KeyAction::Character('o')).is_empty());
+        assert!(app.run_binding("next_action", 1).is_empty());
         assert_eq!(app.selected_message, Some(20));
         assert!(app.handle_action(KeyAction::Character('r')).is_empty());
         assert_eq!(app.selected_message, Some(5));
@@ -5645,7 +5691,7 @@ mod tests {
             chat_id: 1,
             sender: None,
         });
-        app.handle_action(KeyAction::Character('o'));
+        app.run_binding("next_action", 1);
         assert_eq!(
             app.handle_action(KeyAction::Character('r')),
             vec![TelegramCommand::LoadMessage {
@@ -5702,7 +5748,7 @@ mod tests {
             chat_id: 2,
             sender: Some("@beta".to_owned()),
         });
-        app.handle_action(KeyAction::Character('o'));
+        app.run_binding("next_action", 1);
         let commands = app.handle_action(KeyAction::Character('r'));
         assert_eq!(
             commands,
@@ -6134,6 +6180,108 @@ mod tests {
         });
         assert!(app.media_previews.is_empty());
         assert!(app.request_visible_media().is_empty());
+    }
+
+    #[test]
+    fn compose_restores_last_chat_by_account_across_restart() {
+        use yazi_term::event::KeyCode;
+
+        let directory =
+            std::env::temp_dir().join(format!("termgram-navigation-{}", std::process::id()));
+        let settings_path = directory.join("settings.conf");
+        let mut first = ready_app();
+        first.settings_path = Some(settings_path.clone());
+        first.account_user_id = Some(101);
+        first.selected_chat = 1;
+        first.open_selected_chat();
+
+        let mut restarted = ready_app();
+        restarted.settings_path = Some(settings_path.clone());
+        restarted.account_user_id = Some(101);
+        restarted.load_navigation().unwrap();
+        let commands = restarted.handle_key(&KeyEvent::new(KeyCode::Char('i'), Modifiers::empty()));
+        assert!(matches!(
+            commands.first(),
+            Some(TelegramCommand::LoadHistory { chat_id: 2, .. })
+        ));
+        assert_eq!(restarted.mode, Mode::Compose);
+        assert_eq!(restarted.active_chat_id, Some(2));
+
+        let mut other = ready_app();
+        other.settings_path = Some(settings_path);
+        other.account_user_id = Some(102);
+        other.load_navigation().unwrap();
+        other.handle_key(&KeyEvent::new(KeyCode::Char('i'), Modifiers::empty()));
+        assert_eq!(other.active_chat_id, Some(1));
+        assert!(other.active_reply_target().is_none());
+        let stored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(directory.join("navigation.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["accounts"]["101"], 2);
+        assert_eq!(stored["accounts"]["102"], 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn media_click_selects_then_explicit_keys_preview_and_reply() {
+        use yazi_term::event::KeyCode;
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: Modifiers::empty(),
+        };
+        let mut app = ready_app();
+        open_first(&mut app);
+        let mut media = message(21, 1, "image", false);
+        media.attachment = Some(Attachment {
+            source_id: None,
+            kind: AttachmentKind::Photo,
+            file_name: None,
+            mime_type: Some("image/jpeg".to_owned()),
+            size: None,
+            fallback_emoji: None,
+        });
+        app.handle_network(NetworkEvent::NewMessage(media));
+        app.start_composing();
+        app.handle_action(KeyAction::Character('x'));
+        app.set_message_hit_regions(vec![(10, 70, 8, (21, Some(0)))]);
+        app.set_composer_region((0, 80, 20, 23));
+        assert!(app.handle_mouse(click(20, 8)).is_empty());
+        assert_eq!(app.mode, Mode::Navigate);
+        assert_eq!(app.selected_message, Some(21));
+        let commands = app.handle_key(&KeyEvent::new(KeyCode::Char('o'), Modifiers::empty()));
+        assert_eq!(app.mode, Mode::Preview);
+        assert!(matches!(
+            commands.first(),
+            Some(TelegramCommand::DownloadPreview { message_id: 21, .. })
+        ));
+        let mut deleted = app.clone();
+        deleted.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![21],
+        });
+        deleted.handle_key(&KeyEvent::new(KeyCode::Char('i'), Modifiers::empty()));
+        assert_eq!(deleted.mode, Mode::Preview);
+        assert!(deleted.active_reply_target().is_none());
+        app.handle_key(&KeyEvent::new(KeyCode::Escape, Modifiers::empty()));
+        app.handle_key(&KeyEvent::new(KeyCode::Char('i'), Modifiers::empty()));
+        assert_eq!(
+            app.active_reply_target().map(|reply| reply.message_id),
+            Some(21)
+        );
+        app.handle_mouse(click(10, 21));
+        assert_eq!(app.mode, Mode::Compose);
+        assert_eq!(
+            app.active_reply_target().map(|reply| reply.message_id),
+            Some(21)
+        );
+        assert_eq!(app.active_draft().unwrap().value(), "x");
+        app.set_chat_hit_regions(vec![(0, 30, 4, 1)]);
+        app.handle_mouse(click(5, 4));
+        assert_eq!(app.mode, Mode::Navigate);
+        assert_eq!(app.active_chat_id, Some(2));
+        assert_eq!(app.drafts[&1].value(), "x");
     }
 
     #[test]

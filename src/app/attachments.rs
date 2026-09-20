@@ -2,6 +2,26 @@ use super::{App, Path, PathBuf, TelegramCommand, reveal_path, sanitize_terminal_
 use crate::model::ChatId;
 
 impl App {
+    pub(super) fn preview_selected_media(&mut self) -> Vec<TelegramCommand> {
+        let message = self.selected_message.and_then(|id| {
+            self.active_messages()
+                .iter()
+                .find(|message| message.id == id)
+                .cloned()
+        });
+        let Some(message) = message.filter(|message| {
+            message.id > 0
+                && message
+                    .attachment
+                    .as_ref()
+                    .is_some_and(crate::model::Attachment::supports_preview)
+        }) else {
+            self.status_message = Some("Select an image or sticker to preview".to_owned());
+            return Vec::new();
+        };
+        self.activate_attachment(message.chat_id, message.id, &message)
+    }
+
     pub(super) fn queue_download(
         &mut self,
         chat_id: ChatId,

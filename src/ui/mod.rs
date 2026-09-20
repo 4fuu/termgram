@@ -1,6 +1,7 @@
 mod appearance;
 mod icons;
 mod pins;
+mod preview;
 mod search;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
@@ -445,7 +446,9 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     render_composer(frame, rows[2], app, show_conversation_only || !narrow);
     render_footer(frame, rows[3], app, narrow);
 
-    if app.mode == Mode::Colors {
+    if app.mode == Mode::Preview {
+        preview::render(frame, area, app);
+    } else if app.mode == Mode::Colors {
         appearance::render_colors(frame, area, app);
     } else if app.mode == Mode::PinnedMessages {
         pins::render(frame, area, app);
@@ -903,7 +906,8 @@ fn render_new_message_badge(frame: &mut Frame<'_>, area: Rect, count: usize) {
     );
 }
 
-fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &AppState, enabled: bool) {
+fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enabled: bool) {
+    app.set_composer_region((area.x, area.right(), area.y, area.bottom()));
     let active = app.mode == Mode::Compose;
     let title = app.active_reply_target().map_or_else(String::new, |reply| {
         format!(
@@ -939,10 +943,7 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &AppState, enabled: b
                 .replace("{newline}", &app.keymap.hint(Context::Compose, "newline"))
                 .replace("{cancel}", &app.keymap.hint(Context::Compose, "cancel"))
         } else if app.focus == Focus::Chats {
-            format!(
-                "{} to focus conversation",
-                app.keymap.hint(Context::Chats, "focus")
-            )
+            format!("{} to compose", app.keymap.hint(Context::Chats, "compose"))
         } else {
             format!(
                 "{} to compose",
@@ -994,6 +995,28 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState, narrow: bool
         ))
     } else if app.mode != Mode::Navigate {
         Line::default()
+    } else if app.focus == Focus::Conversation && app.selected_message.is_some() {
+        let hint = |action| app.keymap.hint(Context::Conversation, action);
+        let media = app.selected_message.is_some_and(|id| {
+            app.active_messages().iter().any(|message| {
+                message.id == id
+                    && message
+                        .attachment
+                        .as_ref()
+                        .is_some_and(crate::model::Attachment::supports_preview)
+            })
+        });
+        let preview = if media {
+            format!("{} preview · ", hint("preview"))
+        } else {
+            String::new()
+        };
+        Line::from(format!(
+            " {preview}{} reply · {} open · {} clear selection",
+            hint("compose"),
+            hint("open"),
+            hint("cancel")
+        ))
     } else {
         let context = if app.focus == Focus::Chats {
             crate::keymap::Context::Chats
@@ -1926,6 +1949,60 @@ mod tests {
     }
 
     #[test]
+    fn visible_composer_click_enters_input_and_resets_with_the_frame() {
+        use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = populated_app();
+        app.active_chat_id = None;
+        render_text_mut(&mut app, 100, 24);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 21,
+            modifiers: Modifiers::empty(),
+        });
+        assert_eq!(app.active_chat_id, Some(7));
+        assert_eq!(app.mode, Mode::Compose);
+        app.update(crate::event::AppEvent::Paste("你好🙂".to_owned()));
+        assert_eq!(app.active_draft().unwrap().value(), "你好🙂");
+        app.handle_action(KeyAction::Escape);
+        render_text_mut(&mut app, 30, 8);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 21,
+            modifiers: Modifiers::empty(),
+        });
+        assert_eq!(app.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn expanded_preview_fits_small_windows_and_keeps_close_visible_on_error() {
+        let mut app = populated_app();
+        app.messages.get_mut(&7).unwrap()[0].attachment = Some(Attachment {
+            source_id: None,
+            kind: AttachmentKind::Photo,
+            file_name: None,
+            mime_type: Some("image/jpeg".to_owned()),
+            size: None,
+            fallback_emoji: None,
+        });
+        app.mode = Mode::Preview;
+        app.selected_message = Some(11);
+        app.status_message = Some("Cannot load image. ".repeat(20));
+        for (width, height) in [(100, 24), (40, 10)] {
+            let output = render_text_mut(&mut app, width, height);
+            assert!(output.contains("<Esc> close"));
+            assert!(output.contains("Cannot load image"));
+            assert_eq!(app.media_slots.len(), 1);
+            let slot = &app.media_slots[0];
+            assert!(slot.viewport.right() <= width);
+            assert!(slot.viewport.bottom() < height);
+            assert_eq!(slot.size.width, width - 2);
+        }
+    }
+
+    #[test]
     fn composer_hint_tracks_the_effective_send_binding() {
         let mut app = populated_app();
         app.mode = Mode::Compose;
@@ -1935,7 +2012,7 @@ mod tests {
         assert!(!text.contains("Enter send"));
         app.mode = Mode::Navigate;
         app.focus = Focus::Chats;
-        assert!(render_text(&app, 100, 24).contains("<Tab> to focus conversation"));
+        assert!(render_text(&app, 100, 24).contains("i to compose"));
     }
 
     #[test]
@@ -2089,7 +2166,7 @@ mod tests {
         assert!(output.contains("Termgram"));
         assert!(output.contains("Alice"));
         assert!(output.contains("hello from the terminal"));
-        assert!(output.contains("<Tab> to focus conversation"));
+        assert!(output.contains("i to compose"));
     }
 
     #[test]

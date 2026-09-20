@@ -1,8 +1,8 @@
 use super::{
-    ACCENT, AppState, Clear, DANGER, Frame, MUTED, Paragraph, Position, Rect, Style, Wrap,
-    centered, clamp_u16, pane_block, truncate_cells,
+    ACCENT, AppState, Clear, DANGER, Frame, MUTED, Paragraph, Position, Rect, Style, centered,
+    clamp_u16, pane_block, truncate_cells,
 };
-use crate::{event::ConnectionStatus, keymap::Context};
+use crate::event::ConnectionStatus;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -106,11 +106,11 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     ));
 }
 
-pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let popup = centered(
         area,
         area.width.min(86),
-        area.height.saturating_sub(2).min(17),
+        area.height.saturating_sub(3).min(28),
     );
     frame.render_widget(Clear, popup);
     let online = app.connection == ConnectionStatus::Online;
@@ -134,7 +134,7 @@ pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 )
             },
         );
-    let lines = vec![
+    let mut lines = vec![
         format!(
             "Account {} · {}",
             app.active_account(),
@@ -163,13 +163,76 @@ pub(super) fn render_status(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             }
         ),
         "Local search reports the persisted cache's coverage separately.".to_owned(),
-        String::new(),
-        format!("{} close", app.keymap.hint(Context::Overlay, "cancel")),
     ];
+    lines.extend(configuration_lines(app));
+    let block = pane_block(" Status ".to_owned(), true);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let wrapped = lines
+        .iter()
+        .flat_map(|line| super::wrap_cells(line, usize::from(inner.width.max(1))))
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    app.configuration.status_scroll = app
+        .configuration
+        .status_scroll
+        .min(wrapped.len().saturating_sub(usize::from(inner.height)));
     frame.render_widget(
-        Paragraph::new(lines.join("\n"))
-            .wrap(Wrap { trim: false })
-            .block(pane_block(" Status ".to_owned(), true)),
-        popup,
+        Paragraph::new(wrapped).scroll((clamp_u16(app.configuration.status_scroll), 0)),
+        inner,
     );
+}
+
+fn configuration_lines(app: &AppState) -> Vec<String> {
+    let state = &app.configuration;
+    let mut lines = vec![
+        String::new(),
+        format!(
+            "Lua configuration: {}",
+            state.path.as_deref().map_or_else(
+                || "not available".to_owned(),
+                |p| crate::model::sanitize_terminal_line(&p.display().to_string())
+            )
+        ),
+        format!(
+            "Configuration revision: {}{}",
+            state.revision,
+            if state.loading { " · reloading" } else { "" }
+        ),
+        "Use :config reload or :reload to apply changes.".to_owned(),
+        format!("Nerd Font icons: {}", app.keymap.nerd_font),
+        format!(
+            "Latency probes: {}",
+            app.keymap.statusline.measures_latency()
+        ),
+        format!(
+            "Terminal media paste: configured {} · supported {}",
+            app.keymap.attachments.terminal_clipboard, state.terminal_clipboard
+        ),
+        format!(
+            "Desktop alerts: {} · {:?} · {:?}",
+            app.keymap.notifications.enabled,
+            app.keymap.notifications.backend,
+            app.keymap.notifications.when
+        ),
+        format!(
+            "Alert previews: {} · sound: {}",
+            app.keymap.notifications.previews, app.keymap.notifications.sound
+        ),
+    ];
+    if let Some(error) = &state.error {
+        lines.push(format!("Last configuration error: {error}"));
+    }
+    if let Some(at) = state.loaded_at {
+        lines.push(format!("Last reload: {} s ago", at.elapsed().as_secs()));
+    }
+    if let Some(chat) = app.active_chat_id {
+        lines.push(format!("Open chat: {chat}"));
+        if let Some(reason) = app.draft_restriction(chat) {
+            lines.push(reason);
+        }
+    }
+    lines.push(String::new());
+    lines.push(crate::version_description(false));
+    lines
 }

@@ -970,7 +970,7 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
     }
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+fn render_help(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let popup = centered(area, area.width.min(72), area.height.min(27));
     frame.render_widget(Clear, popup);
     let block = Block::new()
@@ -983,20 +983,20 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             app.keymap.hint(Context::Overlay, "up"),
             app.keymap.hint(Context::Overlay, "down")
         ));
+    let inner = block.inner(popup);
     let lines = app
-        .keymap
-        .help()
-        .into_iter()
-        .skip(app.help_scroll)
-        .take(usize::from(popup.height.saturating_sub(2)))
+        .help_lines()
+        .iter()
+        .flat_map(|line| wrap_cells(line, usize::from(inner.width.max(1))))
         .map(Line::from)
         .collect::<Vec<_>>();
+    app.help_scroll = app
+        .help_scroll
+        .min(lines.len().saturating_sub(usize::from(inner.height)));
+    frame.render_widget(block, popup);
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .style(Style::default()),
-        popup,
+        Paragraph::new(lines).scroll((clamp_u16(app.help_scroll), 0)),
+        inner,
     );
 }
 

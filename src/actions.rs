@@ -34,6 +34,7 @@ macro_rules! actions {
 
 actions! {
     Quit => ("quit", "Exit Termgram"),
+    ReloadConfig => ("reload_config", "Reload the Lua configuration atomically"),
     CommandLine => ("command", "Browse and run application commands"),
     PasteClipboard => ("paste_clipboard", "Paste clipboard files, an image or text into the draft"),
     Attach => ("attach", "Add files to the current draft"),

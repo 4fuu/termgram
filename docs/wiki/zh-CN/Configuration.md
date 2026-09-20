@@ -5,7 +5,7 @@
 ## 加载配置
 
 把 `config.lua` 放在 `settings.conf` 旁，或用 `TERMGRAM_CONFIG` 指定路径。
-重启后生效，可以从[配置示例](../../../examples/config.lua)开始。配置返回一个 Lua table，
+使用 `:config reload`（或 `:reload`）即可加载修改，无需重启，可以从[配置示例](../../../examples/config.lua)开始。配置返回一个 Lua table，
 支持 table、字符串、数学和 UTF-8 辅助函数，不提供文件系统、进程或插件接口。
 配置错误会显示提示，并继续使用默认快捷键。
 
@@ -23,7 +23,7 @@ return {
 }
 ```
 
-上下文包括 `global`、`chats`、`conversation`、`compose`、`input`（登录与聊天过滤）
+上下文包括 `global`、`chats`、`conversation`、`compose`、`edit`、`forward`、`poll`、`reactions`、`attachments`、`command`、`input`（登录与聊天过滤）
 、`overlay`、`preview`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
 `run = "noop"` 删除绑定。组合键用独立按键列表表示，例如 `{ "g", "w" }`。
 配置会检查前缀冲突。组合键一秒后过期，Escape 可以取消尚未完成的组合键。
@@ -136,7 +136,7 @@ Lua 在凭据 `.env` 之前加载，因此 `TERMGRAM_CONFIG` 必须已存在于�
 更改会话路径不会移动设置或颜色文件。
 
 Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段、动作、别名和同上下文
-前缀冲突会报错；整个无效配置回退为默认值。不提供任意插件 API 或热重载。
+前缀冲突会报错；整个无效配置回退为默认值。不提供任意插件 API。
 
 ## 动作表
 
@@ -206,3 +206,18 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 投票面板快捷键使用 `poll` 上下文，见[投票与测验](Polls.md)。
 
 回应选择器使用 `reactions` 上下文，见[消息回应](Reactions.md)。
+
+
+## 运行中重载
+
+`:config reload` 在后台校验整个文件，通过后一次替换快捷键、别名、颜色、布局、ghost text、
+图标、通知和媒体粘贴设置。文件丢失、无法读取或配置错误时保留当前配置和草稿；`:status`
+保留最近错误和配置路径。用 `return {}` 恢复默认。重载使用启动时选定的路径，不重读环境变量、
+凭据或账号偏好文件。
+
+延迟探测开关会直接传给当前 Telegram worker，无需重连。关闭后丢弃旧观测值，已提交的一次
+RPC 可以完成。MIME 粘贴模式由现有终端 owner 更改；正在进行的终端粘贴会完整取消，
+重载后重新粘贴即可。排队中的通知会取消，以免采用旧的隐私预览策略。
+
+可绑定动作 `reload_config`。`?` 中包含所有有效快捷键与命令；帮助和 `:status` 都支持
+j/k 和鼠标滚轮滚动。

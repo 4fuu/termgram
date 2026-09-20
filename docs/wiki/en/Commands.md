@@ -124,3 +124,8 @@ shows a countdown and allows one pending message or attachment at a time.
 Server rejections explain permission or wait errors and preserve retry content;
 Telegram still checks permission at send time. This viewer does not modify roles,
 ban users, or pay for messages. Notification mute is separate from write restrictions.
+
+
+`:config reload` and `:reload` atomically reload the Lua file. Errors retain the
+current settings. `:status` shows the config path, revision, last error, active
+notification policy, media-paste capability and build identity. See [configuration](Configuration.md).

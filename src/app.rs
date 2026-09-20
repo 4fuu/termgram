@@ -6,6 +6,7 @@ mod attachments;
 pub(crate) mod chat_info;
 mod commands;
 mod composition;
+pub(crate) mod configuration;
 mod deletion;
 mod drafts;
 mod editing;
@@ -313,6 +314,7 @@ pub struct App {
     mode_before_accounts: Mode,
     force_redraw: bool,
     pub keymap: crate::keymap::Keymap,
+    pub configuration: configuration::State,
     pub help_scroll: usize,
     next_pending_id: i32,
     next_history_request_id: u64,
@@ -427,6 +429,7 @@ impl Default for App {
             mode_before_accounts: Mode::Navigate,
             force_redraw: false,
             keymap: crate::keymap::Keymap::default(),
+            configuration: configuration::State::default(),
             help_scroll: 0,
             next_pending_id: -1,
             next_history_request_id: 1,
@@ -728,6 +731,10 @@ impl App {
         }
         match run {
             Action::CommandLine => return self.begin_command(),
+            Action::ReloadConfig => {
+                self.request_config_reload();
+                return Vec::new();
+            }
             Action::Attachments => return self.open_attachments(),
             Action::Mentions => return self.focused_mentions(),
             Action::FirstUnread => return self.first_unread(),
@@ -1017,6 +1024,19 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<TelegramCommand> {
+        if matches!(self.mode, Mode::Status | Mode::Help) {
+            let scroll = if self.mode == Mode::Status {
+                &mut self.configuration.status_scroll
+            } else {
+                &mut self.help_scroll
+            };
+            match mouse.kind {
+                MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => *scroll = scroll.saturating_add(3),
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.mode == Mode::ChatInfo {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
@@ -1360,6 +1380,7 @@ impl App {
                 self.metrics.dc_id = dc_id;
                 self.metrics.latency = latency.filter(|sample| {
                     self.connection == ConnectionStatus::Online
+                        && self.keymap.statusline.measures_latency()
                         && sample.started >= self.metrics.reset_at
                         && !sample.expired()
                 });
@@ -2401,8 +2422,17 @@ impl App {
             Mode::Edit => self.edit_message_input(action),
             Mode::Command => self.edit_command(action),
             Mode::Status => {
-                if action == KeyAction::Escape {
-                    self.mode = Mode::Navigate;
+                match action {
+                    KeyAction::Escape => self.mode = Mode::Navigate,
+                    KeyAction::Up => {
+                        self.configuration.status_scroll =
+                            self.configuration.status_scroll.saturating_sub(1);
+                    }
+                    KeyAction::Down => {
+                        self.configuration.status_scroll =
+                            self.configuration.status_scroll.saturating_add(1);
+                    }
+                    _ => {}
                 }
                 Vec::new()
             }
@@ -2649,10 +2679,7 @@ impl App {
                 return Vec::new();
             }
             KeyAction::Down => {
-                self.help_scroll = self
-                    .help_scroll
-                    .saturating_add(1)
-                    .min(self.keymap.help().len().saturating_sub(1));
+                self.help_scroll = self.help_scroll.saturating_add(1);
                 return Vec::new();
             }
             _ => {}
@@ -2836,6 +2863,7 @@ impl App {
         let drafts_dirty = self.drafts_dirty;
         let mut commands = std::mem::take(&mut self.commands);
         commands.reset_session();
+        let configuration = self.configuration.clone();
         let mut keymap = self.keymap.clone();
         keymap.reset();
         *self = Self {
@@ -2848,6 +2876,7 @@ impl App {
             sidebar_hidden,
             commands,
             keymap,
+            configuration,
             settings,
             settings_path,
             available_update,
@@ -7053,6 +7082,76 @@ mod tests {
                 button_index: 3,
             }]
         );
+    }
+
+    #[test]
+    fn configuration_reload_keeps_state_on_error_and_applies_a_complete_snapshot() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lua");
+        app.configuration.path = Some(path.clone());
+        app.draft_data_mut(1).input.set_value("unsent draft");
+        app.run_binding("command", 1);
+        app.commands.input.set_value("config reload");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.take_config_reload(), Some(path.clone()));
+        assert!(app.take_config_reload().is_none());
+        app.configuration_failed(
+            &crate::keymap::Keymap::reload(&path)
+                .unwrap_err()
+                .to_string(),
+        );
+        assert_eq!(app.configuration.revision, 0);
+        assert!(!app.keymap.nerd_font);
+        fs::write(
+            &path,
+            "return {nerd_font=true, ghost_text='new', statusline={right={'bogus'}}}",
+        )
+        .unwrap();
+        let error = crate::keymap::Keymap::reload(&path).unwrap_err();
+        app.configuration_failed(&error.to_string());
+        assert_eq!(app.keymap.ghost_text, "{send} to send");
+        fs::write(&path, "return {nerd_font=true, ghost_text='new', statusline={right={'dc'}}, notifications={enabled=false}}").unwrap();
+        app.install_configuration(crate::keymap::Keymap::reload(&path).unwrap());
+        assert!(app.keymap.nerd_font);
+        assert_eq!(app.keymap.ghost_text, "new");
+        assert!(!app.keymap.statusline.measures_latency());
+        assert!(!app.keymap.notifications.enabled);
+        assert_eq!(app.configuration.revision, 1);
+        assert!(app.configuration.error.is_none());
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "unsent draft");
+        assert_eq!(app.active_chat_id, Some(1));
+        assert!(
+            app.help_lines()
+                .iter()
+                .any(|line| line.starts_with(":config reload"))
+        );
+        for mode in [Mode::Help, Mode::Status] {
+            app.mode = mode;
+            app.help_scroll = usize::MAX;
+            app.configuration.status_scroll = usize::MAX;
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            if mode == Mode::Help {
+                assert!(text.contains(":quit"));
+            } else {
+                assert!(text.contains("build"));
+            }
+        }
+        app.reset_for_account_switch(2);
+        assert_eq!(app.configuration.path, Some(path));
+        assert_eq!(app.configuration.revision, 1);
     }
 
     #[test]

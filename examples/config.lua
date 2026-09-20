@@ -1,3 +1,4 @@
+-- Apply changes in the app with :config reload (or :reload).
 -- Save as config.lua beside settings.conf, or set TERMGRAM_CONFIG.
 -- Settings are declarative: return a table. See docs/wiki/en/Configuration.md.
 return {

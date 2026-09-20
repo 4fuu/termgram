@@ -343,7 +343,12 @@ fn context(app: &AppState, narrow: bool) -> String {
         );
     }
     if app.mode == Mode::Status {
-        return format!("{} close", app.keymap.hint(Context::Overlay, "cancel"));
+        return format!(
+            "{}/{} scroll · {} close",
+            app.keymap.hint(Context::Overlay, "up"),
+            app.keymap.hint(Context::Overlay, "down"),
+            app.keymap.hint(Context::Overlay, "cancel")
+        );
     }
     if app.mode == Mode::Command {
         let hint = |action| app.keymap.hint(Context::Command, action);

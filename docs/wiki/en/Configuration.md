@@ -5,7 +5,7 @@
 ## Load configuration
 
 Place `config.lua` beside Termgram's `settings.conf`, or set `TERMGRAM_CONFIG` to
-an explicit file path. Restart to load changes. Start with [the example](../../../examples/config.lua).
+an explicit file path. Use `:config reload` (or `:reload`) to load changes without restarting. Start with [the example](../../../examples/config.lua).
 The file returns a Lua table; tables, strings, mathematics and UTF-8 helpers are
 available. Filesystem, process and plugin APIs are deliberately outside this
 configuration interface. Invalid files show an error and retain default bindings.
@@ -24,7 +24,7 @@ return {
 }
 ```
 
-Contexts are `global`, `chats`, `conversation`, `compose`, `command`, `input` (login and chat
+Contexts are `global`, `chats`, `conversation`, `compose`, `edit`, `forward`, `poll`, `reactions`, `attachments`, `command`, `input` (login and chat
 filter), `overlay`, `preview`, `pins`, and `search`. A context takes precedence over global bindings. Rebinding
 an existing key replaces that binding. Use `run = "noop"` to remove a binding.
 A chord is a list of individual keys, such as `{ "g", "w" }`; ambiguous prefixes
@@ -160,7 +160,7 @@ Changing the session path does not move settings or colors.
 Lua source is limited to 64 KiB, an 8 MiB VM budget, and approximately one million
 instructions. Unknown configuration fields, actions, aliases and ambiguous
 same-context prefixes are reported; the entire invalid configuration falls back
-to defaults. There is no arbitrary plugin API or live reload.
+to defaults at startup. A failed `:config reload` keeps the previous configuration. There is no arbitrary plugin API.
 
 ## Action reference
 
@@ -237,3 +237,22 @@ for backends, previews, quiet delivery and grouping. This is separate from the
 Poll panel keys use the `poll` context; see [Polls](Polls.md).
 
 Reaction picker keys use the `reactions` context; see [Reactions](Reactions.md).
+
+
+## Reload while running
+
+`:config reload` validates the whole file on a background worker, then replaces
+bindings, aliases, colors, layout, ghost text, icons, notifications and media-paste
+settings together. A missing, unreadable or invalid file leaves the current
+configuration and drafts intact; `:status` retains the last error and config path.
+Use `return {}` to restore defaults. The command reloads the path chosen at startup;
+it does not reread environment variables, credentials or account preferences.
+
+Latency probe changes reach the current Telegram worker without reconnecting.
+Disabling a probe suppresses its old result; one already submitted RPC may finish.
+The existing terminal owner changes MIME-paste mode. An in-progress terminal paste
+is cancelled cleanly; repeat the paste after reloading. Queued alerts are cancelled
+so an old preview policy is not used after changing notification settings.
+
+`reload_config` is the bindable action. The `?` view includes effective shortcuts
+and all commands, and both help and `:status` support j/k and mouse-wheel scrolling.

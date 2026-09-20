@@ -11,6 +11,7 @@ pub enum Kind {
     Open,
     Join,
     Info,
+    Config,
     Folder,
     Account,
     Search,
@@ -72,6 +73,7 @@ impl Spec {
         match &self.kind {
             Kind::Action(action) => Some(action.clone()),
             Kind::Chat | Kind::Open | Kind::Join | Kind::Info | Kind::Status => None,
+            Kind::Config => Some(Action::ReloadConfig),
             Kind::Help => Some(Action::CommandLine),
             Kind::Folder => Some(Action::FolderNext),
             Kind::Account => Some(Action::Accounts),
@@ -107,6 +109,22 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "config",
+        None,
+        "reload",
+        Kind::Config,
+        None,
+        "Validate and reload Lua settings; keep the previous configuration on error"
+    ),
+    command!(
+        "reload",
+        None,
+        "",
+        Kind::Action(Action::ReloadConfig),
+        None,
+        ""
+    ),
     command!(
         "info",
         None,

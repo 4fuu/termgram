@@ -199,6 +199,14 @@ impl Broker {
         );
     }
 
+    pub fn configuration_changed(&mut self, app: &mut AppState) {
+        self.fail(
+            app,
+            "Terminal paste cancelled by configuration reload; paste again".to_owned(),
+        );
+        self.outbound.clear();
+    }
+
     pub fn cancel(&mut self) {
         self.pending = None;
         self.outbound.clear();
@@ -498,6 +506,21 @@ mod tests {
             matches!(&result.input, Input::Terminal(payload) if payload.mime == "image/png" && &*payload.bytes == b"encoded image")
         );
         assert!(broker.pending.is_none());
+        app = AppState::new();
+        app.screen = Screen::Main;
+        app.account_user_id = Some(100);
+        app.active_chat_id = Some(3);
+        app.focus = Focus::Conversation;
+        app.mode = Mode::Compose;
+        broker.event(&mut app, read("", ".", b"image/png"));
+        let obsolete = broker.pending.as_ref().unwrap().id.clone();
+        broker.configuration_changed(&mut app);
+        assert!(!app.preparing_attachments());
+        assert!(
+            broker
+                .event(&mut app, read(&obsolete, "image/png", b"old"))
+                .is_empty()
+        );
     }
 
     #[test]

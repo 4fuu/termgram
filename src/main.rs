@@ -17,6 +17,7 @@ use tokio::time::{sleep, timeout};
 use yazi_term::event::Event;
 
 enum RuntimeEvent {
+    Configuration(Result<termgram::keymap::Keymap, String>),
     Terminal(Option<io::Result<Event>>),
     Network(Box<Option<NetworkEvent>>),
     UpdateCheck {
@@ -92,10 +93,14 @@ async fn main() -> Result<()> {
                 .ok()
                 .map(|path| path.with_file_name("config.lua"))
         });
+    app.configuration.path.clone_from(&lua_path);
     if let Some(path) = lua_path {
         match termgram::keymap::Keymap::load(&path) {
             Ok(keymap) => app.keymap = keymap,
             Err(error) => {
+                app.configuration.error = Some(termgram::model::sanitize_terminal_line(&format!(
+                    "{error:#}"
+                )));
                 startup_warning = Some(format!("{error:#}; using default bindings"));
             }
         }
@@ -112,37 +117,40 @@ async fn main() -> Result<()> {
     let mut update_check = spawn_update_check(settings);
     let mut update_preferences = settings;
 
-    let (mut commands, mut events, mut worker, base_config, mut active_chat) = match Config::load()
-        .map(|mut config| {
+    let mut measurement = None;
+    let (mut commands, mut events, mut worker, mut base_config, mut active_chat) =
+        match Config::load().map(|mut config| {
             config.measure_latency = app.keymap.statusline.measures_latency();
             config
         }) {
-        Ok(config) => match config.for_account(settings.active_account) {
-            Ok(selected) => {
-                let TelegramHandle {
-                    commands,
-                    events,
-                    task,
-                    active_chat,
-                } = telegram::spawn(selected);
-                (
-                    Some(commands),
-                    Some(events),
-                    Some(task),
-                    Some(config),
-                    Some(active_chat),
-                )
-            }
+            Ok(config) => match config.for_account(settings.active_account) {
+                Ok(selected) => {
+                    let TelegramHandle {
+                        measure_latency,
+                        commands,
+                        events,
+                        task,
+                        active_chat,
+                    } = telegram::spawn(selected);
+                    measurement = Some(measure_latency);
+                    (
+                        Some(commands),
+                        Some(events),
+                        Some(task),
+                        Some(config),
+                        Some(active_chat),
+                    )
+                }
+                Err(error) => {
+                    app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
+                    (None, None, None, Some(config), None)
+                }
+            },
             Err(error) => {
                 app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
-                (None, None, None, Some(config), None)
+                (None, None, None, None, None)
             }
-        },
-        Err(error) => {
-            app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
-            (None, None, None, None, None)
-        }
-    };
+        };
 
     let mut draft_writer = base_config.clone().map(termgram::drafts::Writer::spawn);
     let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
@@ -151,8 +159,25 @@ async fn main() -> Result<()> {
     let mut notifications = termgram::notifications::delivery::Dispatcher::default();
     let mut redraw = true;
     let mut runtime_error: Option<anyhow::Error> = None;
+    let mut configuration_load = None;
 
     loop {
+        if let Some(path) = app.take_config_reload() {
+            configuration_load = Some(tokio::task::spawn_blocking(move || {
+                termgram::keymap::Keymap::reload(&path).map_err(|e| format!("{e:#}"))
+            }));
+        }
+        if let Some(measurement) = &measurement {
+            let enabled = app.keymap.statusline.measures_latency();
+            measurement.send_if_modified(|current| {
+                let changed = *current != enabled;
+                *current = enabled;
+                changed
+            });
+        }
+        if let Some(config) = &mut base_config {
+            config.measure_latency = app.keymap.statusline.measures_latency();
+        }
         if let Err(error) =
             terminal.set_clipboard_enabled(app.keymap.attachments.terminal_clipboard)
         {
@@ -160,6 +185,7 @@ async fn main() -> Result<()> {
                 Some(anyhow::Error::from(error).context("terminal clipboard mode failed"));
             break;
         }
+        app.configuration.terminal_clipboard = terminal.clipboard_supported();
         clipboard.configure(terminal.clipboard_supported(), &mut app);
         if let Some(writer) = &draft_writer
             && let Some(snapshot) = app.take_draft_snapshot()
@@ -210,6 +236,7 @@ async fn main() -> Result<()> {
         let runtime_event = if let Some(network) = events.as_mut() {
             tokio::select! {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
+                result = wait_for_configuration(&mut configuration_load) => RuntimeEvent::Configuration(result),
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
@@ -222,6 +249,7 @@ async fn main() -> Result<()> {
         } else {
             tokio::select! {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
+                result = wait_for_configuration(&mut configuration_load) => RuntimeEvent::Configuration(result),
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
@@ -350,6 +378,27 @@ async fn main() -> Result<()> {
                 app.status_message = Some(error);
                 Vec::new()
             }
+            RuntimeEvent::Configuration(result) => {
+                configuration_load = None;
+                match result {
+                    Ok(keymap) => {
+                        if let Err(error) =
+                            terminal.set_clipboard_enabled(keymap.attachments.terminal_clipboard)
+                        {
+                            let _ = terminal
+                                .set_clipboard_enabled(app.keymap.attachments.terminal_clipboard);
+                            app.configuration_failed(&format!(
+                                "Could not apply terminal clipboard setting: {error}"
+                            ));
+                        } else {
+                            clipboard.configuration_changed(&mut app);
+                            app.install_configuration(keymap);
+                        }
+                    }
+                    Err(error) => app.configuration_failed(&error),
+                }
+                Vec::new()
+            }
             RuntimeEvent::Tick => app.update(AppEvent::Tick),
             RuntimeEvent::Notification(activity) => {
                 notifications.activity(activity, &mut app);
@@ -386,6 +435,7 @@ async fn main() -> Result<()> {
                 &mut worker,
                 &mut pending_commands,
                 &mut active_chat,
+                &mut measurement,
             )
             .await
             {
@@ -615,6 +665,17 @@ async fn wait_for_animation_tick(enabled: bool) {
     }
 }
 
+async fn wait_for_configuration(
+    task: &mut Option<tokio::task::JoinHandle<Result<termgram::keymap::Keymap, String>>>,
+) -> Result<termgram::keymap::Keymap, String> {
+    match task {
+        Some(task) => task
+            .await
+            .map_err(|e| format!("Configuration loader failed: {e}"))?,
+        None => std::future::pending().await,
+    }
+}
+
 async fn wait_for_draft_error(writer: &mut Option<termgram::drafts::Writer>) -> String {
     match writer {
         Some(writer) => writer.next_error().await,
@@ -677,6 +738,7 @@ fn reject_overflow(app: &mut AppState, command: TelegramCommand) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn restart_telegram_worker(
     base_config: &Config,
     account: u8,
@@ -685,6 +747,7 @@ async fn restart_telegram_worker(
     worker: &mut Option<tokio::task::JoinHandle<()>>,
     pending: &mut VecDeque<TelegramCommand>,
     active_chat: &mut Option<tokio::sync::watch::Sender<Option<termgram::model::ChatId>>>,
+    measurement: &mut Option<tokio::sync::watch::Sender<bool>>,
 ) -> Result<()> {
     pending.clear();
     if let Some(sender) = commands.take() {
@@ -700,11 +763,13 @@ async fn restart_telegram_worker(
 
     let selected = base_config.for_account(account)?;
     let TelegramHandle {
+        measure_latency,
         commands: next_commands,
         events: next_events,
         task,
         active_chat: next_active,
     } = telegram::spawn(selected);
+    *measurement = Some(measure_latency);
     *active_chat = Some(next_active);
     *commands = Some(next_commands);
     *events = Some(next_events);

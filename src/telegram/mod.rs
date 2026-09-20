@@ -63,6 +63,7 @@ const MAX_QR_REFRESH_DELAY: Duration = Duration::from_secs(120);
 const QR_RESTART_DELAY: Duration = Duration::from_secs(1);
 
 pub struct TelegramHandle {
+    pub measure_latency: tokio::sync::watch::Sender<bool>,
     pub commands: mpsc::Sender<TelegramCommand>,
     pub events: mpsc::Receiver<NetworkEvent>,
     pub task: tokio::task::JoinHandle<()>,
@@ -178,6 +179,7 @@ enum TransferCompletion {
 
 #[must_use]
 pub fn spawn(config: Config) -> TelegramHandle {
+    let (measure_tx, measure_rx) = tokio::sync::watch::channel(config.measure_latency);
     let (active_tx, active_rx) = tokio::sync::watch::channel(None);
     let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
@@ -187,6 +189,7 @@ pub fn spawn(config: Config) -> TelegramHandle {
             command_rx,
             event_tx.clone(),
             active_rx,
+            measure_rx,
         ))
         .await
         {
@@ -196,6 +199,7 @@ pub fn spawn(config: Config) -> TelegramHandle {
         }
     });
     TelegramHandle {
+        measure_latency: measure_tx,
         active_chat: active_tx,
         commands: command_tx,
         events: event_rx,
@@ -219,6 +223,7 @@ async fn run(
     events: mpsc::Sender<NetworkEvent>,
     mut bootstrap: local::Bootstrap,
     mut active_chat: tokio::sync::watch::Receiver<Option<ChatId>>,
+    measure_latency: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     config.prepare_session_dir()?;
     events
@@ -286,7 +291,7 @@ async fn run(
         events.send(NetworkEvent::AccountIdentity { user_id }).await?;
         let user_name = safe_name(Some(&me.full_name()), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
-        observations.spawn(telemetry::observe(client.clone(), session.clone(), events.clone(), config.measure_latency));
+        observations.spawn(telemetry::observe(client.clone(), session.clone(), events.clone(), measure_latency));
 
         let mut media_root = config.session_path.as_os_str().to_os_string();
         media_root.push(".media");

@@ -483,13 +483,30 @@ impl Keymap {
     /// Returns a recoverable configuration error. No partially loaded bindings
     /// are installed, and execution/memory limits keep startup responsive.
     pub fn load(path: &Path) -> Result<Self> {
-        let source = match std::fs::read_to_string(path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
+        match Self::reload(path) {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(Self::default())
             }
-            Err(error) => return Err(error.into()),
-        };
+            result => result,
+        }
+    }
+
+    /// # Errors
+    /// Reload is strict: missing, unreadable or invalid files preserve the old snapshot.
+    pub fn reload(path: &Path) -> Result<Self> {
+        use std::io::Read as _;
+        anyhow::ensure!(
+            std::fs::metadata(path)?.is_file(),
+            "Lua configuration must be a regular file"
+        );
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("could not open {}", path.display()))?;
+        let mut source = String::new();
+        file.take(64 * 1024 + 1).read_to_string(&mut source)?;
         Self::parse(&source)
             .with_context(|| format!("invalid Lua configuration at {}", path.display()))
     }

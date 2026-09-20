@@ -26,6 +26,7 @@ pub(super) async fn serve(
     mut commands: mpsc::Receiver<TelegramCommand>,
     events: mpsc::Sender<NetworkEvent>,
     active_chat: tokio::sync::watch::Receiver<Option<super::ChatId>>,
+    measure_latency: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     config.prepare_session_dir()?;
     let mut cache_path = config.session_path.as_os_str().to_os_string();
@@ -75,6 +76,7 @@ pub(super) async fn serve(
         network_events,
         bootstrap,
         active_chat,
+        measure_latency,
     ));
     let mut search = crate::search::Worker::new(std::path::PathBuf::from(cache_path));
     let mut pending = VecDeque::new();

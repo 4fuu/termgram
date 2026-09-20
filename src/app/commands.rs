@@ -57,6 +57,10 @@ impl State {
         };
     }
 
+    pub(super) fn invalidate_completion(&mut self) {
+        self.edited();
+    }
+
     fn edited(&mut self) {
         self.completion = None;
         self.selected = None;
@@ -305,6 +309,7 @@ impl App {
         self.command_argument_candidates(spec, argument)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn command_argument_candidates(&self, spec: &Spec, argument: &str) -> Vec<Candidate> {
         let query = argument.trim().to_lowercase();
         let mut candidates = Vec::new();
@@ -320,6 +325,11 @@ impl App {
             }
         };
         match spec.kind {
+            Kind::Config => add(
+                "reload".to_owned(),
+                "reload".to_owned(),
+                "Apply a validated Lua configuration".to_owned(),
+            ),
             Kind::Search => Self::add_command_search(&mut add),
             Kind::Forward => {
                 add(
@@ -685,6 +695,9 @@ impl App {
             None
         };
         match spec.kind {
+            Kind::Config if argument != "reload" => {
+                return self.command_error("Usage: :config reload");
+            }
             Kind::Copy if !matches!(argument, "" | "text" | "link") => {
                 return self.command_error(format!("Usage: :{}", spec.usage()));
             }
@@ -767,6 +780,7 @@ impl App {
                 });
                 commands
             }
+            Kind::Config => self.run_action(&Action::ReloadConfig, 1),
             Kind::Info => self.begin_chat_info(origin.chat.expect("validated target")),
             Kind::Join => self.begin_invite(invite.expect("validated invite")),
             Kind::Chat => self.open_chat_by_id(chat.expect("validated chat")),
@@ -893,6 +907,7 @@ impl App {
                 Vec::new()
             }
             Kind::Status => {
+                self.configuration.status_scroll = 0;
                 self.mode = Mode::Status;
                 Vec::new()
             }

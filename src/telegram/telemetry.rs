@@ -12,10 +12,11 @@ pub(super) async fn observe(
     client: Client,
     session: Arc<SqliteSession>,
     events: mpsc::Sender<NetworkEvent>,
-    measure_latency: bool,
+    mut measure_latency: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut ping_id = 0_i64;
     loop {
+        let enabled = *measure_latency.borrow_and_update();
         let dc_id = session.home_dc_id().ok();
         // Publish DC without waiting for the optional measurement.
         if events
@@ -28,8 +29,11 @@ pub(super) async fn observe(
         {
             return;
         }
-        if !measure_latency {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+        if !enabled {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(60)) => {},
+                changed = measure_latency.changed() => { if changed.is_err() { return; } },
+            }
             continue;
         }
         let started = Instant::now();
@@ -40,7 +44,7 @@ pub(super) async fn observe(
         let result = tokio::time::timeout(Duration::from_secs(5), &mut invoke).await;
         let timed_out = result.is_err();
         let current_dc = session.home_dc_id().ok();
-        let latency = matches!(result, Ok(Ok(_)))
+        let latency = (matches!(result, Ok(Ok(_))) && *measure_latency.borrow())
             .then_some(Latency {
                 started,
                 elapsed: started.elapsed(),
@@ -63,6 +67,9 @@ pub(super) async fn observe(
         if timed_out {
             let _ = invoke.await;
         }
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_secs(60)) => {},
+            changed = measure_latency.changed() => { if changed.is_err() { return; } },
+        }
     }
 }

@@ -6,7 +6,9 @@
 
 在打开的聊天中输入 `:attach /绝对路径`。多文件使用当前平台的参数引号规则，
 也支持本机 `file:` URL。路径直接复用 Yazi 的解析器，不执行 shell、不展开变量。
-默认情况下，会话中的终端粘贴会进入输入框作为文字，文件路径也如此。
+普通文字直接进入输入框。以图片扩展名结尾的粘贴路径会在后台检查，只有所有路径
+都能读取图片头时才加入草稿；支持引号、空格和本机文件 URL。设
+`attachments.auto_attach_images = false` 可将图片路径也保留为文字。
 
 文件在后台加入发起操作的聊天草稿，此时不会上传。输入框显示附件数量。
 用 `:attachments` 或在输入框按 Ctrl-O 查看文件名、大小和发送格式，点击行或用 j/k 选择。
@@ -30,7 +32,7 @@
 原文件缺失或发生变化时，会在上传前报错。更改过的文件需要重新添加、重新检查。
 传输结束或取消后自动删除上传副本。在准备期间切换聊天，结果仍加入最初的聊天草稿。
 
-如需把识别到的粘贴路径自动加入草稿，在 Lua 中启用：
+如需把其他类型的粘贴文件路径也自动加入草稿，在 Lua 中启用：
 
 ```lua
 attachments = { auto_attach_paths = true },
@@ -41,14 +43,16 @@ attachments = { auto_attach_paths = true },
 
 ## 剪贴板粘贴
 
-在会话或输入框使用 `:paste`、Ctrl-V 或 Ctrl-Alt-V。附件列表也支持这两个快捷键，
-`?` 可查看当前生效的绑定。未检测到终端 MIME 能力时，优先读取原生文件列表，在草稿数量限制内保留各个原件；
-没有文件列表时，把图片保存为 PNG 草稿文件，普通文字插入保存的光标位置。
+在会话或输入框使用 `:paste`、Ctrl-V、Alt-V 或 Ctrl-Alt-V。终端转发 Cmd-V 时也能
+直接处理，Lua 按键写法为 `<D-v>`。附件列表同样支持这些快捷键，`?` 查看实际绑定。
+本机快捷键优先读取系统剪贴板：先取可读取的文件，再取图片数据，最后取文字。
+文件列表无法读取时会尝试其图片表示。位图保存为 PNG 草稿文件。
 这些操作不会发送；仍需回到输入框主动发送。Lua 动作为 `paste_clipboard`。
 
 ```lua
 attachments = {
   auto_attach_paths = false,
+  auto_attach_images = true,
   clipboard_as_photo = true,
   terminal_clipboard = true,
 },
@@ -72,15 +76,18 @@ attachments = {
 | WSL | 原生优先，失败后使用 Windows PowerShell 和 `wslpath`，子进程有输出限制与四秒超时 |
 | SSH / 无桌面剪贴板 | 检测到 OSC 5522 时可由终端提供图片和文字；否则用 `:attach` 添加当前主机可读取的文件 |
 
-Cmd-V、Ctrl-Shift-V 通常由终端处理，可能只传入文字路径，也可能不传入图片。
-终端截获快捷键时可用 `:paste`。读取 SSH 主机的原生剪贴板不会读取本地桌面的剪贴板。
+macOS 上 Ghostty 1.3.1 的默认 Cmd-V 在剪贴板没有文字或路径时会转发按键，
+Termgram 随后读取系统剪贴板。Finder 复制的文件以转义路径传入，由图片路径识别处理。
+行为依据：[Ghostty 剪贴板回调](https://github.com/ghostty-org/ghostty/blob/v1.3.1/macos/Sources/Ghostty/Ghostty.App.swift)
+和[路径转换](https://github.com/ghostty-org/ghostty/blob/v1.3.1/macos/Sources/Helpers/Extensions/NSPasteboard%2BExtension.swift)。
+其他终端或自定义绑定可能吞掉 Cmd-V 且不发送事件，此时使用 Ctrl-V、Alt-V 或 `:paste`。
 各平台能力取决于桌面会话及其权限；不会为此新增终端输入读取器。
 
 ## 终端 MIME 粘贴
 
-终端明确报告支持 OSC 5522 时，`:paste` 和剪贴板快捷键改为请求终端的剪贴板；
-终端自己的粘贴快捷键也可以传入 MIME 粘贴事件。设置
-`attachments.terminal_clipboard = false` 可使用原生读取和普通终端文字粘贴。
+SSH 环境中，检测到 OSC 5522 支持时，`:paste` 和剪贴板快捷键请求终端所在主机
+的剪贴板；本机快捷键优先读系统剪贴板。两种环境都可接收终端主动传入的 MIME 粘贴事件。
+设置 `attachments.terminal_clipboard = false` 可关闭 MIME 协商，保留原生读取和普通文字粘贴。
 
 类型优先级为文件列表、PNG/JPEG/WebP/GIF、UTF-8 纯文本。图片保留原始编码字节，
 作为草稿拥有的文件保存，不统一转为 PNG；GIF 以原文件发送。图片编码上限 16 MiB，

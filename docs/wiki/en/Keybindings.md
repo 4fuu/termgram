@@ -116,4 +116,4 @@ the attachment, so Enter then activates that media action.
 
 Composer Ctrl-O opens attachment review. Its a/p/d/o/O/i keys add, choose photo or file, remove, preview, reveal and edit the caption. See [Attachments](Attachments.md).
 
-Ctrl-V / Ctrl-Alt-V paste native clipboard files, images or text in the conversation, composer and attachment review. `:paste` is the command equivalent; no paste sends automatically.
+Cmd-V / Ctrl-V / Alt-V / Ctrl-Alt-V paste native clipboard files, images or text in the conversation, composer and attachment review. `:paste` is the command equivalent; no paste sends automatically.

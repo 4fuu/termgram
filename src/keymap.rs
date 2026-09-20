@@ -451,7 +451,7 @@ impl Default for Keymap {
             Context::Conversation,
             Context::Attachments,
         ] {
-            for key in ["<C-v>", "<C-A-v>"] {
+            for key in ["<C-v>", "<C-A-v>", "<A-v>", "<D-v>"] {
                 result
                     .insert(BindingSpec {
                         context,

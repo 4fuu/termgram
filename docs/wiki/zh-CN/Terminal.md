@@ -38,4 +38,4 @@ TERMGRAM_TMUX_PASSTHROUGH=1 tg
 
 ## 剪贴板
 
-Ctrl-V / Ctrl-Alt-V 和 `:paste` 在检测到支持时使用 OSC 5522，否则由 arboard 在后台读取系统剪贴板。MIME 粘贴复用 Yazi 解析器与格式化器，用请求 ID 区分操作并限制传输体积；终端所有者负责开启和恢复协商后的模式。可用 `attachments.terminal_clipboard = false` 关闭，普通文字粘贴仍可用。平台、体积限制与 WSL/SSH 行为见[附件](Attachments.md)。
+Cmd-V（终端转发时）、Ctrl-V、Alt-V、Ctrl-Alt-V 和 `:paste` 在本机由 arboard 在后台读取系统剪贴板，SSH 环境检测到 OSC 5522 时则请求终端所在主机的剪贴板。MIME 粘贴复用 Yazi 解析器与格式化器，用请求 ID 区分操作并限制传输体积；终端所有者负责开启和恢复协商后的模式。可用 `attachments.terminal_clipboard = false` 关闭，普通文字粘贴仍可用。平台、体积限制与 WSL/SSH 行为见[附件](Attachments.md)。

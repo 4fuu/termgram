@@ -45,4 +45,4 @@ licenses, and small adaptations are recorded in [vendor provenance](../../../ven
 
 ## Clipboard
 
-Ctrl-V / Ctrl-Alt-V and `:paste` use OSC 5522 when the terminal reports support, or arboard on a background thread otherwise. Terminal MIME paste reuses Yazi’s parser and formatter, with request IDs and bounded transfers. The terminal owner enables and restores the negotiated mode. Disable it with `attachments.terminal_clipboard = false`. Ordinary text paste remains supported. Backend details, limits and WSL/SSH behavior: [Attachments](Attachments.md).
+Cmd-V (when forwarded), Ctrl-V, Alt-V, Ctrl-Alt-V and `:paste` use arboard on a background thread locally. Over SSH they request the terminal clipboard when OSC 5522 is supported. Terminal MIME paste reuses Yazi’s parser and formatter, with request IDs and bounded transfers. The terminal owner enables and restores the negotiated mode. Disable it with `attachments.terminal_clipboard = false`. Ordinary text paste remains supported. Backend details, limits and WSL/SSH behavior: [Attachments](Attachments.md).

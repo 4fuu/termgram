@@ -639,7 +639,10 @@ impl App {
                 if ((self.mode == Mode::Invite && run == Action::Open)
                     || (self.mode == Mode::Reactions
                         && matches!(run, Action::Open | Action::Send | Action::ClearReactions))
-                    || matches!(run, Action::Reveal | Action::ToggleSidebar)
+                    || matches!(
+                        run,
+                        Action::Reveal | Action::ToggleSidebar | Action::PasteClipboard
+                    )
                     || (matches!(self.mode, Mode::ForwardPrompt | Mode::Poll)
                         && run == Action::Send))
                     && key.kind == yazi_term::event::KeyEventKind::Repeat
@@ -2292,6 +2295,11 @@ impl App {
         {
             if self.keymap.attachments.auto_attach_paths {
                 return self.prepare_attachments(normalized, true);
+            }
+            if self.keymap.attachments.auto_attach_images
+                && crate::staging::image_path_candidate(&normalized)
+            {
+                return self.paste_image_paths(normalized);
             }
             self.mode = Mode::Compose;
         }
@@ -6917,6 +6925,85 @@ mod tests {
         app.handle_action(KeyAction::Tab);
         assert_eq!(app.focus, Focus::Conversation);
         assert!(app.narrow_conversation);
+    }
+
+    #[test]
+    fn clipboard_keys_and_command_prepare_without_sending() {
+        use yazi_term::event::{KeyCode, KeyEventKind};
+        for modifiers in [
+            Modifiers::SUPER,
+            Modifiers::CONTROL,
+            Modifiers::ALT,
+            Modifiers::CONTROL | Modifiers::ALT,
+        ] {
+            let mut app = ready_app();
+            open_first(&mut app);
+            let mut key = KeyEvent::new(KeyCode::Char('v'), modifiers);
+            let commands = app.handle_key(&key);
+            assert!(
+                matches!(commands.as_slice(), [TelegramCommand::PrepareAttachments(request)]
+                if request.input == crate::staging::Input::Clipboard && request.key.chat == 1)
+            );
+            assert_eq!(app.mode, Mode::Compose);
+            key.kind = KeyEventKind::Repeat;
+            assert!(app.handle_key(&key).is_empty());
+        }
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.run_binding("command", 1);
+        app.commands.input.set_value("paste");
+        assert!(matches!(app.run_binding("open", 1).as_slice(),
+            [TelegramCommand::PrepareAttachments(request)] if request.input == crate::staging::Input::Clipboard));
+    }
+
+    #[test]
+    fn pasted_images_require_image_headers_and_keep_the_captured_draft() {
+        use image::ImageEncoder;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("screen 图片 name.png");
+        image::codecs::png::PngEncoder::new(fs::File::create(&path).unwrap())
+            .write_image(&[120; 16], 2, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.keymap.attachments.clipboard_as_photo = false;
+        let pasted = format!("'{}'", path.display());
+        let commands = app.update(AppEvent::Paste(pasted.clone()));
+        let [TelegramCommand::PrepareAttachments(request)] = commands.as_slice() else {
+            panic!("prepare image")
+        };
+        assert!(
+            matches!(&request.input, crate::staging::Input::ImagePaths(value) if value == &pasted)
+        );
+        // Regular typing/pasting remains available while preparation runs.
+        app.update(AppEvent::Paste("caption".to_owned()));
+        app.active_chat_id = Some(2);
+        let prepared = crate::staging::prepare(request).unwrap();
+        assert_eq!(prepared.attachments.len(), 1);
+        assert!(!prepared.attachments[0].as_photo);
+        app.handle_network(NetworkEvent::AttachmentsPrepared {
+            key: request.key,
+            request_id: request.id,
+            result: Ok(prepared),
+        });
+        assert_eq!(app.draft_data(1).unwrap().attachments.len(), 1);
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "caption");
+        assert!(app.draft_attachments().is_empty());
+        let invalid = directory.path().join("not-an-image.png");
+        fs::write(&invalid, "ordinary file contents").unwrap();
+        let fallback = crate::staging::prepare_image_paste(invalid.to_str().unwrap(), request);
+        assert_eq!(fallback.text.as_deref(), invalid.to_str());
+        assert!(fallback.attachments.is_empty());
+        let file_url = url::Url::from_file_path(&path).unwrap().to_string();
+        assert_eq!(
+            crate::staging::prepare_image_paste(&file_url, request)
+                .attachments
+                .len(),
+            1
+        );
+        app.keymap.attachments.auto_attach_images = false;
+        assert!(app.update(AppEvent::Paste(pasted.clone())).is_empty());
+        assert_eq!(app.active_draft().unwrap().value(), pasted);
     }
 
     #[test]

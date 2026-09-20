@@ -163,13 +163,28 @@ fn action_style(current: bool) -> Style {
 }
 
 fn header(message: &Message, width: usize, selected: bool) -> Vec<Line<'static>> {
-    wrap_cells(&message.sender, width)
+    let label = message.sender_username.as_ref().map_or_else(
+        || message.sender.clone(),
+        |username| format!("{} · @{username}", message.sender),
+    );
+    super::wrapping::ranges(&label, width, true)
         .into_iter()
-        .map(|part| {
-            Line::from(vec![
-                gutter(selected),
-                Span::styled(part, Style::default().fg(author_color(message)).bold()),
-            ])
+        .map(|row| {
+            let split = message.sender.len().clamp(row.start, row.end);
+            let mut spans = vec![gutter(selected)];
+            if row.start < split {
+                spans.push(Span::styled(
+                    label[row.start..split].to_owned(),
+                    Style::default().fg(author_color(message)).bold(),
+                ));
+            }
+            if split < row.end {
+                spans.push(Span::styled(
+                    label[split..row.end].to_owned(),
+                    Style::default().fg(ACCENT),
+                ));
+            }
+            Line::from(spans)
         })
         .collect()
 }

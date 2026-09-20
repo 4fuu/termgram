@@ -2983,6 +2983,7 @@ impl App {
             pinned: false,
             id: local_id,
             chat_id,
+            sender_username: None,
             sender: "You".to_owned(),
             reply_to: reply_to.clone(),
             text: text.clone(),
@@ -3039,6 +3040,7 @@ impl App {
                 pinned: false,
                 id: local_id,
                 chat_id,
+                sender_username: None,
                 sender: "You".to_owned(),
                 reply_to: item_reply.clone(),
                 text: item_caption.clone(),
@@ -4553,6 +4555,11 @@ impl App {
 
 fn sanitize_message(message: &mut Message) {
     message.sender = sanitize_terminal_line(&message.sender);
+    message.sender_username = message
+        .sender_username
+        .take()
+        .map(|name| sanitize_terminal_line(&name))
+        .filter(|name| !name.is_empty());
     message.text = sanitize_terminal_text(&message.text);
     if let Some(reply) = &mut message.reply_to {
         reply.sender = reply
@@ -4950,6 +4957,7 @@ mod tests {
             pinned: false,
             id,
             chat_id,
+            sender_username: None,
             sender: if outgoing { "Me" } else { "Them" }.to_owned(),
             reply_to: None,
             text: text.to_owned(),
@@ -7967,6 +7975,7 @@ mod tests {
             pinned: false,
             id: -1,
             chat_id: 1,
+            sender_username: None,
             sender: "You".to_owned(),
             reply_to: None,
             text: String::new(),

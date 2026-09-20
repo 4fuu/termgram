@@ -126,6 +126,9 @@ pub struct Message {
     pub id: i32,
     pub chat_id: ChatId,
     pub sender: String,
+    /// Public handle without @, when supplied by Telegram; absent in older caches.
+    #[serde(default)]
+    pub sender_username: Option<String>,
     /// The message this one replies to, when Telegram exposes a stable target.
     ///
     /// `sender` is deliberately optional: resolving the target author must not

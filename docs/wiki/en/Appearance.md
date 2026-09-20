@@ -2,6 +2,11 @@
 
 [简体中文](../zh-CN/Appearance.md) · [Guide](Home.md)
 
+Message headers show the full display name and `@username` when Telegram supplies
+a public handle. They wrap on narrow terminals instead of truncating either name.
+The handle is cached with the message; older cached records gain it when their
+history is refreshed. Accounts without a public username keep their display name.
+
 Press `c` on a chat, or in its conversation, to choose its color. Press `C` in the
 chat list to color the current folder. Up/Down selects a named terminal color;
 Enter applies it and Esc cancels. The list marker and selection styling remain

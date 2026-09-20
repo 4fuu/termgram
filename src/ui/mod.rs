@@ -1656,10 +1656,12 @@ mod tests {
         app.sidebar_hidden = true;
         let mut first = app.active_messages()[0].clone();
         first.sender = "Long author name with 中文 and a complete ApellidoFinal".to_owned();
+        first.sender_username = Some("complete_username_1234567890".to_owned());
         first.text = "First body".to_owned();
         let mut second = first.clone();
         second.id += 1;
         second.sender = "Second author".to_owned();
+        second.sender_username = None;
         second.text = "Second body".to_owned();
         app.messages.insert(7, vec![first, second]);
         for background in [[25, 28, 35], [240, 240, 240]] {
@@ -1671,6 +1673,10 @@ mod tests {
                 .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
                 .collect();
             assert!(rows.iter().any(|line| line.contains("ApellidoFinal")));
+            assert!(
+                rows.iter()
+                    .any(|line| line.contains("@complete_username_1234567890"))
+            );
             let first = rows
                 .iter()
                 .position(|line| line.contains("First body"))
@@ -2019,6 +2025,7 @@ mod tests {
                 pinned: false,
                 id: 11,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: "hello from the terminal 🙂".to_owned(),
@@ -2387,6 +2394,7 @@ mod tests {
                 pinned: false,
                 id: 12,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: "receipt".to_owned(),
@@ -2414,6 +2422,7 @@ mod tests {
                 pinned: false,
                 id: 13,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: String::new(),
@@ -2662,6 +2671,7 @@ mod tests {
                 pinned: false,
                 id,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: format!("message-{id:02}"),
@@ -2696,6 +2706,7 @@ mod tests {
                 pinned: false,
                 id: 30,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: "new-one\nnew-two\nnew-three".to_owned(),
@@ -2738,6 +2749,7 @@ mod tests {
                 pinned: false,
                 id: 99,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: format!("oldest\n{}newest", "filler\n".repeat(66_000)),

@@ -214,6 +214,7 @@ mod tests {
                 pinned: false,
                 id,
                 chat_id: if id == 206 { 43 } else { 42 },
+                sender_username: None,
                 sender: "Ada".to_owned(),
                 reply_to: None,
                 text: format!("東京 error {id}"),

@@ -99,6 +99,32 @@ async fn sdk_delivers_the_whole_batch_before_its_checkpoint() {
     assert_eq!(deleted.messages(), [41, 42]);
     assert_eq!(cursor.pts, 2);
     assert_eq!(cursor.date, 123, "NO_DATE retains the previous date");
+
+    sender
+        .send(UpdatesLike::Updates(
+            tl::types::UpdateShort {
+                update: tl::types::UpdateReadMessagesContents {
+                    messages: vec![43],
+                    pts: 3,
+                    pts_count: 1,
+                    date: None,
+                }
+                .into(),
+                date: 0,
+            }
+            .into(),
+        ))
+        .unwrap();
+    let (updates, cursor) = Box::pin(stream.next_batch()).await.unwrap();
+    let [grammers_client::update::Update::Raw(raw)] = updates.as_slice() else {
+        panic!("content receipt must arrive before its checkpoint")
+    };
+    let tl::enums::Update::ReadMessagesContents(read) = &raw.raw else {
+        panic!("content receipt")
+    };
+    assert_eq!(read.messages, [43]);
+    assert_eq!(cursor.pts, 3);
+    assert_eq!(cursor.date, 123);
 }
 
 #[test]

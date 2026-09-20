@@ -179,6 +179,7 @@ binding can become visible again.
 | `message_up`, `message_down` | Conversation message cursor; accept `count` |
 | `oldest`, `latest` | First/last chat, or loaded-history start/latest conversation |
 | `first_unread`, `mark_read`, `mark_unread` | Jump to the first unread message; explicitly read the chat or set Telegram’s unread reminder |
+| `mentions` | Browse Telegram unread mentions and replies to you |
 | `compose`, `send`, `newline` | Enter a draft or reply to the explicit conversation selection / send / newline |
 | `preview` | Expand a selected image or sticker; `preview` context controls the expanded view |
 | `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |

@@ -771,7 +771,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     // displaying the end of a message underneath it.
     let read_bottom = scroll
         .saturating_add(available.saturating_sub(usize::from(app.new_messages_while_scrolled > 0)));
-    let visible_read = layouts
+    let visible = layouts
         .iter()
         .filter(|layout| {
             layout.start < read_bottom
@@ -782,9 +782,21 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             messages
                 .iter()
                 .find(|message| message.id == layout.id && message.id > 0 && !message.outgoing)
-                .map(|message| message.id)
         })
-        .max();
+        .collect::<Vec<_>>();
+    let visible_read = visible.iter().map(|message| message.id).max();
+    let mentions = visible
+        .iter()
+        .filter(|message| {
+            message
+                .mention
+                .as_ref()
+                .is_some_and(|mention| mention.unread && !mention.requires_playback)
+        })
+        .map(|message| message.id)
+        .take(100)
+        .collect();
+    app.set_visible_mentions(mentions);
     app.set_visible_read_boundary(chat_id, visible_read.or((available > 0).then_some(0)));
     app.set_message_hit_regions(hit_regions);
     render_new_message_badge(frame, inner, app.new_messages_while_scrolled);
@@ -1877,6 +1889,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id: 11,
@@ -2240,6 +2253,7 @@ mod tests {
         let mut app = populated_app();
         app.messages.get_mut(&7).unwrap().extend([
             Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id: 12,
@@ -2262,6 +2276,7 @@ mod tests {
                 buttons: Vec::new(),
             },
             Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id: 13,
@@ -2505,6 +2520,7 @@ mod tests {
         let mut app = populated_app();
         let messages = (0_i32..30)
             .map(|id| Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id,
@@ -2534,6 +2550,7 @@ mod tests {
             .get_mut(&7)
             .expect("active history")
             .push(Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id: 30,
@@ -2571,6 +2588,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id: 99,
@@ -2595,5 +2613,61 @@ mod tests {
         let top = render_text_mut(&mut app, 70, 24);
         assert!(top.contains("oldest"));
         assert!(!top.contains("newest"));
+    }
+    #[test]
+    fn visible_mentions_require_a_focused_frame_and_do_not_consume_voice_messages() {
+        let mut app = populated_app();
+        app.focus = Focus::Conversation;
+        app.chats[0].read_inbox_max_id = Some(100);
+        let mut text = app.active_messages()[0].clone();
+        text.mention = Some(crate::model::Mention {
+            unread: true,
+            requires_playback: false,
+        });
+        let mut voice = text.clone();
+        voice.id = 12;
+        voice.text = "voice reply".into();
+        voice.mention.as_mut().unwrap().requires_playback = true;
+        app.messages.insert(7, vec![text, voice]);
+        assert!(
+            app.request_visible_read().is_empty(),
+            "loading is not viewing"
+        );
+        app.terminal_focused = false;
+        render_text_mut(&mut app, 100, 24);
+        assert!(app.request_visible_read().is_empty());
+        app.terminal_focused = true;
+        app.mode = Mode::Search;
+        render_text_mut(&mut app, 100, 24);
+        assert!(
+            app.request_visible_read().is_empty(),
+            "covered conversation is not visible"
+        );
+        app.mode = Mode::Navigate;
+        render_text_mut(&mut app, 100, 24);
+        assert_eq!(
+            app.request_visible_read(),
+            [crate::event::TelegramCommand::ReadMentions {
+                chat_id: 7,
+                message_ids: vec![11]
+            }]
+        );
+        assert!(
+            app.request_visible_read().is_empty(),
+            "one receipt in flight per chat"
+        );
+        app.handle_network(crate::event::NetworkEvent::MessageContentsRead {
+            channel_id: None,
+            message_ids: vec![11],
+        });
+        assert!(!app.active_messages()[0].mention.as_ref().unwrap().unread);
+        assert!(app.active_messages()[1].mention.as_ref().unwrap().unread);
+        app.handle_network(crate::event::NetworkEvent::MentionsReadFinished {
+            chat_id: 7,
+            message_ids: vec![11],
+            error: None,
+        });
+        render_text_mut(&mut app, 100, 24);
+        assert!(app.request_visible_read().is_empty());
     }
 }

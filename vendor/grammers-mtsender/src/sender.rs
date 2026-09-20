@@ -108,8 +108,8 @@ fn decode_request<R: Deserializable + Identifiable>(body: &[u8]) -> Option<R> {
         .flatten()
 }
 
-// Keep deletion IDs with the acknowledged PTS so consumers apply the tombstone
-// before persisting the cursor. Other AffectedMessages RPCs do not delete IDs.
+// Keep deletion and content-receipt IDs with their acknowledged PTS so
+// consumers apply the corresponding change before persisting the cursor.
 fn affected_update(
     request: Option<&[u8]>,
     affected: tl::types::messages::AffectedMessages,
@@ -134,6 +134,17 @@ fn affected_update(
                 date: 0,
             }.into());
         }
+    }
+    if let Some(request) = request.and_then(decode_request::<tl::functions::messages::ReadMessageContents>) {
+        return UpdatesLike::Updates(tl::types::UpdateShort {
+            update: tl::types::UpdateReadMessagesContents {
+                messages: request.id,
+                pts: affected.pts,
+                pts_count: affected.pts_count,
+                date: None,
+            }.into(),
+            date: 0,
+        }.into());
     }
     UpdatesLike::AffectedMessages(affected)
 }
@@ -718,7 +729,7 @@ mod deletion_tests {
     use super::*;
 
     #[test]
-    fn affected_delete_keeps_ids_and_pts_for_both_scopes() {
+    fn affected_updates_keep_payloads_and_pts() {
         for revoke in [false, true] {
             let body = tl::functions::messages::DeleteMessages {
                 revoke,
@@ -746,6 +757,15 @@ mod deletion_tests {
         assert_eq!(affected.pts, 77);
         assert!(decode_request::<tl::functions::messages::DeleteMessages>(&body).is_none());
         assert!(decode_request::<tl::functions::messages::DeleteMessages>(&[1, 2]).is_none());
+        let body = tl::functions::messages::ReadMessageContents { id: vec![42] }.to_bytes();
+        let UpdatesLike::Updates(tl::enums::Updates::UpdateShort(short)) = affected_update(
+            Some(&body), tl::types::messages::AffectedMessages { pts: 78, pts_count: 1 },
+        ) else { panic!("content receipts must retain their payload") };
+        let tl::enums::Update::ReadMessagesContents(update) = short.update else {
+            panic!("content receipts must not become deletions")
+        };
+        assert_eq!(update.messages, [42]);
+        assert_eq!((update.pts, update.pts_count, short.date), (78, 1, 0));
         let body = tl::functions::messages::ReadHistory {
             peer: tl::enums::InputPeer::PeerSelf,
             max_id: 42,

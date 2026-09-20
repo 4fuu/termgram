@@ -124,9 +124,10 @@ fn row(
     } else {
         ""
     };
+    let mention = if chat.membership.mentions { "@ " } else { "" };
     let title = truncate_cells(
         &chat.title,
-        title_width.saturating_sub(icon.width() + pin.width() + muted.width()),
+        title_width.saturating_sub(icon.width() + pin.width() + muted.width() + mention.width()),
     );
     let mut title_style = Style::default().fg(app.color(Target::Chat(chat.id)));
     if chat.unread > 0 || chat.membership.unread_mark || is_selected {
@@ -146,6 +147,7 @@ fn row(
             Span::styled(icon, Style::default().fg(MUTED)),
             Span::styled(pin, Style::default().fg(ACCENT)),
             Span::styled(muted, Style::default().fg(MUTED)),
+            Span::styled(mention, Style::default().fg(ACCENT).bold()),
             Span::styled(title, title_style),
         ])),
         Cell::from(Line::from(chat.activity_label(now)).alignment(Alignment::Right))

@@ -16,7 +16,7 @@ time. Cached messages are available while it reconnects.
 | Navigate Telegram folders | [Folders](Folders.md) |
 | Pin chats or messages, browse pins | [Pins](Pins.md) |
 | Search local or cloud history with filters | [Message search](Search.md) |
-| Mute or unmute chats on Telegram | [Notification settings](Notifications.md) |
+| Mute chats or browse unread mentions | [Notification settings](Notifications.md) |
 | Color a chat or folder | [Appearance](Appearance.md) |
 | Preview or reveal a file | [Attachments](Attachments.md) |
 | Understand offline behavior or clear the cache | [Cache and synchronization](Synchronization.md) |

@@ -162,10 +162,12 @@ routing its `AffectedMessages` RPC result. It emits the existing `UpdateShort`
 sentinel, so application tombstones are committed before their covered PTS.
 Request decoding now validates and consumes the TL constructor before reading
 bare function fields, correcting the existing channel-delete/short-send decoder
-as well. Other affected-message RPCs retain their original path. Its focused
-unit test checks both revoke scopes, channel PTS ownership and a non-deleting RPC;
+as well. Content acknowledgements from `messages.readMessageContents` similarly retain
+their IDs as `UpdateReadMessagesContents`. Other affected-message RPCs retain their
+original path. The focused unit test checks both revoke scopes, channel PTS
+ownership, content receipts and an unrelated RPC;
 `tests/update_recovery.rs` verifies delivery together with the durable cursor.
-Reapply this narrow patch until an upstream release retains common deletion IDs.
+Reapply this narrow patch until an upstream release retains deletion and content-receipt IDs.
 Deletion eligibility in `src/telegram/deletion.rs` follows Desktop's `canDelete`
 and `canDeleteForEveryone` at the revision recorded above; no source is copied.
 
@@ -201,3 +203,18 @@ change mute time, preserve unrelated fields, and synchronize the returned state.
 `src/telegram/notifications.rs` is an original typed-RPC adapter; no Desktop code
 is copied. The shared RPC coordinator rejects stale mute snapshots after a
 notification-settings update and refreshes authoritative dialogs.
+
+Unread-mention pagination adds `Client::unread_mentions` / `UnreadMentionIter` in
+`grammers-client/src/client/messages.rs`. It reuses `IterBuffer`, `fill_buffer`,
+peer mapping, limits and offset handling for `messages.getUnreadMentions`; no
+second paging engine or update reader is added. Application navigation reuses
+cloud-search cancellation and its existing result/context panel. The wrapper
+currently queries the entire chat; topic scoping will be added with topics.
+
+Mention receipts follow Desktop's `history/history_widget.cpp` visibility rule
+and `history/history_item.cpp` unread-media distinction at the Desktop revision
+above. Text mentions use `messages.readMessageContents` (ordered PTS result) or
+`channels.readMessageContents` (Bool acknowledgement). Voice, round-video and TTL
+media require explicit consumption. This is an original adapter, not copied
+Desktop source. Cache receipts update existing JSON and protect only snapshots
+still in flight, including messages not yet cached when the receipt arrived.

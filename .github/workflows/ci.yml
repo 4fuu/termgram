@@ -124,7 +124,7 @@ jobs:
       - name: Verify own-deletion update payloads
         run: >-
           cargo test --locked --manifest-path vendor/grammers-mtsender/Cargo.toml
-          --lib affected_delete_keeps_ids --target-dir target/mtsender-regression
+          --lib affected_updates_keep_payloads --target-dir target/mtsender-regression
       - name: Verify upstream SQLite close-ownership regression
         run: >-
           cargo test --locked --manifest-path vendor/libsql/Cargo.toml

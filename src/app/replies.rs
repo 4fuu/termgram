@@ -197,6 +197,16 @@ impl App {
                     };
                 }
             }
+            NetworkEvent::MessageContentsRead {
+                channel_id,
+                message_ids,
+            } => {
+                for entry in self.replies.entries.values_mut() {
+                    if let Preview::Ready(message) = &mut entry.preview {
+                        message.acknowledge_contents(*channel_id, message_ids);
+                    }
+                }
+            }
             NetworkEvent::MessagesDeleted {
                 channel_id,
                 message_ids,

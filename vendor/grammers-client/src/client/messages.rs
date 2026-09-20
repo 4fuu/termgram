@@ -351,6 +351,41 @@ impl MessageIter {
     }
 }
 
+/// Iterator over this peer's unread mentions and replies to the logged-in user.
+pub type UnreadMentionIter = IterBuffer<tl::functions::messages::GetUnreadMentions, Message>;
+
+impl UnreadMentionIter {
+    fn new(client: &Client, peer: PeerRef) -> Self {
+        Self::from_request(client, MAX_LIMIT, tl::functions::messages::GetUnreadMentions {
+            peer: peer.into(), top_msg_id: None, offset_id: 0, add_offset: 0,
+            limit: 0, max_id: 0, min_id: 0,
+        })
+    }
+
+    /// Continue with mentions older than this message ID (zero starts at newest).
+    pub fn offset_id(mut self, offset: i32) -> Self {
+        self.request.offset_id = offset;
+        self
+    }
+
+    /// Return the unread count reported by Telegram for this request.
+    pub async fn total(&mut self) -> Result<usize, InvocationError> {
+        self.request.limit = 1;
+        self.get_total().await
+    }
+
+    /// Fetch the next mention using the shared bounded message iterator.
+    pub async fn next(&mut self) -> Result<Option<Message>, InvocationError> {
+        if let Some(result) = self.next_raw() { return result; }
+        self.request.limit = self.determine_limit(MAX_LIMIT);
+        self.fill_buffer(self.request.limit, false, Some(self.request.peer.clone().into())).await?;
+        if !self.last_chunk && let Some(last) = self.buffer.back() {
+            self.request.offset_id = last.id();
+        }
+        Ok(self.pop_item())
+    }
+}
+
 /// Iterator returned by [`Client::search_messages`].
 pub type SearchIter = IterBuffer<tl::functions::messages::Search, Message>;
 
@@ -1093,6 +1128,12 @@ impl Client {
     pub fn search_messages<C: Into<PeerRef>>(&self, peer: C) -> SearchIter {
         SearchIter::new(self, peer.into())
     }
+
+    /// Iterate over a chat's unread mentions without marking them read.
+    pub fn unread_mentions<C: Into<PeerRef>>(&self, peer: C) -> UnreadMentionIter {
+        UnreadMentionIter::new(self, peer.into())
+    }
+
 
     /// Iterate over the messages that match certain search criteria, without being restricted to
     /// searching in a specific peer. The downside is that this global search supports less filters.

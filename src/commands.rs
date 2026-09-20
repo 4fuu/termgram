@@ -22,6 +22,7 @@ pub enum Kind {
     Copy,
     Forward,
     Mute(bool),
+    Mentions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,6 +85,7 @@ impl Spec {
             Kind::Read(false) => Some(Action::MarkRead),
             Kind::Mute(true) => Some(Action::MuteChat),
             Kind::Mute(false) => Some(Action::UnmuteChat),
+            Kind::Mentions => Some(Action::Mentions),
         }
     }
 }
@@ -245,6 +247,14 @@ pub static COMMANDS: &[Spec] = &[
         Kind::Search,
         None,
         "Offline regex, or Telegram text search with sender/date/media filters"
+    ),
+    command!(
+        "mentions",
+        None,
+        "",
+        Kind::Mentions,
+        Chat,
+        "Browse unread mentions and replies to you in the captured chat"
     ),
     command!(
         "mute",

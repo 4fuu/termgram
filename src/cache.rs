@@ -1,5 +1,6 @@
 //! Account-local, discardable message storage. Authentication stays in the
 //! Telegram session; user preferences do not belong in this database.
+mod contents;
 mod search;
 
 use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -35,6 +36,7 @@ pub struct Store {
     history_revisions: BTreeMap<(ChatId, u64), i64>,
     pin_revisions: BTreeMap<(ChatId, u64), i64>,
     search_revision: Option<(u64, ChatId, i64)>,
+    contents_read: contents::Receipts,
     downloads: BTreeMap<(ChatId, i32), (u64, Option<i64>)>,
     owner: std::sync::Arc<std::fs::File>,
 }
@@ -111,6 +113,7 @@ impl Store {
             history_revisions: BTreeMap::new(),
             pin_revisions: BTreeMap::new(),
             search_revision: None,
+            contents_read: contents::Receipts::default(),
             downloads: BTreeMap::new(),
         })
     }
@@ -400,7 +403,14 @@ impl Store {
                     self.search_revision = None;
                     for message in messages {
                         if message.chat_id == *chat_id {
-                            write_message(&transaction, message, revision, started).await?;
+                            write_message(
+                                &transaction,
+                                message,
+                                revision,
+                                started,
+                                &self.contents_read,
+                            )
+                            .await?;
                         }
                     }
                     prune_chat_messages(&transaction, *chat_id).await?;
@@ -417,7 +427,14 @@ impl Store {
                         continue;
                     };
                     for message in messages {
-                        write_message(&transaction, message, revision, started).await?;
+                        write_message(
+                            &transaction,
+                            message,
+                            revision,
+                            started,
+                            &self.contents_read,
+                        )
+                        .await?;
                     }
                     prune_chat_messages(&transaction, *chat_id).await?;
                 }
@@ -436,7 +453,14 @@ impl Store {
                         continue;
                     };
                     for message in &page.messages {
-                        write_message(&transaction, message, revision, started).await?;
+                        write_message(
+                            &transaction,
+                            message,
+                            revision,
+                            started,
+                            &self.contents_read,
+                        )
+                        .await?;
                     }
                     transaction.execute(
                         "UPDATE messages SET data=json_set(data,'$.pinned',json('false')), revision=?1
@@ -479,7 +503,14 @@ impl Store {
                         continue;
                     };
                     for message in messages {
-                        write_message(&transaction, message, revision, started).await?;
+                        write_message(
+                            &transaction,
+                            message,
+                            revision,
+                            started,
+                            &self.contents_read,
+                        )
+                        .await?;
                     }
                     prune_chat_messages(&transaction, *chat_id).await?;
                 }
@@ -495,6 +526,7 @@ impl Store {
                 }
                 NetworkEvent::CacheAccountReset { user_id } => {
                     self.search_revision = None;
+                    self.contents_read = contents::Receipts::default();
                     self.downloads.clear();
                     transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions; DELETE FROM history_pages;").await?;
                     set_metadata(&transaction, "account_id", &user_id.to_string()).await?;
@@ -584,7 +616,14 @@ impl Store {
                             .await?;
                     }
                     for message in messages {
-                        write_message(&transaction, message, revision, started).await?;
+                        write_message(
+                            &transaction,
+                            message,
+                            revision,
+                            started,
+                            &self.contents_read,
+                        )
+                        .await?;
                     }
                     prune_chat_messages(&transaction, *chat_id).await?;
                 }
@@ -594,6 +633,11 @@ impl Store {
                     ..
                 }
                 | NetworkEvent::ReplyPreviewsFailed {
+                    chat_id,
+                    request_id,
+                    ..
+                }
+                | NetworkEvent::MessageLoadFailed {
                     chat_id,
                     request_id,
                     ..
@@ -641,7 +685,27 @@ impl Store {
                         .next()
                         .await?
                         .is_some();
-                    write_message(&transaction, message, revision, revision).await?;
+                    let started = if let NetworkEvent::MessageLoaded {
+                        chat_id,
+                        request_id,
+                        ..
+                    } = event
+                    {
+                        self.history_revisions
+                            .remove(&(*chat_id, *request_id))
+                            .unwrap_or(revision)
+                    } else {
+                        self.contents_read.supersede(message);
+                        revision
+                    };
+                    write_message(
+                        &transaction,
+                        message,
+                        revision,
+                        started,
+                        &self.contents_read,
+                    )
+                    .await?;
                     if let Some((mut chat, _)) = load_chat(&transaction, message.chat_id).await? {
                         let latest = chat.last_message_id.map_or_else(
                             || {
@@ -667,6 +731,20 @@ impl Store {
                     }
                 }
 
+                NetworkEvent::MessageContentsRead {
+                    channel_id,
+                    message_ids,
+                } => {
+                    self.contents_read
+                        .record(*channel_id, message_ids, revision);
+                    transaction.execute(
+                        "UPDATE messages SET data=json_set(data,'$.mention.unread',json('false')),revision=?1
+                         WHERE data IS NOT NULL AND json_extract(data,'$.mention.unread')=1
+                         AND ((?2 IS NULL AND chat_id>-1000000000000) OR chat_id=?2)
+                         AND id IN (SELECT value FROM json_each(?3))",
+                        params![revision, *channel_id, serde_json::to_string(message_ids)?],
+                    ).await?;
+                }
                 NetworkEvent::MessagesDeleted {
                     channel_id,
                     message_ids,
@@ -719,7 +797,14 @@ impl Store {
                     for mut message in messages {
                         if message.outgoing {
                             message.delivery = Delivery::Read;
-                            write_message(&transaction, &message, revision, revision).await?;
+                            write_message(
+                                &transaction,
+                                &message,
+                                revision,
+                                revision,
+                                &self.contents_read,
+                            )
+                            .await?;
                         }
                     }
                 }
@@ -851,6 +936,7 @@ impl Store {
         transaction.execute("DELETE FROM global_deletions WHERE revision<?1 AND id IN (SELECT id FROM global_deletions ORDER BY revision DESC LIMIT -1 OFFSET ?2)", params![oldest_in_flight, MAX_MESSAGES]).await?;
         set_metadata(&transaction, "revision", &self.revision.to_string()).await?;
         transaction.commit().await?;
+        self.contents_read.prune(oldest_in_flight);
         Ok(())
     }
 }
@@ -871,7 +957,9 @@ async fn write_message(
     message: &Message,
     revision: i64,
     started: i64,
+    receipts: &contents::Receipts,
 ) -> Result<()> {
+    let message = receipts.reconcile(message, started);
     if message.id <= 0 {
         return Ok(());
     }
@@ -894,7 +982,7 @@ async fn write_message(
          (SELECT 1 FROM global_deletions WHERE id=?2 AND ?1>-1000000000000)
          ON CONFLICT(chat_id,id) DO UPDATE SET data=excluded.data,timestamp=excluded.timestamp,revision=excluded.revision
          WHERE messages.data IS NOT NULL AND messages.revision<=?6",
-        params![message.chat_id, message.id, serde_json::to_string(message)?, message.timestamp.timestamp(), revision, started],
+        params![message.chat_id, message.id, serde_json::to_string(message.as_ref())?, message.timestamp.timestamp(), revision, started],
     ).await?;
     Ok(())
 }
@@ -953,6 +1041,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id,
@@ -1579,5 +1668,122 @@ mod tests {
         assert_eq!(chats[0].last_message_id, None);
         assert_eq!(chats[0].read_inbox_max_id, Some(2));
         assert!(chats[0].membership.unread_mark);
+    }
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn content_receipts_protect_cached_and_uncached_snapshots_without_crossing_id_scopes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mentions.db");
+        let mut store = Store::open(&path).await.unwrap();
+        let mention = |id, chat_id| {
+            let mut message = message(id, "mention");
+            message.chat_id = chat_id;
+            message.mention = Some(crate::model::Mention {
+                unread: true,
+                requires_playback: false,
+            });
+            message
+        };
+        let channel = -1_000_000_000_042;
+        store
+            .apply(&[
+                NetworkEvent::MessageUpdated(mention(10, 42)),
+                NetworkEvent::MessageUpdated(mention(10, channel)),
+                NetworkEvent::HistoryLoading {
+                    chat_id: 42,
+                    request_id: 1,
+                },
+                NetworkEvent::CloudSearchLoading {
+                    chat_id: channel,
+                    request_id: 2,
+                },
+                NetworkEvent::MessageContentsRead {
+                    channel_id: None,
+                    message_ids: vec![10, 11],
+                },
+                NetworkEvent::MessageContentsRead {
+                    channel_id: Some(channel),
+                    message_ids: vec![12],
+                },
+                NetworkEvent::SyncCheckpoint(SyncCursor {
+                    pts: 123,
+                    ..Default::default()
+                }),
+            ])
+            .await
+            .unwrap();
+        let mut page = NetworkEvent::History {
+            chat_id: 42,
+            request_id: 1,
+            messages: vec![mention(10, 42), mention(11, 42), mention(12, 42)],
+        };
+        store.reconcile_contents(&mut page);
+        let NetworkEvent::History { messages, .. } = &page else {
+            unreachable!()
+        };
+        assert_eq!(
+            messages
+                .iter()
+                .map(|m| m.mention.as_ref().unwrap().unread)
+                .collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        // Apply the unmerged version too: all Store writes have the same guard.
+        store
+            .apply(&[NetworkEvent::History {
+                chat_id: 42,
+                request_id: 1,
+                messages: vec![mention(10, 42), mention(11, 42), mention(12, 42)],
+            }])
+            .await
+            .unwrap();
+        let mut page = NetworkEvent::CloudSearchResults {
+            chat_id: channel,
+            request_id: 2,
+            page: crate::cloud_search::Page {
+                messages: vec![
+                    mention(10, channel),
+                    mention(11, channel),
+                    mention(12, channel),
+                ],
+                total: 3,
+                next: None,
+                sender: None,
+            },
+        };
+        store.reconcile_cloud_search(&mut page).await.unwrap();
+        store.reconcile_contents(&mut page);
+        let NetworkEvent::CloudSearchResults { page: result, .. } = &page else {
+            unreachable!()
+        };
+        assert_eq!(
+            result
+                .messages
+                .iter()
+                .map(|m| m.mention.as_ref().unwrap().unread)
+                .collect::<Vec<_>>(),
+            [true, true, false]
+        );
+        store.apply(&[page]).await.unwrap();
+
+        drop(store);
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(store.cursor().await.unwrap().pts, 123);
+        let messages = store.history(42, None, 10).await.unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|m| m.mention.as_ref().unwrap().unread)
+                .collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        let messages = store.history(channel, None, 10).await.unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|m| m.mention.as_ref().unwrap().unread)
+                .collect::<Vec<_>>(),
+            [true, true, false]
+        );
     }
 }

@@ -190,6 +190,10 @@ pub enum TelegramCommand {
         chat_id: ChatId,
         max_id: i32,
     },
+    ReadMentions {
+        chat_id: ChatId,
+        message_ids: Vec<i32>,
+    },
     SetChatUnread {
         chat_id: ChatId,
         unread: bool,
@@ -233,6 +237,11 @@ pub enum TelegramCommand {
     RefreshFolders,
     SearchCached(crate::search::Request),
     SearchCloud(crate::cloud_search::Request),
+    SearchMentions {
+        chat_id: ChatId,
+        before_id: i32,
+        request_id: u64,
+    },
     CancelSearch,
     LoadCloudContext {
         chat_id: ChatId,
@@ -256,7 +265,9 @@ impl TelegramCommand {
     pub(crate) fn cloud_search_id(&self) -> Option<u64> {
         match self {
             Self::SearchCloud(request) => Some(request.id),
-            Self::LoadCloudContext { request_id, .. } => Some(*request_id),
+            Self::LoadCloudContext { request_id, .. } | Self::SearchMentions { request_id, .. } => {
+                Some(*request_id)
+            }
             _ => None,
         }
     }
@@ -460,6 +471,14 @@ impl TelegramCommand {
                 max_id,
                 error,
             },
+            Self::ReadMentions {
+                chat_id,
+                message_ids,
+            } => NetworkEvent::MentionsReadFinished {
+                chat_id,
+                message_ids,
+                error: Some(error),
+            },
             TelegramCommand::LoadReplyPreviews {
                 chat_id,
                 request_id,
@@ -487,6 +506,7 @@ impl TelegramCommand {
                 error,
             },
             TelegramCommand::LoadCloudContext { request_id, .. }
+            | Self::SearchMentions { request_id, .. }
             | TelegramCommand::LoadCachedContext { request_id, .. } => {
                 NetworkEvent::SearchFailed { request_id, error }
             }
@@ -734,6 +754,24 @@ impl fmt::Debug for TelegramCommand {
                 .debug_struct("MarkRead")
                 .field("chat_id", chat_id)
                 .field("max_id", max_id)
+                .finish(),
+            Self::ReadMentions {
+                chat_id,
+                message_ids,
+            } => formatter
+                .debug_struct("ReadMentions")
+                .field("chat_id", chat_id)
+                .field("message_ids", message_ids)
+                .finish(),
+            Self::SearchMentions {
+                chat_id,
+                before_id,
+                request_id,
+            } => formatter
+                .debug_struct("SearchMentions")
+                .field("chat_id", chat_id)
+                .field("before_id", before_id)
+                .field("request_id", request_id)
                 .finish(),
             Self::SearchCached(request) => formatter
                 .debug_struct("SearchCached")
@@ -1104,6 +1142,16 @@ pub enum NetworkEvent {
         chat_id: ChatId,
         max_id: i32,
         error: String,
+    },
+    /// Content receipts have the same account/channel ID scopes as deletion.
+    MessageContentsRead {
+        channel_id: Option<ChatId>,
+        message_ids: Vec<i32>,
+    },
+    MentionsReadFinished {
+        chat_id: ChatId,
+        message_ids: Vec<i32>,
+        error: Option<String>,
     },
     MessagesRead {
         chat_id: ChatId,

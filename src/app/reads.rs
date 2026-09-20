@@ -9,6 +9,9 @@ use std::{
 pub(super) struct State {
     pub visible: Option<(ChatId, i32)>,
     pending: BTreeMap<ChatId, i32>,
+    pub visible_mentions: Vec<i32>,
+    mentions_pending: BTreeMap<ChatId, Vec<i32>>,
+    mentions_retry: BTreeMap<ChatId, Instant>,
     retry_after: BTreeMap<ChatId, Instant>,
     manual_pending: BTreeMap<ChatId, u64>,
     clear_marker: Option<ChatId>,
@@ -51,7 +54,7 @@ impl App {
         {
             return Vec::new();
         }
-        let mut commands = Vec::new();
+        let mut commands = self.request_mention_read(chat_id);
         if self.reads.clear_marker == Some(chat_id)
             && !self.reads.manual_pending.contains_key(&chat_id)
         {
@@ -80,6 +83,88 @@ impl App {
         self.reads.pending.insert(chat_id, max_id);
         commands.push(TelegramCommand::MarkRead { chat_id, max_id });
         commands
+    }
+
+    pub fn set_visible_mentions(&mut self, ids: Vec<i32>) {
+        self.reads.visible_mentions = ids;
+    }
+
+    fn request_mention_read(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
+        if self.reads.mentions_pending.contains_key(&chat_id)
+            || self
+                .reads
+                .mentions_retry
+                .get(&chat_id)
+                .is_some_and(|until| *until > Instant::now())
+        {
+            return Vec::new();
+        }
+        let message_ids = self
+            .active_messages()
+            .iter()
+            .filter(|message| {
+                message.id > 0
+                    && !message.outgoing
+                    && self.reads.visible_mentions.contains(&message.id)
+                    && message
+                        .mention
+                        .as_ref()
+                        .is_some_and(|mention| mention.unread && !mention.requires_playback)
+            })
+            .map(|message| message.id)
+            .take(100)
+            .collect::<Vec<_>>();
+        if message_ids.is_empty() {
+            return Vec::new();
+        }
+        self.reads
+            .mentions_pending
+            .insert(chat_id, message_ids.clone());
+        vec![TelegramCommand::ReadMentions {
+            chat_id,
+            message_ids,
+        }]
+    }
+
+    pub(super) fn mentions_read_finished(
+        &mut self,
+        chat_id: ChatId,
+        ids: &[i32],
+        error: Option<String>,
+    ) {
+        if self
+            .reads
+            .mentions_pending
+            .get(&chat_id)
+            .is_some_and(|pending| pending == ids)
+        {
+            self.reads.mentions_pending.remove(&chat_id);
+            // The common PTS receipt may still be behind its RPC completion.
+            self.reads
+                .mentions_retry
+                .insert(chat_id, Instant::now() + Duration::from_secs(2));
+        }
+        if let Some(error) = error {
+            self.status_message = Some(crate::model::sanitize_terminal_line(&error));
+        }
+    }
+
+    pub(super) fn contents_read(&mut self, channel_id: Option<ChatId>, ids: &[i32]) {
+        let messages = self
+            .messages
+            .values_mut()
+            .flatten()
+            .chain(self.history_changes.values_mut().filter_map(Option::as_mut))
+            .chain(self.message_pins.page.messages.iter_mut())
+            .chain(
+                self.message_pins
+                    .head
+                    .iter_mut()
+                    .flat_map(|(_, page)| &mut page.messages),
+            );
+        for message in messages {
+            message.acknowledge_contents(channel_id, ids);
+        }
     }
 
     pub(super) fn read_finished(&mut self, chat_id: ChatId, max_id: i32, failed: bool) {
@@ -168,6 +253,7 @@ impl App {
         self.reads.forward = None;
         self.reads.paging = false;
         self.reads.visible = None;
+        self.reads.visible_mentions.clear();
         self.reads.clear_marker = self
             .chats
             .iter()
@@ -252,6 +338,7 @@ impl App {
         self.reads.forward = None;
         self.reads.paging = false;
         self.reads.visible = None;
+        self.reads.visible_mentions.clear();
         self.reads.clear_marker = None;
     }
 

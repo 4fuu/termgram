@@ -110,6 +110,30 @@ pub(super) async fn context(client: &Client, peer: PeerRef, id: i32) -> Result<V
     Ok(messages)
 }
 
+pub(super) async fn mentions(client: &Client, peer: PeerRef, before_id: i32) -> Result<Page> {
+    let mut iter = client
+        .unread_mentions(peer)
+        .offset_id(before_id)
+        .limit(PAGE_SIZE + 1);
+    let mut messages = Vec::new();
+    while let Some(message) = iter.next().await? {
+        ensure!(
+            message.peer_id() == peer.id,
+            "Mention search returned another chat"
+        );
+        messages.push(message);
+    }
+    let total = iter.total().await?;
+    let more = messages.len() > PAGE_SIZE;
+    messages.truncate(PAGE_SIZE);
+    Ok(Page {
+        next: more.then(|| messages.last().expect("full page").id()),
+        messages,
+        total,
+        sender: None,
+    })
+}
+
 fn filter(media: Media) -> MessagesFilter {
     match media {
         Media::All => MessagesFilter::InputMessagesFilterEmpty,

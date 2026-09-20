@@ -13,7 +13,9 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         area.height.saturating_sub(2).max(8),
     );
     frame.render_widget(Clear, popup);
-    let source = if app.search.is_cloud() {
+    let source = if app.search.is_mentions() {
+        "Unread mentions"
+    } else if app.search.is_cloud() {
         "Telegram search"
     } else {
         "Local regex"
@@ -23,7 +25,7 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(block, popup);
     let coverage = coverage_label(app);
     let rows = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(if app.search.is_mentions() { 0 } else { 3 }),
         Constraint::Length(wrapped_height(&coverage, inner.width).clamp(2, 4)),
         Constraint::Min(1),
         Constraint::Length(3),
@@ -33,20 +35,22 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let scroll = input
         .cursor_display_width()
         .saturating_sub(usize::from(rows[0].width.saturating_sub(3)));
-    frame.render_widget(
-        Paragraph::new(input.value())
-            .scroll((0, clamp_u16(scroll)))
-            .block(pane_block(
-                if app.search.is_cloud() {
-                    " Text "
-                } else {
-                    " Pattern "
-                }
-                .to_owned(),
-                app.search.editing,
-            )),
-        rows[0],
-    );
+    if !app.search.is_mentions() {
+        frame.render_widget(
+            Paragraph::new(input.value())
+                .scroll((0, clamp_u16(scroll)))
+                .block(pane_block(
+                    if app.search.is_cloud() {
+                        " Text "
+                    } else {
+                        " Pattern "
+                    }
+                    .to_owned(),
+                    app.search.editing,
+                )),
+            rows[0],
+        );
+    }
     if app.search.editing {
         frame.set_cursor_position(Position::new(
             rows[0].x + 1 + clamp_u16(input.cursor_display_width().saturating_sub(scroll)),
@@ -73,7 +77,9 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .map(|message| result_row(message, app, usize::from(rows[2].width.saturating_sub(2))))
         .collect();
     let items = if items.is_empty() && app.search.page.is_some() && !app.search.loading {
-        vec![ListItem::new(if app.search.is_cloud() {
+        vec![ListItem::new(if app.search.is_mentions() {
+            "No unread mentions"
+        } else if app.search.is_cloud() {
             "No Telegram matches"
         } else {
             "No matches in the cached range"
@@ -95,6 +101,21 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn render_hints(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let hint = |action| app.keymap.hint(Context::Search, action);
+    if app.search.is_mentions() {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} open · {} close\n{} refresh\n{} previous · {} next",
+                hint("open"),
+                hint("cancel"),
+                hint("refresh"),
+                hint("search_previous"),
+                hint("search_more"),
+            ))
+            .style(Style::default().fg(MUTED)),
+            area,
+        );
+        return;
+    }
     frame.render_widget(
         Paragraph::new(format!(
             "{} {} · {} close\n{} · {} edit\n{} previous · {} next",
@@ -148,6 +169,21 @@ fn coverage_label(app: &AppState) -> String {
             } else {
                 ""
             }
+        )
+    } else if app.search.is_mentions() {
+        app.search.page.as_ref().map_or_else(
+            || "Mentions and replies to you; refresh to load from Telegram.".to_owned(),
+            |page| {
+                let Results::Cloud(page) = page else {
+                    unreachable!("mentions come from Telegram")
+                };
+                format!(
+                    "{} unread at search · page {} · {} shown",
+                    page.total,
+                    app.search.page_number,
+                    page.messages.len()
+                )
+            },
         )
     } else if let Source::Cloud { filters, .. } = &app.search.source {
         let coverage = if let Some(Results::Cloud(page)) = &app.search.page {

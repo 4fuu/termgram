@@ -133,10 +133,12 @@ pub(super) async fn serve(
                     _ => {}
                 }
                 let cloud = matches!(event, NetworkEvent::CloudSearchResults { .. } | NetworkEvent::CloudSearchContext { .. });
-                if cloud {
+                let snapshot = Store::has_message_snapshot(&event);
+                if snapshot {
                     store.apply(&changes).await?;
                     changes.clear();
                     store.reconcile_cloud_search(&mut event).await?;
+                    store.reconcile_contents(&mut event);
                 }
                 let checkpoint = matches!(&event, NetworkEvent::SyncCheckpoint(_));
                 changes.push(event.clone());

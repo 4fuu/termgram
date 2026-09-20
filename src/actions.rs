@@ -77,6 +77,7 @@ actions! {
     MarkUnread => ("mark_unread", "Mark this chat unread as a reminder"),
     MuteChat => ("mute_chat", "Mute this chat on Telegram until unmuted"),
     UnmuteChat => ("unmute_chat", "Enable this chat's Telegram notifications"),
+    Mentions => ("mentions", "Browse this chat's unread mentions and replies to you"),
     Filter => ("filter", "Filter chat titles"),
     Refresh => ("refresh", "Refresh chats and folders"),
     Reply => ("reply", "Reply to the selected message"),

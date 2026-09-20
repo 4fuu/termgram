@@ -9,6 +9,8 @@ pane or overlay, so ordinary letters in an editor remain text.
 
 | Context | Keys | Action |
 | --- | --- | --- |
+| Chats / Conversation | g m | Browse unread mentions and replies to you |
+| Search / Mentions | Ctrl-R | Refresh the current search or unread mentions |
 | Global | Ctrl-C / Ctrl-L | Quit / redraw |
 | Global | F2 / F3 | Next account / add account |
 | Main view | F4 | Toggle sidebar; retain the draft |

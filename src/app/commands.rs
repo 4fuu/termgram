@@ -248,6 +248,7 @@ impl App {
                     | Kind::Copy
                     | Kind::Forward
                     | Kind::Mute(_)
+                    | Kind::Mentions
             ) && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
@@ -762,6 +763,9 @@ impl App {
                     self.run_action(&Action::Accounts, 1)
                 }
             }
+            Kind::Mentions => origin
+                .chat
+                .map_or_else(Vec::new, |id| self.start_mentions(id)),
             Kind::Mute(_) => origin
                 .chat
                 .map_or_else(Vec::new, |id| self.set_chat_mute(id, mute)),

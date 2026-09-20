@@ -15,7 +15,7 @@ Termgram 使用 Telegram 的 MTProto 用户 API，访问已有私聊和群组。
 | 切换 Telegram 文件夹 | [文件夹](Folders.md) |
 | 置顶聊天或消息、浏览置顶 | [置顶](Pins.md) |
 | 搜索本地或云端历史并筛选 | [消息搜索](Search.md) |
-| 静音或取消静音 Telegram 聊天 | [通知设置](Notifications.md) |
+| 聊天静音与未读提及 | [通知设置](Notifications.md) |
 | 设置聊天和文件夹颜色 | [外观](Appearance.md) |
 | 预览文件、在文件管理器中定位 | [附件](Attachments.md) |
 | 理解离线行为、清理缓存 | [缓存与同步](Synchronization.md) |

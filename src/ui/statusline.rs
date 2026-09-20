@@ -362,6 +362,14 @@ fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {
         color = tone;
         parts.push(state.to_owned());
     }
+    if message
+        .mention
+        .as_ref()
+        .is_some_and(|mention| mention.unread)
+    {
+        parts.push("@ unread mention".to_owned());
+        color = ACCENT;
+    }
     if let Some(edited) = message.edited_at {
         parts.push(format!(
             "edited {}",

@@ -29,6 +29,6 @@ pub use client::{Client, ClientConfiguration, UpdatesConfiguration};
 pub use dialogs::DialogIter;
 pub use files::DownloadIter;
 pub use iter_buffer::IterBuffer;
-pub use messages::{GlobalSearchIter, MessageIter, SearchIter};
+pub use messages::{GlobalSearchIter, MessageIter, SearchIter, UnreadMentionIter};
 pub use retry_policy::{AutoSleep, NoRetries, RetryContext, RetryPolicy};
 pub use updates::UpdateStream;

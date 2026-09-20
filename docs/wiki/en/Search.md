@@ -77,3 +77,6 @@ not download the entire chat.
 All controls are configurable in the `search` context. Actions are `open`,
 `cancel`, `up`, `down`, `page_up`, `page_down`, `search_scope`, `search_query`,
 `search_more`, and `search_previous`.
+
+Ctrl-R (`refresh`) reruns the search from the first page. `g m` / `:mentions` uses
+the same paging and original-message navigation for [unread mentions](Notifications.md).

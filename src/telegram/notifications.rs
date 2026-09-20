@@ -58,6 +58,52 @@ fn with_mute(
     }
 }
 
+pub(super) fn requires_playback(message: &grammers_client::message::Message) -> bool {
+    let tl::enums::Message::Message(message) = &message.raw else {
+        return false;
+    };
+    match &message.media {
+        Some(tl::enums::MessageMedia::Photo(photo)) => photo.ttl_seconds.is_some(),
+        Some(tl::enums::MessageMedia::Document(media)) => {
+            media.ttl_seconds.is_some()
+                || match &media.document {
+                    Some(tl::enums::Document::Document(document)) => {
+                        document.attributes.iter().any(|attribute| match attribute {
+                            tl::enums::DocumentAttribute::Audio(audio) => audio.voice,
+                            tl::enums::DocumentAttribute::Video(video) => video.round_message,
+                            _ => false,
+                        })
+                    }
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+pub(super) async fn read_mentions(client: &Client, peer: PeerRef, ids: &[i32]) -> Result<()> {
+    ensure!(
+        !ids.is_empty() && ids.len() <= 100 && ids.iter().all(|id| *id > 0),
+        "Mention receipts require 1–100 delivered message IDs"
+    );
+    if peer.id.kind() == grammers_session::types::PeerKind::Channel {
+        ensure!(
+            client
+                .invoke(&tl::functions::channels::ReadMessageContents {
+                    channel: peer.into(),
+                    id: ids.to_vec()
+                })
+                .await?,
+            "Telegram did not acknowledge the mentions"
+        );
+    } else {
+        client
+            .invoke(&tl::functions::messages::ReadMessageContents { id: ids.to_vec() })
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

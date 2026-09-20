@@ -103,7 +103,16 @@ impl Attachment {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct Mention {
+    pub unread: bool,
+    /// Voice, round-video or self-destructing content needs explicit consumption.
+    pub requires_playback: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
+    #[serde(default)]
+    pub mention: Option<Mention>,
     #[serde(default)]
     pub pinned: bool,
     pub id: i32,
@@ -193,6 +202,15 @@ impl Chat {
 }
 
 impl Message {
+    pub(crate) fn acknowledge_contents(&mut self, channel: Option<ChatId>, ids: &[i32]) {
+        if channel.map_or(self.chat_id > -1_000_000_000_000, |id| self.chat_id == id)
+            && ids.contains(&self.id)
+            && let Some(mention) = &mut self.mention
+        {
+            mention.unread = false;
+        }
+    }
+
     #[must_use]
     pub fn timestamp_from_unix(timestamp: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(timestamp, 0)

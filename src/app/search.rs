@@ -24,6 +24,7 @@ enum Cursor {
 pub enum Source {
     #[default]
     Local,
+    Mentions(ChatId),
     Cloud {
         chat_id: ChatId,
         filters: cloud_search::Filters,
@@ -78,11 +79,34 @@ pub struct State {
 
 impl State {
     pub fn is_cloud(&self) -> bool {
-        matches!(self.source, Source::Cloud { .. })
+        !matches!(self.source, Source::Local)
+    }
+
+    pub fn is_mentions(&self) -> bool {
+        matches!(self.source, Source::Mentions(_))
     }
 }
 
 impl App {
+    pub(super) fn focused_mentions(&mut self) -> Vec<TelegramCommand> {
+        if self.screen != super::Screen::Main || self.mode != Mode::Navigate {
+            return Vec::new();
+        }
+        let id = if self.focus == Focus::Chats {
+            self.selected_chat_entry().map(|chat| chat.id)
+        } else {
+            self.active_chat_id
+        };
+        id.map_or_else(Vec::new, |id| self.start_mentions(id))
+    }
+
+    pub(super) fn start_mentions(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
+        self.search.source = Source::Mentions(chat_id);
+        self.search.query.clear();
+        self.mode = Mode::Search;
+        self.search_submit(None, true)
+    }
+
     pub(super) fn start_cloud_search(
         &mut self,
         chat_id: ChatId,
@@ -127,7 +151,7 @@ impl App {
     }
 
     pub(super) fn open_search(&mut self) -> Vec<TelegramCommand> {
-        if self.search.query.is_empty() {
+        if self.search.query.is_empty() && !self.search.is_mentions() {
             self.search.editing = true;
             self.search.scope = if self.active_chat_id.is_some() {
                 Scope::Chat
@@ -137,14 +161,14 @@ impl App {
         }
         self.mode = Mode::Search;
         if self.search.page.is_none() {
-            self.search.editing = true;
+            self.search.editing = !self.search.is_mentions();
             self.update_search_scope();
         }
         Vec::new()
     }
 
     fn update_search_scope(&mut self) {
-        if let Source::Cloud { chat_id, .. } = &self.search.source {
+        if let Source::Cloud { chat_id, .. } | Source::Mentions(chat_id) = &self.search.source {
             self.search.scope_label = self
                 .chats
                 .iter()
@@ -200,39 +224,14 @@ impl App {
                 Some(vec![TelegramCommand::CancelSearch])
             }
             "open" if self.search.loading => Some(Vec::new()),
-            "open" if self.search.editing => Some(self.search_submit(None, true)),
-            "open" => {
-                let message = self
-                    .search
-                    .page
-                    .as_ref()?
-                    .messages()
-                    .get(self.search.selected)?;
-                let (chat_id, message_id) = (message.chat_id, message.id);
-                if self.search.is_cloud() && self.connection != ConnectionStatus::Online {
-                    self.search.error =
-                        Some("Connect to Telegram to open this cloud result".to_owned());
-                    return Some(Vec::new());
-                }
-                self.search.request_id = self.search.request_id.wrapping_add(1);
-                let request_id = self.search.request_id;
-                self.search.loading = true;
-                self.search.error = None;
-                self.search.target = Some((chat_id, message_id));
-                Some(vec![if self.search.is_cloud() {
-                    TelegramCommand::LoadCloudContext {
-                        chat_id,
-                        message_id,
-                        request_id,
-                    }
-                } else {
-                    TelegramCommand::LoadCachedContext {
-                        chat_id,
-                        message_id,
-                        request_id,
-                    }
-                }])
+            "open"
+                if self.search.editing
+                    || (self.search.is_mentions() && self.search.page.is_none()) =>
+            {
+                Some(self.search_submit(None, true))
             }
+            "refresh" => Some(self.search_submit(None, true)),
+            "open" => self.open_search_result(),
             "search_scope" if self.search.is_cloud() => Some(Vec::new()),
             "search_scope" => {
                 self.search.scope = match self.search.scope {
@@ -247,6 +246,7 @@ impl App {
                 self.search.request_id = self.search.request_id.wrapping_add(1);
                 Some(vec![TelegramCommand::CancelSearch])
             }
+            "search_query" if self.search.is_mentions() => Some(Vec::new()),
             "search_query" => {
                 self.search.editing = true;
                 Some(Vec::new())
@@ -290,6 +290,38 @@ impl App {
         }
     }
 
+    fn open_search_result(&mut self) -> Option<Vec<TelegramCommand>> {
+        let message = self
+            .search
+            .page
+            .as_ref()?
+            .messages()
+            .get(self.search.selected)?;
+        let (chat_id, message_id) = (message.chat_id, message.id);
+        if self.search.is_cloud() && self.connection != ConnectionStatus::Online {
+            self.search.error = Some("Connect to Telegram to open this cloud result".to_owned());
+            return Some(Vec::new());
+        }
+        self.search.request_id = self.search.request_id.wrapping_add(1);
+        let request_id = self.search.request_id;
+        self.search.loading = true;
+        self.search.error = None;
+        self.search.target = Some((chat_id, message_id));
+        Some(vec![if self.search.is_cloud() {
+            TelegramCommand::LoadCloudContext {
+                chat_id,
+                message_id,
+                request_id,
+            }
+        } else {
+            TelegramCommand::LoadCachedContext {
+                chat_id,
+                message_id,
+                request_id,
+            }
+        }])
+    }
+
     fn search_submit(&mut self, before: Option<Cursor>, fresh: bool) -> Vec<TelegramCommand> {
         self.search.request_id = self.search.request_id.wrapping_add(1);
         if fresh {
@@ -304,21 +336,29 @@ impl App {
         self.search.error = None;
         self.search.target = None;
         self.search.page = None;
+        if self.search.is_cloud() && self.connection != ConnectionStatus::Online {
+            self.search.loading = false;
+            self.search.editing = !self.search.is_mentions();
+            self.search.error = Some(
+                "Connect to Telegram for cloud search and mentions; :search uses the offline cache"
+                    .to_owned(),
+            );
+            return vec![TelegramCommand::CancelSearch];
+        }
         match &self.search.source {
+            Source::Mentions(chat_id) => vec![TelegramCommand::SearchMentions {
+                chat_id: *chat_id,
+                request_id: self.search.request_id,
+                before_id: match before {
+                    Some(Cursor::Cloud(id)) => id,
+                    _ => 0,
+                },
+            }],
             Source::Cloud {
                 chat_id,
                 filters,
                 sender,
             } => {
-                if self.connection != ConnectionStatus::Online {
-                    self.search.loading = false;
-                    self.search.editing = true;
-                    self.search.error = Some(
-                        "Connect to Telegram for cloud search; :search uses the offline cache"
-                            .to_owned(),
-                    );
-                    return vec![TelegramCommand::CancelSearch];
-                }
                 let mut filters = filters.clone();
                 if let Some(id) = sender {
                     filters.sender = Some(cloud_search::Sender::Id(*id));
@@ -385,7 +425,15 @@ impl App {
         }
         self.search.loading = false;
         match result {
-            Ok(page) => {
+            Ok(mut page) => {
+                if self.search.is_mentions() {
+                    page.messages_mut().retain(|message| {
+                        message
+                            .mention
+                            .as_ref()
+                            .is_some_and(|mention| mention.unread)
+                    });
+                }
                 if let (Source::Cloud { sender, .. }, Results::Cloud(page)) =
                     (&mut self.search.source, &page)
                 {
@@ -396,7 +444,7 @@ impl App {
             }
             Err(error) => {
                 self.search.error = Some(crate::model::sanitize_terminal_text(&error));
-                self.search.editing = true;
+                self.search.editing = !self.search.is_mentions();
             }
         }
     }
@@ -440,11 +488,13 @@ impl App {
         self.select_message_id(message_id, true);
         self.message_scroll = self.message_scroll.max(1);
         self.status_message = Some(format!(
-            "{} search result · {} latest · {} results",
-            if self.search.is_cloud() {
-                "Cloud"
+            "{} · {} latest · {} results",
+            if self.search.is_mentions() {
+                "Mention"
+            } else if self.search.is_cloud() {
+                "Cloud search result"
             } else {
-                "Cached"
+                "Cached search result"
             },
             self.keymap
                 .hint(crate::keymap::Context::Conversation, "latest"),
@@ -456,7 +506,9 @@ impl App {
     pub(super) fn observe_search(&mut self, event: &NetworkEvent) {
         if let NetworkEvent::CacheInvalidated { chat_id } = event {
             let affected = match &self.search.source {
-                Source::Cloud { chat_id: id, .. } => chat_id.is_none_or(|chat| chat == *id),
+                Source::Cloud { chat_id: id, .. } | Source::Mentions(id) => {
+                    chat_id.is_none_or(|chat| chat == *id)
+                }
                 Source::Local => chat_id.is_none_or(|chat| {
                     self.search
                         .chats
@@ -469,10 +521,11 @@ impl App {
                 self.search.loading = false;
                 self.search.page = None;
                 self.search.target = None;
-                self.search.editing = true;
+                self.search.editing = !self.search.is_mentions();
                 self.search.error = Some("History is resyncing; run the search again".to_owned());
             }
         }
+        let mentions = self.search.is_mentions();
         let Some(page) = self.search.page.as_mut() else {
             return;
         };
@@ -485,6 +538,14 @@ impl App {
                 {
                     *current = message.clone();
                     super::sanitize_message(current);
+                }
+            }
+            NetworkEvent::MessageContentsRead {
+                channel_id,
+                message_ids,
+            } => {
+                for message in page.messages_mut() {
+                    message.acknowledge_contents(*channel_id, message_ids);
                 }
             }
             NetworkEvent::MessagesDeleted {
@@ -503,6 +564,18 @@ impl App {
                     .min(page.messages().len().saturating_sub(1));
             }
             _ => {}
+        }
+        if mentions {
+            page.messages_mut().retain(|message| {
+                message
+                    .mention
+                    .as_ref()
+                    .is_some_and(|mention| mention.unread)
+            });
+            self.search.selected = self
+                .search
+                .selected
+                .min(page.messages().len().saturating_sub(1));
         }
     }
 }

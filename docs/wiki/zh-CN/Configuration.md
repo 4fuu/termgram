@@ -153,6 +153,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `message_up`、`message_down` | 会话消息光标，支持 `count` |
 | `oldest`、`latest` | 首末聊天，或已加载历史起点/最新会话 |
 | `first_unread`、`mark_read`、`mark_unread` | 跳到首条未读、明确将聊天全部标为已读、设置 Telegram 未读提醒 |
+| `mentions` | 浏览 Telegram 未读提及及回复给你的消息 |
 | `compose`、`send`、`newline` | 进入草稿或回复会话中明确选中的消息 / 发送 / 换行 |
 | `preview` | 展开所选图片或贴纸；大图通过 `preview` 上下文配置按键 |
 | `home`、`end`、`left`、`right`、`backspace`、`delete`、`clear`、`delete_word` | 编辑器 |

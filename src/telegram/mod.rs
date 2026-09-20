@@ -569,9 +569,28 @@ async fn process_update(
                             .await?;
                     }
                 }
-                tl::enums::Update::PeerSettings(_)
-                | tl::enums::Update::ReadMessagesContents(_)
-                | tl::enums::Update::ChannelReadMessagesContents(_) => {
+                tl::enums::Update::ReadMessagesContents(update) => {
+                    cache.dialogs.dirty = true;
+                    events
+                        .send(NetworkEvent::MessageContentsRead {
+                            channel_id: None,
+                            message_ids: update.messages.clone(),
+                        })
+                        .await?;
+                }
+                tl::enums::Update::ChannelReadMessagesContents(update) => {
+                    cache.dialogs.dirty = true;
+                    events
+                        .send(NetworkEvent::MessageContentsRead {
+                            channel_id: Some(
+                                PeerId::channel_unchecked(update.channel_id)
+                                    .bot_api_dialog_id_unchecked(),
+                            ),
+                            message_ids: update.messages.clone(),
+                        })
+                        .await?;
+                }
+                tl::enums::Update::PeerSettings(_) => {
                     cache.dialogs.dirty = true;
                 }
                 tl::enums::Update::DialogUnreadMark(update) => {
@@ -1396,6 +1415,7 @@ async fn handle_command(
         .clone();
     match command {
         command @ (TelegramCommand::SearchCloud(_)
+        | TelegramCommand::SearchMentions { .. }
         | TelegramCommand::LoadCloudContext { .. }
         | TelegramCommand::CancelSearch) => {
             if let Some((request_id, handle)) = cache.cloud_search.take() {
@@ -1406,7 +1426,8 @@ async fn handle_command(
             }
             let chat_id = match &command {
                 TelegramCommand::SearchCloud(request) => Some(request.chat_id),
-                TelegramCommand::LoadCloudContext { chat_id, .. } => Some(*chat_id),
+                TelegramCommand::LoadCloudContext { chat_id, .. }
+                | TelegramCommand::SearchMentions { chat_id, .. } => Some(*chat_id),
                 _ => None,
             };
             if let (Some(chat_id), Some(request_id)) = (chat_id, command.cloud_search_id()) {
@@ -1441,6 +1462,7 @@ async fn handle_command(
         | TelegramCommand::ActivateButton { .. }
         | TelegramCommand::SetChatUnread { .. }
         | TelegramCommand::MarkRead { .. }
+        | TelegramCommand::ReadMentions { .. }
         | TelegramCommand::SetChatMute { .. }) => {
             if let TelegramCommand::LoadPinnedMessages {
                 chat_id,
@@ -1466,6 +1488,11 @@ async fn handle_command(
                 ..
             }
             | TelegramCommand::LoadOlder {
+                chat_id,
+                request_id,
+                ..
+            }
+            | TelegramCommand::LoadMessage {
                 chat_id,
                 request_id,
                 ..
@@ -2357,6 +2384,10 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        mention: message.mentioned().then(|| crate::model::Mention {
+            unread: message.media_unread() && !message.outgoing(),
+            requires_playback: notifications::requires_playback(message),
+        }),
         edited_at: message.edit_date(),
         pinned: message.pinned(),
         id: message.id(),
@@ -3024,6 +3055,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id: 42,
@@ -3085,6 +3117,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id: 42,

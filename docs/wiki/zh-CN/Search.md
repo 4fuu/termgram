@@ -63,3 +63,6 @@ Esc 或新搜索会取消旧云端任务，迟到的结果不会替换新查询�
 所有操作都可在 Lua 的 `search` 上下文中配置：`open`、`cancel`、`up`、`down`、
 `page_up`、`page_down`、`search_scope`、`search_query`、`search_more`、
 `search_previous`。
+
+Ctrl-R（`refresh`）从第一页重新搜索。`g m` / `:mentions` 复用同样的翻页和原消息跳转，
+用于[未读提及](Notifications.md)。

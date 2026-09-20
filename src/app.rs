@@ -548,6 +548,7 @@ impl App {
     pub fn clear_message_hit_regions(&mut self) {
         self.media_slots.clear();
         self.reads.visible = None;
+        self.reads.visible_mentions.clear();
         self.message_hit_regions.clear();
         self.chat_hit_regions.clear();
         self.settings_hit_regions.clear();
@@ -679,6 +680,7 @@ impl App {
         match run {
             Action::CommandLine => return self.begin_command(),
             Action::Attachments => return self.open_attachments(),
+            Action::Mentions => return self.focused_mentions(),
             Action::FirstUnread => return self.first_unread(),
             Action::MarkRead => return self.mark_focused_chat(false),
             Action::MarkUnread => return self.mark_focused_chat(true),
@@ -1548,6 +1550,21 @@ impl App {
             }
             NetworkEvent::MessageAccepted { chat_id, local_id } => {
                 self.accept_message(chat_id, local_id);
+                Vec::new()
+            }
+            NetworkEvent::MessageContentsRead {
+                channel_id,
+                message_ids,
+            } => {
+                self.contents_read(channel_id, &message_ids);
+                Vec::new()
+            }
+            NetworkEvent::MentionsReadFinished {
+                chat_id,
+                message_ids,
+                error,
+            } => {
+                self.mentions_read_finished(chat_id, &message_ids, error);
                 Vec::new()
             }
             NetworkEvent::ReadMarked {
@@ -2757,6 +2774,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id: local_id,
@@ -2808,6 +2826,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                mention: None,
                 edited_at: None,
                 pinned: false,
                 id: local_id,
@@ -4689,6 +4708,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id,
@@ -6972,6 +6992,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id: -1,
@@ -6994,6 +7015,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id: -2,
@@ -7005,6 +7027,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            mention: None,
             edited_at: None,
             pinned: false,
             id: 42,
@@ -8644,5 +8667,139 @@ mod tests {
                 .any(|command| matches!(command, TelegramCommand::OpenSaved { .. })),
             "cached dialog opens offline"
         );
+    }
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn unread_mentions_keep_target_drafts_and_refresh_after_other_client_reads() {
+        let mut app = ready_app();
+        app.connection = crate::event::ConnectionStatus::Online;
+        app.active_chat_id = Some(2);
+        app.draft_data_mut(2).input = crate::input::TextInput::from_value("unsent");
+        app.focus = Focus::Chats;
+        app.run_binding("command", 1);
+        app.commands.input.set_value("mentions");
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::SearchMentions {
+                chat_id: 1,
+                before_id: 0,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("selected chat, not open chat")
+        };
+        let mut mention = message(30, 1, "reply to you", false);
+        mention.mention = Some(crate::model::Mention {
+            unread: true,
+            requires_playback: false,
+        });
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: *request_id,
+            chat_id: 1,
+            page: crate::cloud_search::Page {
+                messages: vec![mention.clone()],
+                next: Some(30),
+                total: 2,
+                sender: None,
+            },
+        });
+        for width in [40, 110] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(text.contains("Unread mentions"));
+            assert!(!text.contains("Pattern"));
+            assert!(app.request_visible_read().is_empty());
+        }
+        app.handle_network(NetworkEvent::MessageContentsRead {
+            channel_id: Some(-1_000_000_000_001),
+            message_ids: vec![30],
+        });
+        assert_eq!(
+            app.search.page.as_ref().unwrap().messages().len(),
+            1,
+            "channel IDs cannot clear private mentions"
+        );
+        app.handle_network(NetworkEvent::MessageContentsRead {
+            channel_id: None,
+            message_ids: vec![30],
+        });
+        assert!(app.search.page.as_ref().unwrap().messages().is_empty());
+        let commands = app.run_binding("search_more", 1);
+        let [
+            TelegramCommand::SearchMentions {
+                chat_id: 1,
+                before_id: 30,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("stable chat and next ID")
+        };
+        let stale = *request_id;
+        let commands = app.run_binding("refresh", 1);
+        let [
+            TelegramCommand::SearchMentions {
+                chat_id: 1,
+                before_id: 0,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("refresh starts at newest")
+        };
+        app.handle_network(NetworkEvent::SearchFailed {
+            request_id: stale,
+            error: "stale".into(),
+        });
+        assert!(app.search.loading);
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: *request_id,
+            chat_id: 1,
+            page: crate::cloud_search::Page {
+                messages: vec![mention.clone()],
+                next: None,
+                total: 1,
+                sender: None,
+            },
+        });
+        app.run_binding("search_query", 1);
+        assert!(!app.search.editing);
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::LoadCloudContext {
+                chat_id: 1,
+                message_id: 30,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("open original context")
+        };
+        app.handle_network(NetworkEvent::CloudSearchContext {
+            request_id: *request_id,
+            chat_id: 1,
+            message_id: 30,
+            messages: vec![mention],
+        });
+        assert_eq!(app.mode, Mode::Navigate);
+        assert_eq!(app.selected_message, Some(30));
+        assert_eq!(app.active_chat_id, Some(1));
+        assert_eq!(app.draft_data(2).unwrap().input.value(), "unsent");
+        app.connection = crate::event::ConnectionStatus::Offline;
+        app.run_binding("mentions", 1);
+        assert!(app.search.error.is_some());
+        assert!(!app.search.editing);
+        assert_eq!(app.run_binding("open", 1), [TelegramCommand::CancelSearch]);
     }
 }

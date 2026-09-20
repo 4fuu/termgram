@@ -124,7 +124,9 @@ pub(super) fn spawn(
     let search_id = command.cloud_search_id();
     let chat_id = match &command {
         TelegramCommand::SearchCloud(request) => Some(request.chat_id),
-        TelegramCommand::LoadCloudContext { chat_id, .. }
+        TelegramCommand::SearchMentions { chat_id, .. }
+        | TelegramCommand::ReadMentions { chat_id, .. }
+        | TelegramCommand::LoadCloudContext { chat_id, .. }
         | TelegramCommand::ReviewForward { chat_id, .. }
         | TelegramCommand::ForwardMessage { chat_id, .. }
         | TelegramCommand::CopyMessage { chat_id, .. }
@@ -215,6 +217,13 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::ReadMentions { message_ids, .. } => {
+            super::notifications::read_mentions(client, peer()?, message_ids).await?;
+            Ok(Response::Applied)
+        }
+        TelegramCommand::SearchMentions { before_id, .. } => Ok(Response::Search(
+            super::search::mentions(client, peer()?, *before_id).await?,
+        )),
         TelegramCommand::SetChatMute { mute, .. } => Ok(Response::Muted(
             super::notifications::set_mute(client, peer()?, *mute).await?,
         )),
@@ -472,7 +481,9 @@ pub(super) async fn complete(
     }
     if matches!(
         command,
-        TelegramCommand::SetChatUnread { .. } | TelegramCommand::SetChatMute { .. }
+        TelegramCommand::SetChatUnread { .. }
+            | TelegramCommand::SetChatMute { .. }
+            | TelegramCommand::ReadMentions { .. }
     ) {
         // A failed second RPC may follow a successful first RPC. Refresh even
         // on partial failure so the authoritative mark/count can settle.
@@ -530,7 +541,42 @@ pub(super) async fn complete(
             request_id,
             result: Ok((cache.notify_revision == notify_revision).then_some(until)),
         },
-        (TelegramCommand::SearchCloud(request), Response::Search(page)) => {
+        (
+            TelegramCommand::ReadMentions {
+                chat_id,
+                message_ids,
+            },
+            Response::Applied,
+        ) => {
+            // Common receipts arrive through the SDK's ordered PTS update. The
+            // channel RPC returns only Bool, so its acknowledgement supplies IDs.
+            if chat_id <= -1_000_000_000_000 {
+                events
+                    .send(NetworkEvent::MessageContentsRead {
+                        channel_id: Some(chat_id),
+                        message_ids: message_ids.clone(),
+                    })
+                    .await?;
+            }
+            NetworkEvent::MentionsReadFinished {
+                chat_id,
+                message_ids,
+                error: None,
+            }
+        }
+        (
+            TelegramCommand::SearchCloud(crate::cloud_search::Request {
+                id: request_id,
+                chat_id,
+                ..
+            })
+            | TelegramCommand::SearchMentions {
+                request_id,
+                chat_id,
+                ..
+            },
+            Response::Search(page),
+        ) => {
             let mut messages = page
                 .messages
                 .iter()
@@ -539,8 +585,8 @@ pub(super) async fn complete(
             hydrate_reply_senders(&mut messages, cache);
             cache.search_sender = page.sender;
             NetworkEvent::CloudSearchResults {
-                request_id: request.id,
-                chat_id: request.chat_id,
+                request_id,
+                chat_id,
                 page: crate::cloud_search::Page {
                     messages,
                     next: page.next,

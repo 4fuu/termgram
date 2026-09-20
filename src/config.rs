@@ -48,9 +48,9 @@ impl ReleaseChannel {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DownloadBehavior {
-    /// Download to Termgram's private temporary directory, but never ask the
-    /// operating system to reveal the file.
-    TempOnly,
+    /// Enter keeps the file in Termgram's managed cache. The separate
+    /// explicit reveal action remains available.
+    CacheOnly,
     /// A second explicit activation reveals the containing folder or selects
     /// the file; downloaded content is never executed directly.
     #[default]
@@ -61,7 +61,7 @@ impl DownloadBehavior {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::TempOnly => "Temp only",
+            Self::CacheOnly => "Keep in cache",
             Self::RevealOnActivation => "Reveal on activation",
         }
     }
@@ -69,14 +69,14 @@ impl DownloadBehavior {
     #[must_use]
     pub const fn toggled(self) -> Self {
         match self {
-            Self::TempOnly => Self::RevealOnActivation,
-            Self::RevealOnActivation => Self::TempOnly,
+            Self::CacheOnly => Self::RevealOnActivation,
+            Self::RevealOnActivation => Self::CacheOnly,
         }
     }
 
     const fn persisted(self) -> &'static str {
         match self {
-            Self::TempOnly => "temp_only",
+            Self::CacheOnly => "cache_only",
             Self::RevealOnActivation => "reveal_on_activation",
         }
     }
@@ -89,8 +89,8 @@ pub struct Settings {
     pub automatic_update_checks: bool,
     pub release_channel: ReleaseChannel,
     pub download_behavior: DownloadBehavior,
-    /// Reserve a compact, right-aligned message identifier column in the
-    /// conversation pane. Reply headers always show their target identifier
+    /// Show the inspected message identifier in the bottom message details.
+    /// Reply details always show their target identifier
     /// regardless of this preference.
     pub show_message_ids: bool,
     /// One-based local session slot currently selected for Telegram.
@@ -183,73 +183,7 @@ impl Settings {
     /// Returns an error if the directory is unsafe, the destination is not a
     /// regular file, or an atomic write cannot be completed.
     pub fn save_to(self, path: &Path) -> Result<()> {
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let parent_created = !parent.exists();
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-        let parent_metadata = fs::symlink_metadata(parent)
-            .with_context(|| format!("failed to inspect {}", parent.display()))?;
-        if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-            bail!("settings directory must be a real directory");
-        }
-        protect_settings_directory(parent, parent_created)?;
-
-        match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                bail!("refusing to replace settings through a symbolic link");
-            }
-            Ok(metadata) if !metadata.is_file() => {
-                bail!("settings path is not a regular file");
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
-            }
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(SETTINGS_FILE_NAME);
-        let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
-        let result = (|| -> Result<()> {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options
-                .open(&temporary)
-                .with_context(|| format!("failed to create {}", temporary.display()))?;
-            file.write_all(self.serialize().as_bytes())
-                .with_context(|| format!("failed to write {}", temporary.display()))?;
-            file.sync_all()
-                .with_context(|| format!("failed to sync {}", temporary.display()))?;
-            drop(file);
-            replace_settings_file(&temporary, path, nonce)?;
-            protect_settings_file(path)?;
-            #[cfg(unix)]
-            OpenOptions::new()
-                .read(true)
-                .open(parent)
-                .and_then(|directory| directory.sync_all())
-                .with_context(|| format!("failed to sync {}", parent.display()))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            drop(fs::remove_file(&temporary));
-        }
-        result
+        write_preferences(path, self.serialize().as_bytes())
     }
 
     fn serialize(self) -> String {
@@ -263,6 +197,93 @@ impl Settings {
             self.account_count,
         )
     }
+}
+
+/// Read bounded JSON preferences, using defaults only when the file is absent.
+///
+/// # Errors
+/// Returns read or format errors without replacing an existing file.
+pub(crate) fn read_preferences<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(error) => return Err(error.into()),
+    };
+    if text.len() > 1024 * 1024 {
+        bail!("preferences exceed 1 MiB");
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// Shared atomic writer for managed preferences, with the same platform cleanup
+/// and path protections as settings.conf.
+pub(crate) fn write_preferences(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent_created = !parent.exists();
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let parent_metadata = fs::symlink_metadata(parent)
+        .with_context(|| format!("failed to inspect {}", parent.display()))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        bail!("settings directory must be a real directory");
+    }
+    protect_settings_directory(parent, parent_created)?;
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("refusing to replace settings through a symbolic link");
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            bail!("settings path is not a regular file");
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(SETTINGS_FILE_NAME);
+    let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .with_context(|| format!("failed to create {}", temporary.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("failed to write {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temporary.display()))?;
+        drop(file);
+        replace_settings_file(&temporary, path, nonce)?;
+        protect_settings_file(path)?;
+        #[cfg(unix)]
+        OpenOptions::new()
+            .read(true)
+            .open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("failed to sync {}", parent.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        drop(fs::remove_file(&temporary));
+    }
+    result
 }
 
 fn parse_settings(text: &str) -> Result<Settings> {
@@ -294,7 +315,7 @@ fn parse_settings(text: &str) -> Result<Settings> {
             }
             "download_behavior" => {
                 settings.download_behavior = match value.trim() {
-                    "temp_only" => DownloadBehavior::TempOnly,
+                    "cache_only" | "temp_only" => DownloadBehavior::CacheOnly,
                     "reveal_on_activation" => DownloadBehavior::RevealOnActivation,
                     _ => bail!("download_behavior has an unsupported value"),
                 };
@@ -397,6 +418,10 @@ pub struct Config {
     pub api_id: i32,
     pub api_hash: String,
     pub session_path: PathBuf,
+    /// Durable drafts and later user-authored state shared across account slots.
+    pub state_path: PathBuf,
+    /// Enable bounded background Ping observations for the Lua statusline.
+    pub measure_latency: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -406,6 +431,8 @@ impl std::fmt::Debug for Config {
             .field("api_id", &self.api_id)
             .field("api_hash", &"[redacted]")
             .field("session_path", &self.session_path)
+            .field("state_path", &self.state_path)
+            .field("measure_latency", &self.measure_latency)
             .finish()
     }
 }
@@ -455,10 +482,14 @@ impl Config {
             choose_default_session_path(current, legacy)
         };
 
+        let mut state_path = session_path.as_os_str().to_os_string();
+        state_path.push(".state.sqlite3");
         Ok(Self {
             api_id,
             api_hash,
+            state_path: PathBuf::from(state_path),
             session_path,
+            measure_latency: false,
         })
     }
 
@@ -493,7 +524,9 @@ impl Config {
         Ok(Self {
             api_id: self.api_id,
             api_hash: self.api_hash.clone(),
+            state_path: self.state_path.clone(),
             session_path,
+            measure_latency: self.measure_latency,
         })
     }
 
@@ -614,6 +647,41 @@ fn choose_default_session_path(current: PathBuf, legacy: Option<PathBuf>) -> Pat
     }
 }
 
+pub(crate) fn prepare_private_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            bail!("local storage must be a regular file")
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let metadata = std::fs::symlink_metadata(path)?;
+                    if !metadata.is_file() || metadata.file_type().is_symlink() {
+                        bail!("local storage must be a regular file");
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -691,7 +759,7 @@ mod tests {
         let second = Settings {
             automatic_update_checks: false,
             release_channel: ReleaseChannel::Prerelease,
-            download_behavior: DownloadBehavior::TempOnly,
+            download_behavior: DownloadBehavior::CacheOnly,
             show_message_ids: true,
             active_account: 2,
             account_count: 3,
@@ -765,6 +833,8 @@ mod tests {
     #[test]
     fn debug_output_redacts_the_api_hash() {
         let config = Config {
+            state_path: PathBuf::from("unused-state"),
+            measure_latency: false,
             api_id: 42,
             api_hash: "super-secret".to_owned(),
             session_path: PathBuf::from("session.db"),
@@ -777,6 +847,8 @@ mod tests {
     #[test]
     fn additional_accounts_use_distinct_sibling_session_files() {
         let base = Config {
+            state_path: PathBuf::from("unused-state"),
+            measure_latency: false,
             api_id: 42,
             api_hash: "secret".to_owned(),
             session_path: PathBuf::from("state/custom.session"),
@@ -837,6 +909,8 @@ mod tests {
         std::fs::create_dir_all(&root).expect("temporary directory");
         let session_path = root.join("session.db");
         let config = Config {
+            state_path: PathBuf::from("unused-state"),
+            measure_latency: false,
             api_id: 42,
             api_hash: "secret".to_owned(),
             session_path: session_path.clone(),
@@ -876,6 +950,7 @@ mod tests {
         let symlink_path = root.join("symlink.session");
         symlink(&symlink_target, &symlink_path).expect("create session symlink");
         let unsafe_config = Config {
+            state_path: PathBuf::from("unused-state"),
             session_path: symlink_path.clone(),
             ..config.clone()
         };

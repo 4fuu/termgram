@@ -21,8 +21,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|number| number.trim().parse::<u64>().ok())
-        .map_or_else(|| "unknown".to_owned(), |number| number.to_string());
+        .and_then(|number| number.trim().parse::<u64>().ok());
+    let source_version = number.map_or_else(
+        || env!("CARGO_PKG_VERSION").to_owned(),
+        |height| format!("0.1.{height}"),
+    );
+    let number = number.map_or_else(|| "unknown".to_owned(), |number| number.to_string());
     println!("cargo:rustc-env=TERMGRAM_BUILD_NUMBER={number}");
+    println!("cargo:rustc-env=TERMGRAM_SOURCE_VERSION={source_version}");
     Ok(())
 }

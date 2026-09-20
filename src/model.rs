@@ -1,19 +1,28 @@
+use serde::{Deserialize, Serialize};
+
 use chrono::{DateTime, Local, TimeZone, Utc};
 use std::path::Path;
 
 pub type ChatId = i64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Chat {
     pub id: ChatId,
     pub title: String,
     pub kind: ChatKind,
+    #[serde(default)]
+    pub membership: crate::folders::ChatMembership,
     pub unread: u32,
+    /// None means an older cache without a server read boundary.
+    #[serde(default)]
+    pub read_inbox_max_id: Option<i32>,
     pub last_message: String,
+    #[serde(default)]
+    pub last_message_id: Option<i32>,
     pub last_activity: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChatKind {
     Direct,
     Group,
@@ -24,8 +33,10 @@ pub enum ChatKind {
 ///
 /// This deliberately contains metadata only. Telegram's file reference stays
 /// in the network layer and is refreshed on demand before a download.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Attachment {
+    #[serde(default)]
+    pub source_id: Option<i64>,
     pub kind: AttachmentKind,
     pub file_name: Option<String>,
     pub mime_type: Option<String>,
@@ -34,7 +45,7 @@ pub struct Attachment {
     pub fallback_emoji: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentKind {
     Photo,
     File,
@@ -91,8 +102,27 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct Mention {
+    pub unread: bool,
+    /// Voice, round-video or self-destructing content needs explicit consumption.
+    pub requires_playback: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
+    #[serde(default)]
+    pub reactions: Option<crate::reactions::Summary>,
+    #[serde(default)]
+    pub poll: Option<crate::polls::Poll>,
+    #[serde(default)]
+    pub entities: Vec<crate::entities::Entity>,
+    #[serde(skip)]
+    pub notification: Option<crate::notifications::Metadata>,
+    #[serde(default)]
+    pub mention: Option<Mention>,
+    #[serde(default)]
+    pub pinned: bool,
     pub id: i32,
     pub chat_id: ChatId,
     pub sender: String,
@@ -103,6 +133,8 @@ pub struct Message {
     pub reply_to: Option<ReplyInfo>,
     pub text: String,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub edited_at: Option<DateTime<Utc>>,
     pub outgoing: bool,
     pub delivery: Delivery,
     pub attachment: Option<Attachment>,
@@ -114,20 +146,20 @@ pub struct Message {
     pub buttons: Vec<MessageButton>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct MessageLink {
     pub label: String,
     pub url: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct MessageButton {
     pub label: String,
     pub index: u16,
     pub kind: MessageButtonKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageButtonKind {
     Url,
     Callback,
@@ -143,7 +175,7 @@ impl MessageButtonKind {
 }
 
 /// Lightweight metadata used to render and navigate a reply.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct ReplyInfo {
     pub message_id: i32,
     /// Stable dialog identifier for the target. Telegram permits replies to a
@@ -154,7 +186,7 @@ pub struct ReplyInfo {
     pub sender: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Delivery {
     Pending,
     Sent,
@@ -179,6 +211,49 @@ impl Chat {
 
 impl Message {
     #[must_use]
+    pub fn has_spoilers(&self) -> bool {
+        self.poll.as_ref().is_some_and(|poll| {
+            poll.texts().any(|text| {
+                text.entities.iter().any(|entity| {
+                    entity.kind == crate::entities::Kind::Spoiler && entity.valid_for(&text.text)
+                })
+            })
+        }) || self.entities.iter().any(|entity| {
+            entity.kind == crate::entities::Kind::Spoiler && entity.valid_for(&self.text)
+        })
+    }
+
+    /// Summary surfaces never reveal spoilers, even after an explicit reveal
+    /// in the transcript. Copy and edit intentionally use the complete text.
+    #[must_use]
+    pub fn preview_text(&self) -> String {
+        if self.text.is_empty() {
+            if let Some(poll) = &self.poll {
+                return format!(
+                    "[{}] {}",
+                    if poll.definition.quiz { "quiz" } else { "poll" },
+                    poll.definition.question.preview()
+                );
+            }
+            self.attachment
+                .as_ref()
+                .map_or("Message", Attachment::display_name)
+                .to_owned()
+        } else {
+            crate::entities::conceal(&self.text, &self.entities).into_owned()
+        }
+    }
+
+    pub(crate) fn acknowledge_contents(&mut self, channel: Option<ChatId>, ids: &[i32]) {
+        if channel.map_or(self.chat_id > -1_000_000_000_000, |id| self.chat_id == id)
+            && ids.contains(&self.id)
+            && let Some(mention) = &mut self.mention
+        {
+            mention.unread = false;
+        }
+    }
+
+    #[must_use]
     pub fn timestamp_from_unix(timestamp: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(timestamp, 0)
             .single()
@@ -188,13 +263,30 @@ impl Message {
 
 #[must_use]
 pub fn sanitize_terminal_text(value: &str) -> String {
+    sanitize_text_with_offsets(value, |_, _| {})
+}
+
+/// Report valid raw UTF-16 boundaries and their sanitized UTF-8 positions. A
+/// surrogate's midpoint is never reported; stripped controls have zero width.
+pub(crate) fn sanitize_text_with_offsets(
+    value: &str,
+    mut boundary: impl FnMut(usize, usize),
+) -> String {
     let mut clean = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
+    let mut units = 0;
+    boundary(0, 0);
     while let Some(character) = chars.next() {
+        units += character.len_utf16();
         if character == '\u{1b}' {
+            boundary(units, clean.len());
             if chars.peek() == Some(&'[') {
                 chars.next();
+                units += 1;
+                boundary(units, clean.len());
                 for next in chars.by_ref() {
+                    units += next.len_utf16();
+                    boundary(units, clean.len());
                     if ('@'..='~').contains(&next) {
                         break;
                     }
@@ -208,6 +300,7 @@ pub fn sanitize_terminal_text(value: &str) -> String {
             character if character.is_control() => {}
             character => clean.push(character),
         }
+        boundary(units, clean.len());
     }
     clean
 }

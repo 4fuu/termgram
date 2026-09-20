@@ -1,3 +1,23 @@
+mod chat_info;
+mod deletion;
+mod editing;
+mod entities;
+mod folders;
+mod forwarding;
+mod invites;
+mod local;
+mod media_cache;
+mod message_actions;
+mod notifications;
+mod pins;
+mod polls;
+mod reactions;
+mod reads;
+mod requests;
+mod search;
+mod sharing;
+mod telemetry;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,14 +27,16 @@ use anyhow::{Context, Result, anyhow, bail};
 use grammers_client::client::{LoginToken, PasswordToken, UpdatesConfiguration};
 use grammers_client::media::{Media, PhotoSize};
 use grammers_client::message::{InputMessage, Message as TelegramMessage};
-use grammers_client::peer::{Peer, User};
+use grammers_client::peer::{Dialog, Peer, User};
 use grammers_client::sender::SenderPoolHandle;
 use grammers_client::tl::{self, enums::Dialog as RawDialog};
 use grammers_client::update::Update;
 use grammers_client::{Client, InvocationError, SenderPool, SignInError};
 use grammers_session::Session;
 use grammers_session::storages::SqliteSession;
-use grammers_session::types::{PeerId, PeerInfo, PeerKind, PeerRef, UpdateState, UpdatesState};
+use grammers_session::types::{
+    ChannelKind, PeerId, PeerInfo, PeerKind, PeerRef, UpdateState, UpdatesState,
+};
 use grammers_session::updates::UpdatesLike;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -26,14 +48,14 @@ use crate::model::{
     MessageButtonKind, MessageLink, ReplyInfo, sanitize_terminal_line, sanitize_terminal_text,
 };
 
-const HISTORY_LIMIT: usize = 80;
+pub(crate) const HISTORY_LIMIT: usize = 80;
 const COMMAND_QUEUE_CAPACITY: usize = 32;
 const EVENT_QUEUE_CAPACITY: usize = 64;
-const UPDATE_QUEUE_LIMIT: usize = 256;
 const TRANSIENT_SENDER_NAME_LIMIT: usize = 256;
 const MESSAGE_SENDER_CACHE_LIMIT: usize = 512;
 const UNRESOLVED_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 const MAX_CONCURRENT_TRANSFERS: usize = 3;
+const MAX_PENDING_TRANSFERS: usize = 32;
 const QR_MIGRATION_LIMIT: usize = 4;
 const MIN_QR_REFRESH_DELAY: Duration = Duration::from_millis(500);
 const DEFAULT_QR_REFRESH_DELAY: Duration = Duration::from_secs(30);
@@ -41,13 +63,35 @@ const MAX_QR_REFRESH_DELAY: Duration = Duration::from_secs(120);
 const QR_RESTART_DELAY: Duration = Duration::from_secs(1);
 
 pub struct TelegramHandle {
+    pub measure_latency: tokio::sync::watch::Sender<bool>,
     pub commands: mpsc::Sender<TelegramCommand>,
     pub events: mpsc::Receiver<NetworkEvent>,
     pub task: tokio::task::JoinHandle<()>,
+    pub active_chat: tokio::sync::watch::Sender<Option<ChatId>>,
+}
+
+#[derive(Default)]
+struct MetadataRefresh {
+    in_flight: bool,
+    dirty: bool,
 }
 
 #[derive(Default)]
 struct WorkerCache {
+    cloud_search: Option<(u64, tokio::task::AbortHandle)>,
+    search_sender: Option<PeerRef>,
+    notify_revision: u64,
+    notification_peers: HashMap<ChatId, PeerRef>,
+    notification_peer_order: VecDeque<ChatId>,
+    transfer_slots: Option<Arc<tokio::sync::Semaphore>>,
+    upload_order: HashMap<ChatId, tokio::sync::oneshot::Receiver<()>>,
+    dialogs: MetadataRefresh,
+    folders: MetadataRefresh,
+    dialog_pins: MetadataRefresh,
+    message_pins: MetadataRefresh,
+    active_chat: Option<ChatId>,
+    self_id: i64,
+    channel_pts: HashMap<ChatId, i32>,
     peers: HashMap<ChatId, PeerRef>,
     /// Peers opened explicitly through supported Telegram links remain usable
     /// even when they are not part of the account's dialog snapshot.
@@ -74,8 +118,10 @@ struct WorkerCache {
     /// triggering a complete dialog scan. Once it expires, any unresolved peer
     /// can retry the refresh.
     last_unresolved_refresh: Option<Instant>,
-    /// Created lazily so text-only sessions never touch the temporary folder.
+    /// Created lazily so text-only sessions never create a media directory.
     download_dir: Option<PathBuf>,
+    media_root: PathBuf,
+    cache_owner: Option<Arc<std::fs::File>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,9 +158,8 @@ enum TransferCompletion {
     Send {
         chat_id: ChatId,
         local_id: i32,
-        path: PathBuf,
+        attachment: crate::staging::Attachment,
         caption: String,
-        as_photo: bool,
         reply_to: Option<i32>,
         result: Box<Result<TelegramMessage, String>>,
     },
@@ -125,51 +170,37 @@ enum TransferCompletion {
         result: Result<PathBuf, String>,
     },
     Download {
+        request_id: u64,
         chat_id: ChatId,
         message_id: i32,
         result: Result<PathBuf, String>,
     },
 }
 
-struct PartialDownload {
-    path: PathBuf,
-    complete: bool,
-}
-
-impl PartialDownload {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            complete: false,
-        }
-    }
-
-    fn finish(mut self) -> PathBuf {
-        self.complete = true;
-        self.path.clone()
-    }
-}
-
-impl Drop for PartialDownload {
-    fn drop(&mut self) {
-        if !self.complete {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
 #[must_use]
 pub fn spawn(config: Config) -> TelegramHandle {
+    let (measure_tx, measure_rx) = tokio::sync::watch::channel(config.measure_latency);
+    let (active_tx, active_rx) = tokio::sync::watch::channel(None);
     let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
     let task = tokio::spawn(async move {
-        if let Err(error) = Box::pin(run(config, command_rx, event_tx.clone())).await {
+        if let Err(error) = Box::pin(local::serve(
+            config,
+            command_rx,
+            event_tx.clone(),
+            active_rx,
+            measure_rx,
+        ))
+        .await
+        {
             let _ = event_tx
                 .send(NetworkEvent::Fatal(describe_worker_error(&error)))
                 .await;
         }
     });
     TelegramHandle {
+        measure_latency: measure_tx,
+        active_chat: active_tx,
         commands: command_tx,
         events: event_rx,
         task,
@@ -190,6 +221,9 @@ async fn run(
     config: Config,
     mut commands: mpsc::Receiver<TelegramCommand>,
     events: mpsc::Sender<NetworkEvent>,
+    mut bootstrap: local::Bootstrap,
+    mut active_chat: tokio::sync::watch::Receiver<Option<ChatId>>,
+    measure_latency: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     config.prepare_session_dir()?;
     events
@@ -209,7 +243,11 @@ async fn run(
         mut updates,
     } = SenderPool::new(session.clone(), config.api_id);
     let client = Client::new(handle.clone());
-    let pool_task = tokio::spawn(runner.run());
+    // JoinSet aborts the sender on account switches and initialization failures,
+    // including when the owner itself is aborted during shutdown.
+    let mut pool_tasks = JoinSet::new();
+    let mut observations = JoinSet::new();
+    pool_tasks.spawn(runner.run());
 
     let result: Result<()> = Box::pin(async {
         let initially_authorized = client.is_authorized().await?;
@@ -244,11 +282,34 @@ async fn run(
                 }
             }
         };
-        let user_name = safe_name(me.first_name(), "You");
+        let user_id = me.id().bare_id().context("Telegram account has no stable identifier")?;
+        if bootstrap.account_id.is_some_and(|previous| previous != user_id) {
+            bootstrap.cursor = crate::cache::SyncCursor::default();
+            bootstrap.chats.clear();
+            events.send(NetworkEvent::CacheAccountReset { user_id }).await?;
+        }
+        events.send(NetworkEvent::AccountIdentity { user_id }).await?;
+        let user_name = safe_name(Some(&me.full_name()), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
+        observations.spawn(telemetry::observe(client.clone(), session.clone(), events.clone(), measure_latency));
 
-        let mut cache = WorkerCache::default();
-        load_dialogs(&client, &mut cache, &events).await?;
+        let mut media_root = config.session_path.as_os_str().to_os_string();
+        media_root.push(".media");
+        let mut cache = WorkerCache { cache_owner: Some(bootstrap.cache_owner.clone()), media_root: PathBuf::from(media_root), self_id: user_id, folders: MetadataRefresh { dirty: true, ..MetadataRefresh::default() }, ..WorkerCache::default() };
+        for chat in bootstrap.chats {
+            if let Some(id) = PeerId::from_bot_api_dialog_id(chat.id) {
+                if let Some(peer) = session.peer_ref(id).await? { cache.peers.insert(chat.id, peer); }
+                if let Some(top) = chat.last_message_id { cache.top_messages.insert(chat.id, top); }
+                cache.names.insert(id, chat.title);
+                if chat.kind == ChatKind::Group && id.kind() == PeerKind::Channel {
+                    cache.visible_channel_groups.insert(chat.id);
+                }
+            }
+        }
+        let cursor = bootstrap.cursor;
+        for &(id, pts) in &cursor.channels {
+            cache.channel_pts.insert(PeerId::channel_unchecked(id).bot_api_dialog_id_unchecked(), pts);
+        }
         events
             .send(NetworkEvent::Status(ConnectionStatus::Online))
             .await
@@ -259,121 +320,158 @@ async fn run(
                 updates,
                 UpdatesConfiguration {
                     catch_up: true,
-                    update_queue_limit: Some(UPDATE_QUEUE_LIMIT),
+                    // Never truncate catch-up batches; losing payloads while advancing
+                    // PTS would leave the view permanently stale.
+                    update_queue_limit: None,
                 },
             )
             .await
             .map_err(anyhow::Error::from_boxed)?;
+        updates.restore_state(UpdatesState {
+            pts: cursor.pts, qts: cursor.qts, date: cursor.date, seq: cursor.seq,
+            channels: cursor.channels.into_iter().map(|(id, pts)| grammers_session::types::ChannelState { id, pts }).collect(),
+        });
+        let active_channel = updates.active_channel();
+        cache.active_chat = *active_chat.borrow();
+        cache.message_pins.dirty = true;
+        signal_active_channel(&cache, *active_chat.borrow_and_update(), &active_channel);
         let mut recovering = false;
         let mut transfers = JoinSet::new();
+        let mut requests = JoinSet::new();
+        cache.dialog_pins.dirty = true;
+        requests::refresh_dialogs(&client, &mut cache, &events, &mut requests).await?;
+        requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
 
-        loop {
-            tokio::select! {
-                command = commands.recv() => {
-                    let Some(command) = command else { break; };
-                    match Box::pin(handle_command(
-                        command,
-                        &client,
-                        &mut cache,
-                        &events,
-                        &mut transfers,
-                    )).await {
-                        Ok(true) => break,
-                        Ok(false) => {}
-                        Err(error) => {
-                            let message = format!("Telegram request failed: {error:#}");
-                            events
-                                .send(NetworkEvent::Error(message))
-                                .await
-                                .ok();
+        'worker: loop {
+            requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
+            // Grammers can change its message-box state before awaiting peer
+            // storage. Keep this future alive when commands or RPCs complete.
+            let next = updates.next_batch();
+            tokio::pin!(next);
+            let update = loop {
+                tokio::select! {
+                    update = &mut next => break update,
+                    changed = active_chat.changed() => {
+                        if changed.is_err() { break 'worker; }
+                        cache.active_chat = *active_chat.borrow();
+                        cache.message_pins.dirty = true;
+                        signal_active_channel(&cache, *active_chat.borrow_and_update(), &active_channel);
+                    }
+                    command = commands.recv(), if requests.len() < requests::MAX_REQUESTS => {
+                        let Some(command) = command else { break 'worker; };
+                        if handle_command(command, &client, &mut cache, &events,
+                            &mut transfers, &mut requests).await? {
+                            break 'worker;
+                        }
+                    }
+                    completion = requests.join_next(), if !requests.is_empty() => {
+                        match completion {
+                            Some(Ok(completion)) => {
+                                requests::complete(completion, &mut cache, &events).await?;
+                                signal_active_channel(&cache, *active_chat.borrow(), &active_channel);
+                            }
+                            Some(Err(error)) if error.is_cancelled() => {}
+                            Some(Err(error)) => bail!("Telegram request task failed: {error}"),
+                            None => {}
+                        }
+                    }
+                    completion = transfers.join_next(), if !transfers.is_empty() => {
+                        match completion {
+                            Some(Ok(completion)) => process_transfer_completion(completion, &mut cache, &events).await?,
+                            Some(Err(error)) => bail!("Telegram transfer task failed: {error}"),
+                            None => {}
                         }
                     }
                 }
-                update = updates.next() => {
-                    if matches!(update, Err(InvocationError::Dropped)) {
-                        bail!("Telegram update stream closed");
+                requests::refresh_pending(&client, &mut cache, &events, &mut requests).await?;
+            };
+            if matches!(update, Err(InvocationError::Dropped)) {
+                bail!("Telegram update stream closed");
+            }
+            match update {
+                Ok((batch, state)) => {
+                    for update in batch {
+                        Box::pin(process_update(Ok(update), &session, &client, &mut cache,
+                            &events, &mut recovering, &mut requests)).await?;
                     }
-                    let update_failed = update.is_err();
-                    if let Err(error) = Box::pin(process_update(
-                        update,
-                        &client,
-                        &mut cache,
-                        &events,
-                        &mut recovering,
-                    )).await {
-                        events
-                            .send(NetworkEvent::Error(format!(
-                                "Could not process a Telegram update: {error:#}"
-                            )))
-                            .await
-                            .ok();
-                    }
-                    if update_failed {
-                        // Avoid a tight retry loop if difference recovery is temporarily failing.
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
+                    events.send(NetworkEvent::SyncCheckpoint(crate::cache::SyncCursor {
+                        pts: state.pts, qts: state.qts, date: state.date, seq: state.seq,
+                        channels: state.channels.into_iter().map(|channel| (channel.id, channel.pts)).collect(),
+                    })).await?;
                 }
-                transfer = transfers.join_next(), if !transfers.is_empty() => {
-                    match transfer {
-                        Some(Ok(completion)) => {
-                            Box::pin(process_transfer_completion(
-                                completion,
-                                &client,
-                                &mut cache,
-                                &events,
-                            )).await?;
-                        }
-                        Some(Err(error)) if !error.is_cancelled() => {
-                            events
-                                .send(NetworkEvent::Error(format!(
-                                    "Telegram transfer task failed: {error}"
-                                )))
-                                .await
-                                .ok();
-                        }
-                        Some(Err(_)) | None => {}
-                    }
+                Err(error) => {
+                    Box::pin(process_update(Err(error), &session, &client, &mut cache,
+                        &events, &mut recovering, &mut requests)).await?;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
             }
         }
 
-        transfers.abort_all();
-        while transfers.join_next().await.is_some() {}
+        requests.shutdown().await;
+        transfers.shutdown().await;
 
-        updates
-            .sync_update_state()
-            .await
-            .map_err(anyhow::Error::from_boxed)?;
         Ok(())
     })
     .await;
+    observations.shutdown().await;
     handle.quit();
-    let _ = pool_task.await;
+    let _ = pool_tasks.join_next().await;
     result
 }
 
-#[allow(clippy::too_many_lines)]
+fn signal_active_channel(
+    cache: &WorkerCache,
+    chat_id: Option<ChatId>,
+    sender: &tokio::sync::watch::Sender<Option<(i64, i32)>>,
+) {
+    let value = chat_id.and_then(|id| {
+        let pts = *cache.channel_pts.get(&id)?;
+        let peer = cache.peers.get(&id)?;
+        (peer.id.kind() == PeerKind::Channel).then(|| (peer.id.bare_id_unchecked(), pts))
+    });
+    sender.send_if_modified(|current| {
+        if *current == value {
+            false
+        } else {
+            *current = value;
+            true
+        }
+    });
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn process_update(
     update: Result<Update, InvocationError>,
+    session: &SqliteSession,
     client: &Client,
     cache: &mut WorkerCache,
     events: &mpsc::Sender<NetworkEvent>,
     recovering: &mut bool,
+    requests: &mut JoinSet<requests::Completion>,
 ) -> Result<()> {
     match update {
         Ok(Update::NewMessage(update)) => {
             restore_online_status(events, recovering).await;
             let message = update.into_inner();
-            let Some(hidden) = is_hidden_broadcast(client, &message, cache).await? else {
-                if begin_unresolved_refresh(cache) {
-                    load_dialogs(client, cache, events).await?;
+            if message.mentioned() {
+                cache.dialogs.dirty = true;
+            }
+            let Some(hidden) = is_hidden_broadcast(session, &message, cache).await? else {
+                if requests.len() < requests::MAX_REQUESTS && begin_unresolved_refresh(cache) {
+                    requests::refresh_dialogs(client, cache, events, requests).await?;
                 }
+                events
+                    .send(NetworkEvent::CacheMessage(map_message(&message, cache)?))
+                    .await?;
                 return Ok(());
             };
             if hidden {
                 return Ok(());
             }
             let chat_id = peer_id(&message)?;
+            if !cache.peers.contains_key(&chat_id) {
+                cache.dialogs.dirty = true;
+            }
             if let Some(peer) = message
                 .peer_ref()
                 .await
@@ -381,9 +479,23 @@ async fn process_update(
             {
                 cache.peers.insert(chat_id, peer);
             }
+            if message.mentioned()
+                && let Some(sender) = message.sender()
+                && let Ok(Some(peer)) = sender.to_ref().await
+                && let Some(id) = peer.id.bot_api_dialog_id().filter(|id| *id > 0)
+            {
+                if cache.notification_peers.insert(id, peer).is_none() {
+                    cache.notification_peer_order.push_back(id);
+                }
+                while cache.notification_peer_order.len() > 256 {
+                    if let Some(old) = cache.notification_peer_order.pop_front() {
+                        cache.notification_peers.remove(&old);
+                    }
+                }
+            }
             let message_id = message.id();
             let after_dialog_snapshot = advance_dialog_watermark(cache, chat_id, message_id);
-            let message = Box::pin(map_message(client, &message, cache)).await?;
+            let message = map_message(&message, cache)?;
             let event = if after_dialog_snapshot {
                 NetworkEvent::NewMessage(message)
             } else {
@@ -394,23 +506,30 @@ async fn process_update(
         Ok(Update::MessageEdited(update)) => {
             restore_online_status(events, recovering).await;
             let message = update.into_inner();
-            let Some(hidden) = is_hidden_broadcast(client, &message, cache).await? else {
-                if begin_unresolved_refresh(cache) {
-                    load_dialogs(client, cache, events).await?;
+            cache.message_pins.dirty |= message.pinned();
+            if message.mentioned() {
+                cache.dialogs.dirty = true;
+            }
+            let Some(hidden) = is_hidden_broadcast(session, &message, cache).await? else {
+                if requests.len() < requests::MAX_REQUESTS && begin_unresolved_refresh(cache) {
+                    requests::refresh_dialogs(client, cache, events, requests).await?;
                 }
+                events
+                    .send(NetworkEvent::CacheMessage(map_message(&message, cache)?))
+                    .await?;
                 return Ok(());
             };
             if hidden {
                 return Ok(());
             }
             events
-                .send(NetworkEvent::MessageUpdated(
-                    Box::pin(map_message(client, &message, cache)).await?,
-                ))
+                .send(NetworkEvent::MessageUpdated(map_message(&message, cache)?))
                 .await
                 .ok();
         }
         Ok(Update::MessageDeleted(update)) => {
+            cache.dialogs.dirty = true;
+            cache.message_pins.dirty = true;
             restore_online_status(events, recovering).await;
             let channel_id = update
                 .channel_id()
@@ -427,6 +546,195 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::MessageReactions(update) => {
+                    if let Some(chat) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::ReactionsChanged(crate::reactions::Update {
+                                chat,
+                                message: update.msg_id,
+                                summary: reactions::summary(&update.reactions),
+                            }))
+                            .await?;
+                    }
+                }
+                tl::enums::Update::MessagePoll(update) => {
+                    events
+                        .send(NetworkEvent::PollChanged(polls::update(update)))
+                        .await?;
+                }
+                tl::enums::Update::PinnedMessages(update) => {
+                    if let Some(chat_id) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::MessagePinsChanged {
+                                chat_id,
+                                message_ids: update.messages.clone(),
+                                pinned: update.pinned,
+                            })
+                            .await?;
+                        cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
+                    }
+                }
+                tl::enums::Update::PinnedChannelMessages(update) => {
+                    let chat_id =
+                        PeerId::channel_unchecked(update.channel_id).bot_api_dialog_id_unchecked();
+                    events
+                        .send(NetworkEvent::MessagePinsChanged {
+                            chat_id,
+                            message_ids: update.messages.clone(),
+                            pinned: update.pinned,
+                        })
+                        .await?;
+                    cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
+                }
+                tl::enums::Update::DialogPinned(_) | tl::enums::Update::PinnedDialogs(_) => {
+                    cache.dialog_pins.dirty = true;
+                }
+                tl::enums::Update::DialogFilter(_)
+                | tl::enums::Update::DialogFilterOrder(_)
+                | tl::enums::Update::DialogFilters => {
+                    cache.folders.dirty = true;
+                }
+                tl::enums::Update::Channel(update) => {
+                    events
+                        .send(NetworkEvent::ChatInfoInvalidated {
+                            chat_id: PeerId::channel_unchecked(update.channel_id)
+                                .bot_api_dialog_id_unchecked(),
+                        })
+                        .await?;
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::Chat(update) => {
+                    events
+                        .send(NetworkEvent::ChatInfoInvalidated {
+                            chat_id: PeerId::chat_unchecked(update.chat_id)
+                                .bot_api_dialog_id_unchecked(),
+                        })
+                        .await?;
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::ChatDefaultBannedRights(update) => {
+                    if let Some(chat_id) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::ChatInfoInvalidated { chat_id })
+                            .await?;
+                    }
+                }
+                tl::enums::Update::NotifySettings(update) => {
+                    cache.notify_revision = cache.notify_revision.wrapping_add(1);
+                    cache.dialogs.dirty = true;
+                    events
+                        .send(NetworkEvent::NotificationSettingsChanged)
+                        .await?;
+                    if let tl::enums::NotifyPeer::Peer(target) = &update.peer
+                        && let Some(chat_id) = PeerId::from(target.peer.clone()).bot_api_dialog_id()
+                        && let tl::enums::PeerNotifySettings::Settings(settings) =
+                            &update.notify_settings
+                        && let Some(until) = settings.mute_until
+                    {
+                        events
+                            .send(NetworkEvent::ChatMuteChanged {
+                                chat_id,
+                                until: i64::from(until),
+                            })
+                            .await?;
+                    }
+                }
+                tl::enums::Update::ReadMessagesContents(update) => {
+                    cache.dialogs.dirty = true;
+                    events
+                        .send(NetworkEvent::MessageContentsRead {
+                            channel_id: None,
+                            message_ids: update.messages.clone(),
+                        })
+                        .await?;
+                }
+                tl::enums::Update::ChannelReadMessagesContents(update) => {
+                    cache.dialogs.dirty = true;
+                    events
+                        .send(NetworkEvent::MessageContentsRead {
+                            channel_id: Some(
+                                PeerId::channel_unchecked(update.channel_id)
+                                    .bot_api_dialog_id_unchecked(),
+                            ),
+                            message_ids: update.messages.clone(),
+                        })
+                        .await?;
+                }
+                tl::enums::Update::PeerSettings(_) => {
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::DialogUnreadMark(update) => {
+                    if update.saved_peer_id.is_none()
+                        && let tl::enums::DialogPeer::Peer(peer) = &update.peer
+                        && let Some(chat_id) = PeerId::from(peer.peer.clone()).bot_api_dialog_id()
+                    {
+                        events
+                            .send(NetworkEvent::ChatUnreadChanged {
+                                chat_id,
+                                unread: update.unread,
+                            })
+                            .await?;
+                    }
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::FolderPeers(update) => {
+                    cache.dialogs.dirty = true;
+                    cache.dialog_pins.dirty = true;
+                    for peer in &update.folder_peers {
+                        let tl::enums::FolderPeer::Peer(peer) = peer;
+                        if let Some(chat_id) = PeerId::from(peer.peer.clone()).bot_api_dialog_id() {
+                            events
+                                .send(NetworkEvent::ArchiveChanged {
+                                    chat_id,
+                                    archived: peer.folder_id == 1,
+                                })
+                                .await?;
+                        }
+                    }
+                }
+                tl::enums::Update::ReadHistoryInbox(read) => {
+                    if let Some(chat_id) = PeerId::from(read.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::UnreadChanged {
+                                chat_id,
+                                max_id: read.max_id,
+                                unread: u32::try_from(read.still_unread_count.max(0))
+                                    .unwrap_or_default(),
+                            })
+                            .await?;
+                    }
+                }
+                tl::enums::Update::ReadChannelInbox(read) => {
+                    events
+                        .send(NetworkEvent::UnreadChanged {
+                            max_id: read.max_id,
+                            chat_id: PeerId::channel_unchecked(read.channel_id)
+                                .bot_api_dialog_id_unchecked(),
+                            unread: u32::try_from(read.still_unread_count.max(0))
+                                .unwrap_or_default(),
+                        })
+                        .await?;
+                }
+                tl::enums::Update::PtsChanged => {
+                    cache.dialogs.dirty = true;
+                    cache.folders.dirty = true;
+                    cache.dialog_pins.dirty = true;
+                    cache.message_pins.dirty = true;
+                    events
+                        .send(NetworkEvent::CacheInvalidated { chat_id: None })
+                        .await?;
+                }
+                tl::enums::Update::ChannelTooLong(update) => {
+                    let chat_id =
+                        PeerId::channel_unchecked(update.channel_id).bot_api_dialog_id_unchecked();
+                    cache.dialogs.dirty = true;
+                    cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
+                    events
+                        .send(NetworkEvent::CacheInvalidated {
+                            chat_id: Some(chat_id),
+                        })
+                        .await?;
+                }
                 grammers_client::tl::enums::Update::ReadHistoryOutbox(read) => {
                     if let Some(chat_id) = PeerId::from(read.peer.clone()).bot_api_dialog_id() {
                         cache
@@ -1039,18 +1347,17 @@ async fn cancel_authorized_login(client: &Client) -> Result<CodeOutcome> {
     Ok(CodeOutcome::Restart)
 }
 
-async fn load_dialogs(
-    client: &Client,
+fn apply_dialogs(
+    dialogs: Vec<Dialog>,
+    defaults: (i64, i64),
     cache: &mut WorkerCache,
-    events: &mpsc::Sender<NetworkEvent>,
-) -> Result<()> {
-    let mut iter = client.iter_dialogs();
+) -> Result<Vec<Chat>> {
     let mut chats = Vec::new();
     let mut visible_chat_ids = HashSet::new();
     let mut dialog_name_ids = HashSet::new();
     let mut hidden_broadcasts = HashSet::new();
     let mut visible_channel_groups = HashSet::new();
-    while let Some(dialog) = iter.next().await? {
+    for dialog in dialogs {
         if matches!(&dialog.raw, RawDialog::Folder(_)) {
             continue;
         }
@@ -1073,13 +1380,15 @@ async fn load_dialogs(
         cache.peers.insert(id, dialog.peer_ref());
         cache
             .names
-            .insert(dialog.peer_id(), safe_name(dialog.peer().name(), "Unknown"));
+            .insert(dialog.peer_id(), peer_display_name(dialog.peer()));
         let RawDialog::Dialog(raw) = &dialog.raw else {
             unreachable!("folder placeholders are filtered above")
         };
-        let (unread, unread_mark, top_message, read_outbox) = (
+        if let Some(pts) = raw.pts {
+            cache.channel_pts.insert(id, pts);
+        }
+        let (unread, top_message, read_outbox) = (
             u32::try_from(raw.unread_count.max(0)).unwrap_or(u32::MAX),
-            raw.unread_mark,
             raw.top_message,
             raw.read_outbox_max_id,
         );
@@ -1095,14 +1404,21 @@ async fn load_dialogs(
             .or_insert(read_outbox);
         let last_message = dialog.last_message.as_ref();
         chats.push(Chat {
+            read_inbox_max_id: Some(raw.read_inbox_max_id.max(0)),
+            membership: folders::membership(&dialog, defaults),
             id,
-            title: safe_name(dialog.peer().name(), "Unknown"),
+            title: if id == cache.self_id {
+                "Saved Messages".to_owned()
+            } else {
+                peer_display_name(dialog.peer())
+            },
             kind: match dialog.peer() {
                 Peer::User(_) => ChatKind::Direct,
                 Peer::Group(_) => ChatKind::Group,
                 Peer::Channel(_) => unreachable!("broadcast channels are filtered above"),
             },
-            unread: unread.max(u32::from(unread_mark)),
+            unread,
+            last_message_id: (top_message > 0).then_some(top_message),
             last_message: last_message.map(message_preview).unwrap_or_default(),
             last_activity: last_message.map(TelegramMessage::date),
         });
@@ -1114,8 +1430,7 @@ async fn load_dialogs(
         hidden_broadcasts,
         visible_channel_groups,
     );
-    events.send(NetworkEvent::Dialogs(chats)).await?;
-    Ok(())
+    Ok(chats)
 }
 
 fn reconcile_dialog_snapshot(
@@ -1162,159 +1477,148 @@ async fn handle_command(
     cache: &mut WorkerCache,
     events: &mpsc::Sender<NetworkEvent>,
     transfers: &mut JoinSet<TransferCompletion>,
+    requests: &mut JoinSet<requests::Completion>,
 ) -> Result<bool> {
+    let slots = cache
+        .transfer_slots
+        .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
+        .clone();
     match command {
-        TelegramCommand::LoadHistory {
-            chat_id,
-            request_id,
-        } => {
-            let result: Result<Vec<Message>> = async {
-                let peer = *cache
-                    .peers
-                    .get(&chat_id)
-                    .context("selected chat is missing its Telegram peer reference")?;
-                let mut iter = client.iter_messages(peer).limit(HISTORY_LIMIT);
-                let mut messages = Vec::new();
-                while let Some(message) = iter.next().await? {
-                    messages.push(Box::pin(map_message(client, &message, cache)).await?);
-                }
-                messages.reverse();
-                hydrate_reply_senders(&mut messages, cache);
-                Ok(messages)
-            }
-            .await;
-            match result {
-                Ok(messages) => {
-                    events
-                        .send(NetworkEvent::History {
-                            chat_id,
-                            request_id,
-                            messages,
-                        })
-                        .await?;
-                }
-                Err(error) => {
-                    events
-                        .send(NetworkEvent::HistoryFailed {
-                            chat_id,
-                            request_id,
-                            error: format!("Could not load history: {error:#}"),
-                        })
-                        .await?;
-                }
-            }
-        }
-        TelegramCommand::LoadMessage {
-            chat_id,
-            source_message_id,
-            message_id,
-            request_id,
-        } => {
-            let result: Result<Message> = async {
-                if source_message_id <= 0 || message_id <= 0 {
-                    bail!("invalid Telegram message identifier")
-                }
-                let peer = *cache
-                    .peers
-                    .get(&chat_id)
-                    .context("selected chat is missing its Telegram peer reference")?;
-                let mut messages = client
-                    .get_messages_by_id(peer, &[source_message_id])
-                    .await
-                    .context("could not retrieve the replying message")?;
-                let source = messages
-                    .pop()
-                    .flatten()
-                    .context("replying message is unavailable")?;
-                if source.reply_to_message_id() != Some(message_id) {
-                    bail!("reply relation changed before navigation")
-                }
-                let telegram_message = client
-                    .get_reply_to_message(&source)
-                    .await
-                    .context("could not retrieve reply target")?
-                    .context("reply target is unavailable")?;
-                let mut message = Box::pin(map_message(client, &telegram_message, cache)).await?;
-                hydrate_reply_sender(&mut message, cache);
-                Ok(message)
-            }
-            .await;
-            match result {
-                Ok(message) => {
-                    events
-                        .send(NetworkEvent::MessageLoaded {
-                            chat_id,
-                            message_id,
-                            request_id,
-                            message,
-                        })
-                        .await?;
-                }
-                Err(error) => {
-                    events
-                        .send(NetworkEvent::MessageLoadFailed {
-                            chat_id,
-                            message_id,
-                            request_id,
-                            error: format!("Could not load message: {error:#}"),
-                        })
-                        .await?;
-                }
-            }
-        }
-        TelegramCommand::SendMessage {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-        } => {
-            let Some(peer) = cache.peers.get(&chat_id).copied() else {
+        command @ (TelegramCommand::SearchCloud(_)
+        | TelegramCommand::SearchMentions { .. }
+        | TelegramCommand::LoadCloudContext { .. }
+        | TelegramCommand::CancelSearch) => {
+            if let Some((request_id, handle)) = cache.cloud_search.take() {
+                handle.abort();
                 events
-                    .send(NetworkEvent::SendFailed {
+                    .send(NetworkEvent::CloudSearchCancelled { request_id })
+                    .await?;
+            }
+            let chat_id = match &command {
+                TelegramCommand::SearchCloud(request) => Some(request.chat_id),
+                TelegramCommand::LoadCloudContext { chat_id, .. }
+                | TelegramCommand::SearchMentions { chat_id, .. } => Some(*chat_id),
+                _ => None,
+            };
+            if let (Some(chat_id), Some(request_id)) = (chat_id, command.cloud_search_id()) {
+                events
+                    .send(NetworkEvent::CloudSearchLoading {
                         chat_id,
-                        local_id,
-                        text,
-                        reply_to,
-                        error: "conversation is missing its Telegram peer reference".to_owned(),
+                        request_id,
                     })
                     .await?;
-                return Ok(false);
-            };
-            let input = InputMessage::new().text(text.clone()).reply_to(reply_to);
-            match Box::pin(client.send_message(peer, input)).await {
-                Ok(message) => {
-                    if message.id() <= 0 {
-                        events
-                            .send(NetworkEvent::MessageAccepted { chat_id, local_id })
-                            .await?;
-                    } else {
-                        events
-                            .send(NetworkEvent::MessageSent {
-                                local_id,
-                                message: Box::pin(map_message(client, &message, cache)).await?,
-                            })
-                            .await?;
-                    }
-                }
-                Err(error) => {
-                    events
-                        .send(NetworkEvent::SendFailed {
-                            chat_id,
-                            local_id,
-                            text,
-                            reply_to,
-                            error: error.to_string(),
-                        })
-                        .await?;
-                }
+                requests::spawn(command, client, cache, requests);
             }
+        }
+        command @ (TelegramCommand::LoadChatInfo { .. }
+        | TelegramCommand::PreviewInvite { .. }
+        | TelegramCommand::JoinInvite { .. }
+        | TelegramCommand::LoadReactions { .. }
+        | TelegramCommand::ChangeReaction { .. }
+        | TelegramCommand::RefreshReactions { .. }
+        | TelegramCommand::LoadPoll { .. }
+        | TelegramCommand::VotePoll { .. }
+        | TelegramCommand::RefreshPoll { .. }
+        | TelegramCommand::ResolveAlertSettings { .. }
+        | TelegramCommand::ReviewForward { .. }
+        | TelegramCommand::ForwardMessage { .. }
+        | TelegramCommand::OpenSaved { .. }
+        | TelegramCommand::CopyMessage { .. }
+        | TelegramCommand::ReviewDeletion { .. }
+        | TelegramCommand::DeleteMessage { .. }
+        | TelegramCommand::LoadEdit { .. }
+        | TelegramCommand::EditMessage { .. }
+        | TelegramCommand::LoadOlder { .. }
+        | TelegramCommand::ChangeDialogPin { .. }
+        | TelegramCommand::SetArchived { .. }
+        | TelegramCommand::LoadPinnedMessages { .. }
+        | TelegramCommand::LoadPinnedContext { .. }
+        | TelegramCommand::ChangeMessagePin { .. }
+        | TelegramCommand::LoadHistory { .. }
+        | TelegramCommand::LoadMessage { .. }
+        | TelegramCommand::LoadReplyPreviews { .. }
+        | TelegramCommand::SendMessage { .. }
+        | TelegramCommand::ResolveTelegramLink { .. }
+        | TelegramCommand::ActivateButton { .. }
+        | TelegramCommand::SetChatUnread { .. }
+        | TelegramCommand::MarkRead { .. }
+        | TelegramCommand::ReadMentions { .. }
+        | TelegramCommand::SetChatMute { .. }) => {
+            if let TelegramCommand::LoadPinnedMessages {
+                chat_id,
+                request_id,
+                ..
+            }
+            | TelegramCommand::LoadPinnedContext {
+                chat_id,
+                request_id,
+                ..
+            } = &command
+            {
+                events
+                    .send(NetworkEvent::PinnedMessagesLoading {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadHistory {
+                chat_id,
+                request_id,
+                ..
+            }
+            | TelegramCommand::LoadOlder {
+                chat_id,
+                request_id,
+                ..
+            }
+            | TelegramCommand::LoadMessage {
+                chat_id,
+                request_id,
+                ..
+            } = &command
+            {
+                events
+                    .send(NetworkEvent::HistoryLoading {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadReplyPreviews {
+                chat_id,
+                request_id,
+                ..
+            } = &command
+            {
+                events
+                    .send(NetworkEvent::ReplyPreviewsLoading {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadReactions { request_id, .. } = &command {
+                events
+                    .send(NetworkEvent::ReactionsLoading {
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadPoll { request_id, .. } = &command {
+                events
+                    .send(NetworkEvent::PollLoading {
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            requests::spawn(command, client, cache, requests);
         }
         TelegramCommand::SendAttachment {
             chat_id,
             local_id,
-            path,
+            attachment,
             caption,
-            as_photo,
             reply_to,
         } => {
             let Some(peer) = cache.peers.get(&chat_id).copied() else {
@@ -1322,40 +1626,80 @@ async fn handle_command(
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
-                        path,
+                        attachment,
                         caption,
-                        as_photo,
                         reply_to,
                         error: "conversation is missing its Telegram peer reference".to_owned(),
                     })
                     .await?;
                 return Ok(false);
             };
-            if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
+            if transfers.len() >= MAX_PENDING_TRANSFERS {
                 events
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
-                        path,
+                        attachment,
                         caption,
-                        as_photo,
                         reply_to,
-                        error: "too many Telegram transfers are already running".to_owned(),
+                        error: "Telegram transfer queue is full".to_owned(),
                     })
                     .await?;
                 return Ok(false);
             }
             let client = client.clone();
+            let cache_owner = cache.cache_owner.clone();
+            cache.upload_order.retain(|_, previous| {
+                matches!(
+                    previous.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                )
+            });
+            let (finished, gate) = tokio::sync::oneshot::channel::<()>();
+            let after = cache.upload_order.insert(chat_id, gate);
             transfers.spawn(async move {
-                let result = upload_attachment(&client, peer, &path, &caption, as_photo, reply_to)
+                // Link tasks in admission order, before they are scheduled.
+                // Dropping the sender also releases the next item on cancellation.
+                let _finished = finished;
+                if let Some(previous) = after {
+                    let _ = previous.await;
+                }
+                let permit = Arc::new(
+                    slots
+                        .acquire_owned()
+                        .await
+                        .expect("transfer queue is never closed"),
+                );
+                let _cache_owner = cache_owner.clone();
+                let result = async {
+                    let original = attachment.path.clone();
+                    let digest = attachment.digest;
+                    // Blocking validation retains its permit if this async task
+                    // is cancelled; cancellation cannot create unbounded copies.
+                    let copy_permit = permit.clone();
+                    let upload = tokio::task::spawn_blocking(move || {
+                        let _permit = copy_permit;
+                        crate::staging::upload_copy(&original, digest)
+                    })
                     .await
-                    .map_err(|error| format!("{error:#}"));
+                    .context("attachment validation worker failed")??;
+                    upload_attachment(
+                        &client,
+                        peer,
+                        &upload.path,
+                        &caption,
+                        attachment.as_photo,
+                        reply_to,
+                    )
+                    .await
+                }
+                .await
+                .map_err(|error| chat_info::send_error(&error));
                 TransferCompletion::Send {
                     chat_id,
                     local_id,
-                    path,
+                    attachment,
                     caption,
-                    as_photo,
                     reply_to,
                     result: Box::new(result),
                 }
@@ -1373,8 +1717,8 @@ async fn handle_command(
                     .get(&chat_id)
                     .copied()
                     .context("conversation is missing its Telegram peer reference")?;
-                if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
-                    bail!("too many Telegram transfers are already running; close and retry");
+                if transfers.len() >= MAX_PENDING_TRANSFERS {
+                    bail!("Telegram transfer queue is full; close and retry");
                 }
                 let directory = ensure_download_dir(cache).await?;
                 Ok::<_, anyhow::Error>((peer, directory))
@@ -1383,14 +1727,34 @@ async fn handle_command(
             match preparation {
                 Ok((peer, directory)) => {
                     let client = client.clone();
+                    let cache_owner = cache.cache_owner.clone();
                     transfers.spawn(async move {
+                        let _permit = slots
+                            .acquire_owned()
+                            .await
+                            .expect("transfer queue is never closed");
+                        let _cache_owner = cache_owner.clone();
                         let result = if thumbnail {
                             download_preview_thumbnail(
-                                &client, peer, chat_id, message_id, directory,
+                                &client,
+                                peer,
+                                chat_id,
+                                message_id,
+                                directory,
+                                cache_owner,
                             )
                             .await
                         } else {
-                            download_attachment(&client, peer, chat_id, message_id, directory).await
+                            download_attachment(
+                                &client,
+                                peer,
+                                chat_id,
+                                message_id,
+                                directory,
+                                None,
+                                cache_owner,
+                            )
+                            .await
                         }
                         .map_err(|error| format!("{error:#}"));
                         TransferCompletion::Preview {
@@ -1416,10 +1780,13 @@ async fn handle_command(
         TelegramCommand::DownloadAttachment {
             chat_id,
             message_id,
+            request_id,
+            media_id,
         } => {
             let Some(peer) = cache.peers.get(&chat_id).copied() else {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
+                        request_id,
                         chat_id,
                         message_id,
                         error: "conversation is missing its Telegram peer reference".to_owned(),
@@ -1427,97 +1794,60 @@ async fn handle_command(
                     .await?;
                 return Ok(false);
             };
-            if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
+            if transfers.len() >= MAX_PENDING_TRANSFERS {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
+                        request_id,
                         chat_id,
                         message_id,
-                        error: "too many Telegram transfers are already running".to_owned(),
+                        error: "Telegram transfer queue is full".to_owned(),
                     })
                     .await?;
                 return Ok(false);
             }
             let directory = ensure_download_dir(cache).await?;
             let client = client.clone();
+            let cache_owner = cache.cache_owner.clone();
             transfers.spawn(async move {
-                let result = download_attachment(&client, peer, chat_id, message_id, directory)
+                let _permit = slots
+                    .acquire_owned()
                     .await
-                    .map_err(|error| format!("{error:#}"));
+                    .expect("transfer queue is never closed");
+                let _cache_owner = cache_owner.clone();
+                let result = download_attachment(
+                    &client,
+                    peer,
+                    chat_id,
+                    message_id,
+                    directory,
+                    media_id,
+                    cache_owner,
+                )
+                .await
+                .map_err(|error| format!("{error:#}"));
                 TransferCompletion::Download {
+                    request_id,
                     chat_id,
                     message_id,
                     result,
                 }
             });
         }
-        TelegramCommand::ResolveTelegramLink { url } => {
-            match Box::pin(resolve_telegram_link(client, cache, &url)).await {
-                Ok((chat, message)) => {
-                    events
-                        .send(NetworkEvent::LinkResolved { chat, message })
-                        .await?;
-                }
-                Err(error) => {
-                    events
-                        .send(NetworkEvent::LinkFailed {
-                            url,
-                            error: format!("Could not open Telegram link: {error:#}"),
-                        })
-                        .await?;
-                }
-            }
+        TelegramCommand::PrepareAttachments(_)
+        | TelegramCommand::CopyText(_)
+        | TelegramCommand::SearchCached(_)
+        | TelegramCommand::LoadCachedContext { .. } => {
+            unreachable!("local searches never reach Telegram")
         }
-        TelegramCommand::ActivateButton {
-            chat_id,
-            message_id,
-            button_index,
-        } => match activate_inline_button(client, cache, chat_id, message_id, button_index).await {
-            Ok((message, url)) => {
-                events
-                    .send(NetworkEvent::ButtonActivated {
-                        chat_id,
-                        message_id,
-                        message,
-                        url,
-                    })
-                    .await?;
-            }
-            Err(error) => {
-                events
-                    .send(NetworkEvent::ButtonFailed {
-                        chat_id,
-                        message_id,
-                        error: format!("Could not activate button: {error:#}"),
-                    })
-                    .await?;
-            }
-        },
-        TelegramCommand::MarkRead { chat_id } => {
-            let result = match cache.peers.get(&chat_id).copied() {
-                Some(peer) => client.mark_as_read(peer).await,
-                None => Err(InvocationError::Dropped),
-            };
-            match result {
-                Ok(()) => events.send(NetworkEvent::ReadMarked { chat_id }).await?,
-                Err(error) => {
-                    events
-                        .send(NetworkEvent::ReadMarkFailed {
-                            chat_id,
-                            error: format!("Could not mark conversation read: {error}"),
-                        })
-                        .await?;
-                }
-            }
+        TelegramCommand::RefreshFolders => {
+            cache.folders.dirty = true;
         }
         TelegramCommand::RefreshDialogs => {
-            if let Err(error) = load_dialogs(client, cache, events).await {
-                events
-                    .send(NetworkEvent::DialogsFailed(format!(
-                        "Could not refresh conversations: {error:#}"
-                    )))
-                    .await?;
-            }
+            cache.dialog_pins.dirty = true;
+            cache.message_pins.dirty = true;
+            requests::refresh_dialogs(client, cache, events, requests).await?;
         }
+        TelegramCommand::RefreshDialogPins => cache.dialog_pins.dirty = true,
         TelegramCommand::Shutdown => return Ok(true),
         TelegramCommand::StartQrAuth
         | TelegramCommand::SubmitPhone(_)
@@ -1531,18 +1861,13 @@ async fn handle_command(
 
 async fn activate_inline_button(
     client: &Client,
-    cache: &WorkerCache,
-    chat_id: ChatId,
+    peer: PeerRef,
     message_id: i32,
     button_index: u16,
 ) -> Result<(Option<String>, Option<String>)> {
     if message_id <= 0 {
         bail!("invalid Telegram message identifier")
     }
-    let peer = *cache
-        .peers
-        .get(&chat_id)
-        .context("conversation is missing its Telegram peer reference")?;
     let mut messages = client
         .get_messages_by_id(peer, &[message_id])
         .await
@@ -1625,7 +1950,6 @@ async fn upload_attachment(
 
 async fn process_transfer_completion(
     completion: TransferCompletion,
-    client: &Client,
     cache: &mut WorkerCache,
     events: &mpsc::Sender<NetworkEvent>,
 ) -> Result<()> {
@@ -1656,22 +1980,23 @@ async fn process_transfer_completion(
         TransferCompletion::Send {
             chat_id,
             local_id,
-            path,
+            attachment,
             caption,
-            as_photo,
             reply_to,
             result,
         } => match *result {
             Ok(message) if message.id() <= 0 => {
+                attachment.discard_owned();
                 events
                     .send(NetworkEvent::MessageAccepted { chat_id, local_id })
                     .await?;
             }
             Ok(message) => {
+                attachment.discard_owned();
                 events
                     .send(NetworkEvent::MessageSent {
                         local_id,
-                        message: Box::pin(map_message(client, &message, cache)).await?,
+                        message: map_message(&message, cache)?,
                     })
                     .await?;
             }
@@ -1680,9 +2005,8 @@ async fn process_transfer_completion(
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
-                        path,
+                        attachment,
                         caption,
-                        as_photo,
                         reply_to,
                         error: format!("Could not send attachment: {error}"),
                     })
@@ -1690,6 +2014,7 @@ async fn process_transfer_completion(
             }
         },
         TransferCompletion::Download {
+            request_id,
             chat_id,
             message_id,
             result,
@@ -1697,6 +2022,7 @@ async fn process_transfer_completion(
             Ok(path) => {
                 events
                     .send(NetworkEvent::AttachmentDownloaded {
+                        request_id,
                         chat_id,
                         message_id,
                         path,
@@ -1706,6 +2032,7 @@ async fn process_transfer_completion(
             Err(error) => {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
+                        request_id,
                         chat_id,
                         message_id,
                         error: format!("Could not download attachment: {error}"),
@@ -1723,6 +2050,8 @@ async fn download_attachment(
     chat_id: ChatId,
     message_id: i32,
     directory: PathBuf,
+    expected_media_id: Option<i64>,
+    cache_owner: Option<Arc<std::fs::File>>,
 ) -> Result<PathBuf> {
     let mut messages = client
         .get_messages_by_id(peer, &[message_id])
@@ -1742,17 +2071,30 @@ async fn download_attachment(
         bail!("this type of Telegram media is not downloadable")
     }
 
+    if expected_media_id.is_some()
+        && attachment_from_media(&media).and_then(|attachment| attachment.source_id)
+            != expected_media_id
+    {
+        bail!("Attachment changed; refresh the message before opening it");
+    }
     let suggested_name = attachment_from_media(&media).map_or_else(
         || "attachment".to_owned(),
         |attachment| attachment.display_name().to_owned(),
     );
-    let path = unique_download_path(&directory, chat_id, message_id, &suggested_name).await?;
-    let partial = PartialDownload::new(path);
+    let partial = media_cache::temporary(&directory)?;
     client
-        .download_media(&media, &partial.path)
+        .download_media(&media, partial.as_ref() as &Path)
         .await
         .context("Telegram media transfer failed")?;
-    Ok(partial.finish())
+    media_cache::finish(
+        partial,
+        directory,
+        chat_id,
+        message_id,
+        &suggested_name,
+        cache_owner,
+    )
+    .await
 }
 
 /// Use the SDK's Downloadable thumbnail implementation, including cached and
@@ -1763,6 +2105,7 @@ async fn download_preview_thumbnail(
     chat_id: ChatId,
     message_id: i32,
     directory: PathBuf,
+    cache_owner: Option<Arc<std::fs::File>>,
 ) -> Result<PathBuf> {
     let message = client
         .get_messages_by_id(peer, &[message_id])
@@ -1783,44 +2126,34 @@ async fn download_preview_thumbnail(
         .filter(|thumb| thumb.size() > 0)
         .max_by_key(PhotoSize::size)
         .context("Telegram did not provide a static thumbnail for this sticker")?;
-    let path = unique_download_path(&directory, chat_id, message_id, "preview.jpg").await?;
-    let partial = PartialDownload::new(path);
+    let partial = media_cache::temporary(&directory)?;
     client
-        .download_media(&thumbnail, &partial.path)
+        .download_media(&thumbnail, partial.as_ref() as &Path)
         .await
         .context("Telegram preview transfer failed")?;
-    Ok(partial.finish())
+    media_cache::finish(
+        partial,
+        directory,
+        chat_id,
+        message_id,
+        "preview.jpg",
+        cache_owner,
+    )
+    .await
 }
 
 async fn ensure_download_dir(cache: &mut WorkerCache) -> Result<PathBuf> {
     if let Some(path) = &cache.download_dir {
         return Ok(path.clone());
     }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("termgram-{}-{nonce}", std::process::id()));
-    tokio::fs::create_dir(&root)
-        .await
-        .with_context(|| format!("could not create temporary directory {}", root.display()))?;
-    protect_download_dir(&root).await?;
+    let root = media_cache::prepare(
+        cache.media_root.clone(),
+        cache.self_id,
+        cache.cache_owner.clone(),
+    )
+    .await?;
     cache.download_dir = Some(root.clone());
     Ok(root)
-}
-
-#[cfg(unix)]
-async fn protect_download_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .await
-        .with_context(|| format!("could not protect temporary directory {}", path.display()))
-}
-
-#[cfg(not(unix))]
-async fn protect_download_dir(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 async fn unique_download_path(
@@ -1930,9 +2263,9 @@ fn is_windows_reserved_base(base: &str) -> bool {
 
 async fn resolve_telegram_link(
     client: &Client,
-    cache: &mut WorkerCache,
+    private_link: Option<(PeerRef, String)>,
     url: &str,
-) -> Result<(Chat, Option<Message>)> {
+) -> Result<(Chat, PeerRef, Option<TelegramMessage>)> {
     let target = parse_telegram_link(url)?;
     let (chat, peer, message_id) = match target {
         TelegramLink::Public {
@@ -1949,7 +2282,6 @@ async fn resolve_telegram_link(
                 .bot_api_dialog_id()
                 .context("resolved chat has no stable identifier")?;
             if matches!(&resolved, Peer::Channel(_)) {
-                cache.hidden_broadcasts.insert(id);
                 bail!("broadcast channels are outside Termgram's messaging scope")
             }
             let peer = resolved
@@ -1957,21 +2289,18 @@ async fn resolve_telegram_link(
                 .await
                 .map_err(anyhow::Error::from_boxed)?
                 .context("Telegram did not provide an addressable peer reference")?;
-            cache.peers.insert(id, peer);
-            cache.linked_peers.insert(id);
-            cache_sender_name(cache, resolved.id(), safe_name(resolved.name(), "Unknown"));
-            if matches!(&resolved, Peer::Group(_)) && resolved.id().kind() == PeerKind::Channel {
-                cache.visible_channel_groups.insert(id);
-            }
             let chat = Chat {
+                read_inbox_max_id: None,
+                membership: crate::folders::ChatMembership::default(),
                 id,
-                title: safe_name(resolved.name(), "Unknown"),
+                title: peer_display_name(&resolved),
                 kind: match &resolved {
                     Peer::User(_) => ChatKind::Direct,
                     Peer::Group(_) => ChatKind::Group,
                     Peer::Channel(_) => unreachable!("broadcast channels are rejected above"),
                 },
                 unread: 0,
+                last_message_id: None,
                 last_message: String::new(),
                 last_activity: None,
             };
@@ -1981,28 +2310,20 @@ async fn resolve_telegram_link(
             chat_id,
             message_id,
         } => {
-            let peer = *cache.peers.get(&chat_id).context(
+            let (peer, title) = private_link.context(
                 "private message links can only open groups already present in your conversations",
             )?;
-            if cache.hidden_broadcasts.contains(&chat_id)
-                || !cache.visible_channel_groups.contains(&chat_id)
-            {
-                bail!("private link does not target a visible group conversation")
-            }
-            let peer_id = peer.id;
             let chat = Chat {
+                read_inbox_max_id: None,
+                membership: crate::folders::ChatMembership::default(),
                 id: chat_id,
-                title: cache
-                    .names
-                    .get(&peer_id)
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_owned()),
+                title,
                 kind: ChatKind::Group,
                 unread: 0,
+                last_message_id: None,
                 last_message: String::new(),
                 last_activity: None,
             };
-            cache.linked_peers.insert(chat_id);
             (chat, peer, Some(message_id))
         }
     };
@@ -2016,11 +2337,11 @@ async fn resolve_telegram_link(
             .pop()
             .flatten()
             .context("linked message is unavailable")?;
-        Some(Box::pin(map_message(client, &telegram_message, cache)).await?)
+        Some(telegram_message)
     } else {
         None
     };
-    Ok((chat, message))
+    Ok((chat, peer, message))
 }
 
 fn parse_telegram_link(value: &str) -> Result<TelegramLink> {
@@ -2144,23 +2465,40 @@ fn private_chat_id(value: &str) -> Result<ChatId> {
         .context("private Telegram channel identifier is too large")
 }
 
-async fn map_message(
-    client: &Client,
-    message: &TelegramMessage,
-    cache: &mut WorkerCache,
-) -> Result<Message> {
+fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Message> {
     let chat_id = peer_id(message)?;
     let media = message.media();
+    let (text, entities) = entities::map(
+        message.text(),
+        message.fmt_entities().map_or(&[], Vec::as_slice),
+    );
     let (sender, reply_sender) = if message.outgoing() {
         let sender = "You".to_owned();
         let reply_sender = username_or_sender(message.sender().and_then(Peer::username), &sender);
         (sender, reply_sender)
     } else {
-        resolve_sender(client, message, cache).await
+        resolve_sender(message, cache)
     };
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        reactions: reactions::map(message),
+        poll: polls::map(message),
+        entities,
+        notification: Some(crate::notifications::Metadata {
+            sender: message
+                .sender_id()
+                .and_then(PeerId::bot_api_dialog_id)
+                .filter(|id| *id > 0),
+            silent: message.silent(),
+            protected: matches!(&message.raw, tl::enums::Message::Message(raw) if raw.noforwards),
+        }),
+        mention: message.mentioned().then(|| crate::model::Mention {
+            unread: message.media_unread() && !message.outgoing(),
+            requires_playback: notifications::requires_playback(message),
+        }),
+        edited_at: message.edit_date(),
+        pinned: message.pinned(),
         id: message.id(),
         chat_id,
         sender,
@@ -2168,7 +2506,7 @@ async fn map_message(
         // Telegram stores the Unicode fallback for custom-emoji entities in
         // the raw message string. Keep that text instead of trying to render
         // the custom document in a terminal.
-        text: sanitized_message_text(message),
+        text,
         timestamp: message.date(),
         outgoing: message.outgoing(),
         delivery: if message.outgoing()
@@ -2246,16 +2584,12 @@ fn cache_message_sender(cache: &mut WorkerCache, chat_id: ChatId, message_id: i3
     }
 }
 
-async fn resolve_sender(
-    client: &Client,
-    message: &TelegramMessage,
-    cache: &mut WorkerCache,
-) -> (String, String) {
+fn resolve_sender(message: &TelegramMessage, cache: &mut WorkerCache) -> (String, String) {
     let Some(sender_id) = message.sender_id() else {
         return ("Unknown".to_owned(), "Unknown".to_owned());
     };
     if let Some(peer) = message.sender() {
-        let name = safe_name(peer.name(), "Unknown");
+        let name = peer_display_name(peer);
         let reply_sender = username_or_sender(peer.username(), &name);
         cache_sender_name(cache, sender_id, name.clone());
         return (name, reply_sender);
@@ -2263,16 +2597,9 @@ async fn resolve_sender(
     if let Some(name) = cache.names.get(&sender_id) {
         return (name.clone(), name.clone());
     }
-    let Ok(Some(sender)) = message.sender_ref().await else {
-        return ("Unknown".to_owned(), "Unknown".to_owned());
-    };
-    let Ok(peer) = client.resolve_peer(sender).await else {
-        return ("Unknown".to_owned(), "Unknown".to_owned());
-    };
-    let name = safe_name(peer.name(), "Unknown");
-    let reply_sender = username_or_sender(peer.username(), &name);
-    cache_sender_name(cache, sender_id, name.clone());
-    (name, reply_sender)
+    // Short updates may omit the sender object. Never make a network round
+    // trip on the update path just to obtain a display name.
+    ("Unknown".to_owned(), "Unknown".to_owned())
 }
 
 fn username_or_sender(username: Option<&str>, sender: &str) -> String {
@@ -2317,7 +2644,7 @@ fn begin_unresolved_refresh(cache: &mut WorkerCache) -> bool {
 }
 
 async fn is_hidden_broadcast(
-    client: &Client,
+    session: &SqliteSession,
     message: &TelegramMessage,
     cache: &mut WorkerCache,
 ) -> Result<Option<bool>> {
@@ -2348,29 +2675,20 @@ async fn is_hidden_broadcast(
         return Ok(Some(false));
     }
 
-    let Some(peer_ref) = message
-        .peer_ref()
-        .await
-        .map_err(anyhow::Error::from_boxed)?
-    else {
-        // Unknown channel-shaped peers may be either broadcasts or megagroups.
-        // Drop this update safely, but do not poison either classification cache.
-        return Ok(None);
-    };
-    match client.resolve_peer(peer_ref).await {
-        Ok(Peer::Group(group)) => {
-            cache.peers.insert(chat_id, peer_ref);
-            cache_sender_name(cache, group.id(), safe_name(group.title(), "Unknown"));
+    let info = session.peer(message.peer_id()).await?;
+    match info {
+        Some(PeerInfo::Channel {
+            kind: Some(ChannelKind::Broadcast),
+            ..
+        }) => {
+            cache.hidden_broadcasts.insert(chat_id);
+            Ok(Some(true))
+        }
+        Some(PeerInfo::Channel { kind: Some(_), .. }) => {
             cache.visible_channel_groups.insert(chat_id);
             Ok(Some(false))
         }
-        Ok(Peer::Channel(_)) => {
-            cache.hidden_broadcasts.insert(chat_id);
-            cache.visible_channel_groups.remove(&chat_id);
-            Ok(Some(true))
-        }
-        Ok(Peer::User(_)) => Ok(Some(false)),
-        Err(_) => Ok(None),
+        _ => Ok(None),
     }
 }
 
@@ -2382,12 +2700,19 @@ fn peer_id(message: &TelegramMessage) -> Result<ChatId> {
 }
 
 fn message_preview(message: &TelegramMessage) -> String {
+    if let Some(poll) = polls::map(message) {
+        return format!(
+            "[{}] {}",
+            if poll.definition.quiz { "quiz" } else { "poll" },
+            poll.definition.question.preview()
+        );
+    }
     let media = message.media();
-    message_preview_with_media(&sanitized_message_text(message), media.as_ref())
-}
-
-fn sanitized_message_text(message: &TelegramMessage) -> String {
-    sanitize_terminal_text(message.text())
+    let (text, entities) = entities::map(
+        message.text(),
+        message.fmt_entities().map_or(&[], Vec::as_slice),
+    );
+    message_preview_with_media(&crate::entities::conceal(&text, &entities), media.as_ref())
 }
 
 fn message_links(message: &TelegramMessage) -> Vec<MessageLink> {
@@ -2538,6 +2863,7 @@ fn message_preview_with_media(text: &str, media: Option<&Media>) -> String {
 fn attachment_from_media(media: &Media) -> Option<Attachment> {
     match media {
         Media::Photo(photo) => Some(Attachment {
+            source_id: Some(photo.id()),
             kind: AttachmentKind::Photo,
             file_name: Some("photo.jpg".to_owned()),
             mime_type: Some("image/jpeg".to_owned()),
@@ -2552,6 +2878,7 @@ fn attachment_from_media(media: &Media) -> Option<Attachment> {
                 _ => AttachmentKind::File,
             };
             Some(Attachment {
+                source_id: Some(document.id()),
                 kind,
                 file_name: safe_media_name(document.name()),
                 mime_type,
@@ -2560,6 +2887,7 @@ fn attachment_from_media(media: &Media) -> Option<Attachment> {
             })
         }
         Media::Sticker(sticker) => Some(Attachment {
+            source_id: Some(sticker.document.id()),
             kind: AttachmentKind::Sticker,
             file_name: safe_media_name(sticker.document.name())
                 .or_else(|| Some(default_sticker_name(sticker.document.mime_type()).to_owned())),
@@ -2597,6 +2925,20 @@ fn safe_name(value: Option<&str>, fallback: &str) -> String {
         fallback.to_owned()
     } else {
         value
+    }
+}
+
+fn peer_display_name(peer: &Peer) -> String {
+    match peer {
+        Peer::User(user) => safe_name(
+            Some(&user.full_name()),
+            if user.deleted() {
+                "Deleted account"
+            } else {
+                "Unknown"
+            },
+        ),
+        _ => safe_name(peer.name(), "Unknown"),
     }
 }
 
@@ -2829,6 +3171,13 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            reactions: None,
+            poll: None,
+            entities: Vec::new(),
+            notification: None,
+            mention: None,
+            edited_at: None,
+            pinned: false,
             id: 42,
             chat_id: 7,
             sender: "Bob".to_owned(),
@@ -2888,6 +3237,13 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            reactions: None,
+            poll: None,
+            entities: Vec::new(),
+            notification: None,
+            mention: None,
+            edited_at: None,
+            pinned: false,
             id: 42,
             chat_id: 7,
             sender: "Bob".to_owned(),

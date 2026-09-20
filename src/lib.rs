@@ -1,19 +1,43 @@
+pub mod actions;
 pub mod app;
+pub mod appearance;
+pub mod cache;
+pub mod chat_discovery;
+pub mod chat_info;
+pub mod cloud_search;
+pub mod commands;
 pub mod config;
+pub mod deletion;
+pub mod drafts;
+pub mod editing;
+pub mod entities;
 pub mod event;
+pub mod folders;
+pub mod forwarding;
 pub mod input;
+pub mod invites;
+pub mod keymap;
 pub mod media;
 pub mod model;
+pub mod notifications;
+pub mod pins;
+pub mod polls;
+pub mod reactions;
+pub mod search;
+pub mod sidebar;
+pub mod staging;
+pub mod statusline;
 pub mod telegram;
 pub mod terminal;
+pub mod transcript;
 pub mod ui;
 pub mod update;
 
-/// Version embedded into distributable binaries by CI. Source builds fall
-/// back to the package's base development version.
+/// CI can override the version. Git source installs use the same commit-height
+/// versioning; archives without Git metadata use the package development version.
 pub const VERSION: &str = match option_env!("TERMGRAM_BUILD_VERSION") {
     Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
+    None => env!("TERMGRAM_SOURCE_VERSION"),
 };
 
 /// Human-readable build identity, separate from the updater's semantic version.
@@ -73,3 +97,7 @@ mod tests {
         );
     }
 }
+
+mod clipboard;
+
+pub mod read_state;

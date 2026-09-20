@@ -1,5 +1,6 @@
 //! Yazi owns terminal input, capability detection, and platform restoration.
 //! Ratatui uses the same TTY writer exclusively for output; it never reads input.
+pub mod clipboard;
 
 use std::io::{self, Write};
 use std::sync::{
@@ -24,10 +25,11 @@ use yazi_term::{
 use yazi_tty::{
     TTY, TtyWriter,
     sequence::{
-        DisableBracketedPaste, DisableColorSchemeUpdates, DisableFocusChange, DisableMouseCapture,
-        EnableBracketedPaste, EnableColorSchemeUpdates, EnableFocusChange, EnableMouseCapture,
-        EndSyncUpdate, EnterAlternateScreen, LeaveAlternateScreen, PopKeyboardFlags,
-        PushKeyboardFlags, RequestCellPixelSize, RestoreCursorStyle, ShowCursor,
+        DisableBracketedPaste, DisableClipboard, DisableColorSchemeUpdates, DisableFocusChange,
+        DisableMouseCapture, EnableBracketedPaste, EnableClipboard, EnableColorSchemeUpdates,
+        EnableFocusChange, EnableMouseCapture, EndSyncUpdate, EnterAlternateScreen,
+        LeaveAlternateScreen, PopKeyboardFlags, PushKeyboardFlags, RequestBgColor,
+        RequestCellPixelSize, RestoreCursorStyle, ShowCursor,
     },
 };
 
@@ -35,6 +37,7 @@ pub type AppTerminal = Terminal<CrosstermBackend<TtyWriter<'static>>>;
 
 static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
 static MODES_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CLIPBOARD_ACTIVE: AtomicBool = AtomicBool::new(false);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The reader is dropped before the restoration guard. This joins Yazi's
@@ -45,6 +48,7 @@ pub struct TerminalGuard {
     passthrough: Option<JoinHandle<u64>>,
     probe_deadline: Instant,
     allow_passthrough: bool,
+    clipboard_supported: bool,
     _modes: TerminalModes,
 }
 
@@ -114,12 +118,37 @@ impl TerminalGuard {
             // policy explicit rather than hiding it inside capability detection.
             allow_passthrough: std::env::var_os("TERMGRAM_TMUX_PASSTHROUGH")
                 .is_some_and(|value| value == "1"),
+            clipboard_supported: false,
             _modes: modes,
         })
     }
 
     pub fn terminal_mut(&mut self) -> &mut AppTerminal {
         &mut self.terminal
+    }
+
+    /// # Errors
+    /// Returns a TTY write error when changing the negotiated clipboard mode.
+    pub fn set_clipboard_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        let enabled = enabled && self.clipboard_supported;
+        if CLIPBOARD_ACTIVE.load(Ordering::Acquire) != enabled {
+            let mut writer = TTY.writer();
+            if enabled {
+                // Restore even when enabling partially writes and then fails.
+                CLIPBOARD_ACTIVE.store(true, Ordering::Release);
+                write!(writer, "{EnableClipboard}")?;
+            } else {
+                write!(writer, "{DisableClipboard}")?;
+            }
+            writer.flush()?;
+            CLIPBOARD_ACTIVE.store(enabled, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn clipboard_supported(&self) -> bool {
+        self.clipboard_supported
     }
 
     /// Consume protocol reports here so they can never become draft text.
@@ -129,7 +158,18 @@ impl TerminalGuard {
             tokio::select! {
                 event = self.input.next() => {
                     match event {
-                        Some(Ok(Event::Report(report))) => self.report(&report),
+                        Some(Ok(Event::Report(report))) => {
+                            self.report(&report);
+                            // Forward parsed colors, never raw protocol text, so the UI
+                            // can shade messages without starting another terminal reader.
+                            if matches!(report, Report::BackgroundColor(_) | Report::Clipboard(_)) {
+                                return Some(Ok(Event::Report(report)));
+                            }
+                            if matches!(report, Report::ColorScheme(_)) {
+                                let _ = write!(TTY.writer(), "{RequestBgColor}");
+                                let _ = TTY.writer().flush();
+                            }
+                        }
                         Some(Ok(event @ Event::Resize(_))) => {
                             // Font changes can change pixel dimensions without changing
                             // the terminal brand or negotiated graphics protocol.
@@ -172,6 +212,9 @@ impl TerminalGuard {
     // revision recorded in vendor/README.md. Keep the two-stage probe contract.
     fn report(&mut self, report: &Report) {
         EMULATOR.apply(report);
+        if let Report::Clipboard(supported) = report {
+            self.clipboard_supported = *supported;
+        }
         if !report.is_da_1() || EMULATOR.probe.pending().is_none() {
             return;
         }
@@ -204,6 +247,9 @@ fn restore_modes() {
         return;
     }
     crate::media::cleanup();
+    if CLIPBOARD_ACTIVE.swap(false, Ordering::AcqRel) {
+        let _ = write!(TTY.writer(), "{DisableClipboard}");
+    }
     let cursor = RestoreCursorStyle {
         blink: EMULATOR.cursor_blink.get(),
         shape: EMULATOR.cursor_shape.get(),

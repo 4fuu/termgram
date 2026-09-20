@@ -17,6 +17,7 @@ use tokio::time::{sleep, timeout};
 use yazi_term::event::Event;
 
 enum RuntimeEvent {
+    Configuration(Result<termgram::keymap::Keymap, String>),
     Terminal(Option<io::Result<Event>>),
     Network(Box<Option<NetworkEvent>>),
     UpdateCheck {
@@ -25,6 +26,9 @@ enum RuntimeEvent {
     },
     ShutdownSignal(io::Result<()>),
     Preview(Result<Vec<termgram::media::MediaFailure>>),
+    DraftError(String),
+    Clipboard(termgram::terminal::clipboard::Activity),
+    Notification(termgram::notifications::delivery::Activity),
     Tick,
 }
 
@@ -82,39 +86,112 @@ async fn main() -> Result<()> {
     let mut preview = PreviewRenderer::new();
     let (mut app, settings) = load_app_settings();
     let mut startup_warning = replacement_warning;
+    let lua_path = std::env::var_os("TERMGRAM_CONFIG")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            Settings::path()
+                .ok()
+                .map(|path| path.with_file_name("config.lua"))
+        });
+    app.configuration.path.clone_from(&lua_path);
+    if let Some(path) = lua_path {
+        match termgram::keymap::Keymap::load(&path) {
+            Ok(keymap) => app.keymap = keymap,
+            Err(error) => {
+                app.configuration.error = Some(termgram::model::sanitize_terminal_line(&format!(
+                    "{error:#}"
+                )));
+                startup_warning = Some(format!("{error:#}; using default bindings"));
+            }
+        }
+    }
+    if let Err(error) = app.load_appearance() {
+        startup_warning = Some(format!("Could not load appearance preferences: {error:#}"));
+    }
+    if let Err(error) = app.load_navigation() {
+        startup_warning = Some(format!("Could not load navigation preferences: {error:#}"));
+    }
     if let Some(warning) = &startup_warning {
         app.handle_network(NetworkEvent::Error(warning.clone()));
     }
     let mut update_check = spawn_update_check(settings);
     let mut update_preferences = settings;
 
-    let (mut commands, mut events, mut worker, base_config) = match Config::load() {
-        Ok(config) => match config.for_account(settings.active_account) {
-            Ok(selected) => {
-                let TelegramHandle {
-                    commands,
-                    events,
-                    task,
-                } = telegram::spawn(selected);
-                (Some(commands), Some(events), Some(task), Some(config))
-            }
+    let mut measurement = None;
+    let (mut commands, mut events, mut worker, mut base_config, mut active_chat) =
+        match Config::load().map(|mut config| {
+            config.measure_latency = app.keymap.statusline.measures_latency();
+            config
+        }) {
+            Ok(config) => match config.for_account(settings.active_account) {
+                Ok(selected) => {
+                    let TelegramHandle {
+                        measure_latency,
+                        commands,
+                        events,
+                        task,
+                        active_chat,
+                    } = telegram::spawn(selected);
+                    measurement = Some(measure_latency);
+                    (
+                        Some(commands),
+                        Some(events),
+                        Some(task),
+                        Some(config),
+                        Some(active_chat),
+                    )
+                }
+                Err(error) => {
+                    app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
+                    (None, None, None, Some(config), None)
+                }
+            },
             Err(error) => {
                 app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
-                (None, None, None, Some(config))
+                (None, None, None, None, None)
             }
-        },
-        Err(error) => {
-            app.handle_network(NetworkEvent::Fatal(format!("{error:#}")));
-            (None, None, None, None)
-        }
-    };
+        };
 
+    let mut draft_writer = base_config.clone().map(termgram::drafts::Writer::spawn);
     let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut pending_commands = VecDeque::new();
+    let mut clipboard = termgram::terminal::clipboard::Broker::default();
+    let mut notifications = termgram::notifications::delivery::Dispatcher::default();
     let mut redraw = true;
     let mut runtime_error: Option<anyhow::Error> = None;
+    let mut configuration_load = None;
 
     loop {
+        if let Some(path) = app.take_config_reload() {
+            configuration_load = Some(tokio::task::spawn_blocking(move || {
+                termgram::keymap::Keymap::reload(&path).map_err(|e| format!("{e:#}"))
+            }));
+        }
+        if let Some(measurement) = &measurement {
+            let enabled = app.keymap.statusline.measures_latency();
+            measurement.send_if_modified(|current| {
+                let changed = *current != enabled;
+                *current = enabled;
+                changed
+            });
+        }
+        if let Some(config) = &mut base_config {
+            config.measure_latency = app.keymap.statusline.measures_latency();
+        }
+        if let Err(error) =
+            terminal.set_clipboard_enabled(app.keymap.attachments.terminal_clipboard)
+        {
+            runtime_error =
+                Some(anyhow::Error::from(error).context("terminal clipboard mode failed"));
+            break;
+        }
+        app.configuration.terminal_clipboard = terminal.clipboard_supported();
+        clipboard.configure(terminal.clipboard_supported(), &mut app);
+        if let Some(writer) = &draft_writer
+            && let Some(snapshot) = app.take_draft_snapshot()
+        {
+            writer.queue(snapshot);
+        }
         if redraw && let Err(error) = draw_interface(&mut terminal, &mut preview, &mut app) {
             runtime_error = Some(error);
             break;
@@ -127,10 +204,25 @@ async fn main() -> Result<()> {
         let missing_previews = app
             .media_slots
             .iter()
-            .map(|slot| (slot.chat_id, slot.message_id))
+            .filter_map(|slot| match slot.source {
+                termgram::media::MediaSource::Message {
+                    chat_id,
+                    message_id,
+                } => Some((chat_id, message_id)),
+                termgram::media::MediaSource::File(_) => None,
+            })
             .filter(|key| !app.media_previews.contains_key(key))
             .collect::<Vec<_>>();
-        let outgoing = app.request_visible_media();
+        let mut outgoing = app.request_visible_media();
+        outgoing.extend(app.request_visible_replies());
+        outgoing.extend(app.request_visible_read());
+        outgoing.extend(app.request_visible_polls());
+        outgoing.extend(app.request_visible_reactions());
+        outgoing.extend(app.request_visible_chat_info());
+        outgoing.extend(app.request_alert_settings());
+        notifications.flush(&mut app);
+        let outgoing = clipboard.route(&mut app, outgoing);
+        clipboard.flush(&mut app);
         dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
         if missing_previews
             .iter()
@@ -144,7 +236,11 @@ async fn main() -> Result<()> {
         let runtime_event = if let Some(network) = events.as_mut() {
             tokio::select! {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
+                result = wait_for_configuration(&mut configuration_load) => RuntimeEvent::Configuration(result),
                 result = preview.finished() => RuntimeEvent::Preview(result),
+                error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
+                activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
+                activity = notifications.next_activity(app.next_alert_deadline().into_iter().chain(app.next_poll_deadline()).chain(app.next_reaction_deadline()).chain(app.next_chat_info_deadline()).min()) => RuntimeEvent::Notification(activity),
                 event = network.recv() => RuntimeEvent::Network(Box::new(event)),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
@@ -153,7 +249,11 @@ async fn main() -> Result<()> {
         } else {
             tokio::select! {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
+                result = wait_for_configuration(&mut configuration_load) => RuntimeEvent::Configuration(result),
                 result = preview.finished() => RuntimeEvent::Preview(result),
+                error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
+                activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
+                activity = notifications.next_activity(app.next_alert_deadline().into_iter().chain(app.next_poll_deadline()).chain(app.next_reaction_deadline()).chain(app.next_chat_info_deadline()).min()) => RuntimeEvent::Notification(activity),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
                 () = animation_tick => RuntimeEvent::Tick,
@@ -169,6 +269,9 @@ async fn main() -> Result<()> {
             RuntimeEvent::Terminal(Some(Ok(Event::Paste(text)))) => {
                 app.update(AppEvent::Paste(text))
             }
+            RuntimeEvent::Terminal(Some(Ok(Event::Clipboard(event)))) => {
+                clipboard.event(&mut app, event)
+            }
             RuntimeEvent::Terminal(Some(Ok(Event::FocusIn))) => {
                 app.update(AppEvent::TerminalFocus(true))
             }
@@ -178,6 +281,12 @@ async fn main() -> Result<()> {
             RuntimeEvent::Terminal(Some(Ok(Event::Resize(_)))) => {
                 preview.invalidate();
                 app.handle_action(termgram::input::KeyAction::Redraw)
+            }
+            RuntimeEvent::Terminal(Some(Ok(Event::Report(
+                yazi_term::event::Report::BackgroundColor(rgb),
+            )))) => {
+                app.terminal_background = Some(rgb.map(|channel| (channel >> 8) as u8));
+                Vec::new()
             }
             RuntimeEvent::Terminal(Some(Ok(_))) => Vec::new(),
             RuntimeEvent::Terminal(Some(Err(error))) => {
@@ -242,19 +351,70 @@ async fn main() -> Result<()> {
             RuntimeEvent::Preview(result) => {
                 match result {
                     Ok(failures) => {
-                        for (chat_id, message_id, error) in failures {
-                            app.media_preview_failed(chat_id, message_id, &error);
+                        for failure in failures {
+                            match failure.source {
+                                termgram::media::MediaSource::Message {
+                                    chat_id,
+                                    message_id,
+                                } => {
+                                    app.media_preview_failed(chat_id, message_id, &failure.error);
+                                }
+                                termgram::media::MediaSource::File(path) => {
+                                    app.attachment_draft.preview = false;
+                                    app.status_message = Some(format!(
+                                        "Preview {}: {}",
+                                        path.display(),
+                                        failure.error
+                                    ));
+                                }
+                            }
                         }
                     }
                     Err(error) => app.status_message = Some(format!("{error:#}")),
                 }
                 Vec::new()
             }
+            RuntimeEvent::DraftError(error) => {
+                app.status_message = Some(error);
+                Vec::new()
+            }
+            RuntimeEvent::Configuration(result) => {
+                configuration_load = None;
+                match result {
+                    Ok(keymap) => {
+                        if let Err(error) =
+                            terminal.set_clipboard_enabled(keymap.attachments.terminal_clipboard)
+                        {
+                            let _ = terminal
+                                .set_clipboard_enabled(app.keymap.attachments.terminal_clipboard);
+                            app.configuration_failed(&format!(
+                                "Could not apply terminal clipboard setting: {error}"
+                            ));
+                        } else {
+                            clipboard.configuration_changed(&mut app);
+                            app.install_configuration(keymap);
+                        }
+                    }
+                    Err(error) => app.configuration_failed(&error),
+                }
+                Vec::new()
+            }
             RuntimeEvent::Tick => app.update(AppEvent::Tick),
+            RuntimeEvent::Notification(activity) => {
+                notifications.activity(activity, &mut app);
+                Vec::new()
+            }
+            RuntimeEvent::Clipboard(activity) => {
+                clipboard.activity(&mut app, activity);
+                Vec::new()
+            }
         };
 
+        let outgoing = clipboard.route(&mut app, outgoing);
+        clipboard.flush(&mut app);
         let account_switch = dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
         if let Some(account) = account_switch {
+            clipboard.cancel();
             if let Err(error) = draw_interface(&mut terminal, &mut preview, &mut app)
                 .context("failed to draw account-switch feedback")
             {
@@ -274,6 +434,8 @@ async fn main() -> Result<()> {
                 &mut events,
                 &mut worker,
                 &mut pending_commands,
+                &mut active_chat,
+                &mut measurement,
             )
             .await
             {
@@ -282,11 +444,31 @@ async fn main() -> Result<()> {
                 )));
             }
         }
+        if let Some(active_chat) = &active_chat {
+            let target = app.sync_target();
+            active_chat.send_if_modified(|current| {
+                if *current == target {
+                    false
+                } else {
+                    *current = target;
+                    true
+                }
+            });
+        }
         synchronize_update_preferences(&mut app, &mut update_preferences, &mut update_check);
     }
 
+    app.cancel_alerts();
     drop(preview);
     drop(terminal);
+    if let Some(writer) = draft_writer {
+        if let Some(snapshot) = app.take_draft_snapshot() {
+            writer.queue(snapshot);
+        }
+        if let Err(error) = writer.finish().await {
+            runtime_error = Some(error.context("could not save drafts before exit"));
+        }
+    }
     drop(commands.take());
     // Stop back-pressuring a worker that may be trying to report its final
     // status while the UI is no longer consuming network events.
@@ -483,6 +665,24 @@ async fn wait_for_animation_tick(enabled: bool) {
     }
 }
 
+async fn wait_for_configuration(
+    task: &mut Option<tokio::task::JoinHandle<Result<termgram::keymap::Keymap, String>>>,
+) -> Result<termgram::keymap::Keymap, String> {
+    match task {
+        Some(task) => task
+            .await
+            .map_err(|e| format!("Configuration loader failed: {e}"))?,
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_draft_error(writer: &mut Option<termgram::drafts::Writer>) -> String {
+    match writer {
+        Some(writer) => writer.next_error().await,
+        None => std::future::pending().await,
+    }
+}
+
 fn dispatch(
     app: &mut AppState,
     commands: &mut Option<mpsc::Sender<TelegramCommand>>,
@@ -533,105 +733,12 @@ fn dispatch(
 }
 
 fn reject_overflow(app: &mut AppState, command: TelegramCommand) {
-    let event = match command {
-        TelegramCommand::SendMessage {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-        } => NetworkEvent::SendFailed {
-            chat_id,
-            local_id,
-            text,
-            reply_to,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::SendAttachment {
-            chat_id,
-            local_id,
-            path,
-            caption,
-            as_photo,
-            reply_to,
-        } => NetworkEvent::AttachmentSendFailed {
-            chat_id,
-            local_id,
-            path,
-            caption,
-            as_photo,
-            reply_to,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::DownloadAttachment {
-            chat_id,
-            message_id,
-        } => NetworkEvent::AttachmentDownloadFailed {
-            chat_id,
-            message_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::DownloadPreview {
-            chat_id,
-            message_id,
-            request_id,
-            ..
-        } => NetworkEvent::PreviewDownloadFailed {
-            chat_id,
-            message_id,
-            request_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::ResolveTelegramLink { url } => NetworkEvent::LinkFailed {
-            url,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::ActivateButton {
-            chat_id,
-            message_id,
-            button_index: _,
-        } => NetworkEvent::ButtonFailed {
-            chat_id,
-            message_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::LoadHistory {
-            chat_id,
-            request_id,
-        } => NetworkEvent::HistoryFailed {
-            chat_id,
-            request_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::LoadMessage {
-            chat_id,
-            source_message_id: _,
-            message_id,
-            request_id,
-        } => NetworkEvent::MessageLoadFailed {
-            chat_id,
-            message_id,
-            request_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::MarkRead { chat_id } => NetworkEvent::ReadMarkFailed {
-            chat_id,
-            error: "Telegram command queue is busy".to_owned(),
-        },
-        TelegramCommand::RefreshDialogs => {
-            NetworkEvent::DialogsFailed("Telegram command queue is busy".to_owned())
-        }
-        TelegramCommand::SwitchAccount { .. } | TelegramCommand::Shutdown => return,
-        TelegramCommand::StartQrAuth
-        | TelegramCommand::SubmitPhone(_)
-        | TelegramCommand::SubmitCode(_)
-        | TelegramCommand::SubmitPassword(_)
-        | TelegramCommand::RestartAuth => {
-            NetworkEvent::Fatal("Telegram command queue is busy; restart sign-in".to_owned())
-        }
-    };
-    app.handle_network(event);
+    if let Some(event) = command.failure("Telegram command queue is busy".to_owned()) {
+        app.handle_network(event);
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn restart_telegram_worker(
     base_config: &Config,
     account: u8,
@@ -639,6 +746,8 @@ async fn restart_telegram_worker(
     events: &mut Option<mpsc::Receiver<NetworkEvent>>,
     worker: &mut Option<tokio::task::JoinHandle<()>>,
     pending: &mut VecDeque<TelegramCommand>,
+    active_chat: &mut Option<tokio::sync::watch::Sender<Option<termgram::model::ChatId>>>,
+    measurement: &mut Option<tokio::sync::watch::Sender<bool>>,
 ) -> Result<()> {
     pending.clear();
     if let Some(sender) = commands.take() {
@@ -654,10 +763,14 @@ async fn restart_telegram_worker(
 
     let selected = base_config.for_account(account)?;
     let TelegramHandle {
+        measure_latency,
         commands: next_commands,
         events: next_events,
         task,
+        active_chat: next_active,
     } = telegram::spawn(selected);
+    *measurement = Some(measure_latency);
+    *active_chat = Some(next_active);
     *commands = Some(next_commands);
     *events = Some(next_events);
     *worker = Some(task);

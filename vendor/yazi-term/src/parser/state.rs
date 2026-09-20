@@ -79,6 +79,7 @@ pub(crate) struct StateOsc72 {
 // --- StateOsc5522
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct StateOsc5522 {
+	pub(crate) id:       String,
 	pub(crate) write:    bool,
 	pub(crate) primary:  bool,
 	pub(crate) mimes:    Vec<String>,
@@ -90,7 +91,7 @@ pub(crate) struct StateOsc5522 {
 
 impl StateOsc5522 {
 	pub(crate) fn len(&self) -> usize {
-		self.pw.len()
+		self.id.len() + self.pw.len()
 			+ self.mimes.iter().map(String::len).sum::<usize>()
 			+ self.payload.iter().map(Vec::len).sum::<usize>()
 	}

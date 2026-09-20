@@ -51,10 +51,21 @@ impl Parser {
 		let State::Osc5522(state) = &mut self.state else { unreachable!() };
 		state.status.clear(); // reset status for this new sequence
 		state.has_more = false; // reset has_more for this new sequence
+		let mut request_id = None;
 
 		for part in meta.split(':') {
 			match part.split_once('=').ok_or(ParseError::Invalid)? {
 				("type", v) => state.write = v == "write",
+				("id", v) => {
+					request_id = Some(v);
+					if v.len() > 128 || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_+.".contains(&b)) {
+						bail!();
+					}
+					if !state.id.is_empty() && state.id != v {
+						bail!();
+					}
+					state.id = v.to_owned();
+				}
 				("loc", v) => state.primary = v == "primary",
 				("mime", v) => {
 					let s = String::from_utf8(STANDARD_PAD_INDIFFERENT.decode(v)?)?;
@@ -71,6 +82,9 @@ impl Parser {
 			}
 		}
 
+		if !state.id.is_empty() && request_id.is_none() {
+			bail!();
+		}
 		let len = state.len();
 		if len > 16 << 20 || state.mimes.len() > 1024 {
 			bail!();
@@ -89,5 +103,25 @@ impl Parser {
 		}
 
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::event::{ClipboardEvent, Event};
+
+	#[test]
+	fn clipboard_ids_survive_success_and_failure_but_cannot_change_between_chunks() {
+		let mut parser = Parser::default();
+		parser.parse(b"\x1b]5522;type=read:id=req-1:status=OK\x1b\\\x1b]5522;type=read:id=req-1:status=DATA:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\\x1b]5522;type=read:id=req-1:status=DONE\x1b\\");
+		assert!(matches!(parser.events.pop_front(), Some(Event::Clipboard(ClipboardEvent::Read { id, data, .. })) if id == "req-1" && data.get("text/plain") == Some(b"hi".as_slice())));
+		parser.parse(b"\x1b]5522;type=read:id=req-2:status=EPERM\x1b\\");
+		assert!(matches!(parser.events.pop_front(), Some(Event::Clipboard(ClipboardEvent::ReadError { id, code })) if id == "req-2" && code == "EPERM"));
+		for tail in ["type=read:id=other:status=DONE", "type=read:status=DONE"] {
+			parser.parse(b"\x1b]5522;type=read:id=req-3:status=OK\x1b\\");
+			parser.parse(format!("\x1b]5522;{tail}\x1b\\").as_bytes());
+			assert!(parser.events.is_empty(), "inconsistent IDs discard the operation");
+		}
 	}
 }

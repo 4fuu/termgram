@@ -199,3 +199,7 @@ The `command` action opens the [command line](Commands.md) in navigation. Its
 `command` context can rebind `complete_next`, `complete_previous`,
 `history_previous`, `history_next`, `open`, `cancel` and input editing actions.
 Ctrl-C cancels command entry by default; it still quits in other contexts.
+
+## Attachment input
+
+`attachments = { auto_attach_paths = false }` keeps ordinary paste as text. Set it to `true` to stage recognized local paths, with explicit send still required. Use `:attach` for explicit file selection. Details and review keys: [Attachments](Attachments.md).

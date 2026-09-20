@@ -35,6 +35,10 @@ macro_rules! actions {
 actions! {
     Quit => ("quit", "Exit Termgram"),
     CommandLine => ("command", "Browse and run application commands"),
+    Attach => ("attach", "Add files to the current draft"),
+    Attachments => ("attachments", "Review the draft's attachments"),
+    RemoveAttachment => ("remove_attachment", "Remove the selected draft attachment"),
+    AttachmentFormat => ("attachment_format", "Switch between photo and original file"),
     CompleteNext => ("complete_next", "Complete the next command candidate"),
     CompletePrevious => ("complete_previous", "Complete the previous command candidate"),
     HistoryPrevious => ("history_previous", "Recall an older command with this prefix"),

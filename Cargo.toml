@@ -37,8 +37,10 @@ tokio = { version = "1.52", default-features = false, features = ["macros", "rt"
 toml = "=1.1.6"
 unicode-segmentation = "1.13.3"
 unicode-width = "=0.2.2"
+url = "=2.5.8"
 
 yazi-config = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
+yazi-shared = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
 yazi-adapter = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
 yazi-emulator = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }
 yazi-term = { git = "https://github.com/sxyazi/yazi", rev = "9203fd2604f867ab5ec18f24203b918975c4c00a" }

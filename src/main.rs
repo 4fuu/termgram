@@ -166,7 +166,13 @@ async fn main() -> Result<()> {
         let missing_previews = app
             .media_slots
             .iter()
-            .map(|slot| (slot.chat_id, slot.message_id))
+            .filter_map(|slot| match slot.source {
+                termgram::media::MediaSource::Message {
+                    chat_id,
+                    message_id,
+                } => Some((chat_id, message_id)),
+                termgram::media::MediaSource::File(_) => None,
+            })
             .filter(|key| !app.media_previews.contains_key(key))
             .collect::<Vec<_>>();
         let mut outgoing = app.request_visible_media();
@@ -290,8 +296,23 @@ async fn main() -> Result<()> {
             RuntimeEvent::Preview(result) => {
                 match result {
                     Ok(failures) => {
-                        for (chat_id, message_id, error) in failures {
-                            app.media_preview_failed(chat_id, message_id, &error);
+                        for failure in failures {
+                            match failure.source {
+                                termgram::media::MediaSource::Message {
+                                    chat_id,
+                                    message_id,
+                                } => {
+                                    app.media_preview_failed(chat_id, message_id, &failure.error);
+                                }
+                                termgram::media::MediaSource::File(path) => {
+                                    app.attachment_draft.preview = false;
+                                    app.status_message = Some(format!(
+                                        "Preview {}: {}",
+                                        path.display(),
+                                        failure.error
+                                    ));
+                                }
+                            }
                         }
                     }
                     Err(error) => app.status_message = Some(format!("{error:#}")),

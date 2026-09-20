@@ -26,12 +26,13 @@ pub struct Key {
 pub struct Draft {
     pub input: TextInput,
     pub reply: Option<ReplyInfo>,
+    pub attachments: Vec<crate::staging::Attachment>,
 }
 
 impl Draft {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.input.is_empty() && self.reply.is_none()
+        self.input.is_empty() && self.reply.is_none() && self.attachments.is_empty()
     }
 
     #[must_use]
@@ -42,6 +43,7 @@ impl Draft {
             text: self.input.value().to_owned(),
             cursor: self.input.cursor(),
             reply: self.reply.clone(),
+            attachments: self.attachments.clone(),
         }
     }
 }
@@ -54,6 +56,8 @@ pub struct Stored {
     pub text: String,
     pub cursor: usize,
     pub reply: Option<ReplyInfo>,
+    #[serde(default)]
+    pub attachments: Vec<crate::staging::Attachment>,
 }
 
 impl Stored {
@@ -62,6 +66,7 @@ impl Stored {
         Draft {
             input: TextInput::with_cursor(sanitize_terminal_text(&self.text), self.cursor),
             reply: self.reply.clone(),
+            attachments: self.attachments.clone(),
         }
     }
 }
@@ -109,11 +114,14 @@ impl Store {
             .context("missing draft schema version")?
             .get::<i64>(0)?;
         ensure!(
-            version <= 1,
+            version <= 2,
             "drafts were created by a newer Termgram version"
         );
         if version == 0 {
             transaction.execute_batch("CREATE TABLE drafts(account_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(account_id,chat_id,topic_id)); PRAGMA user_version=1;").await?;
+        }
+        if version < 2 {
+            transaction.execute_batch("PRAGMA user_version=2;").await?;
         }
         transaction.commit().await?;
         Ok(Self {
@@ -267,6 +275,7 @@ mod tests {
 
     fn stored(chat: ChatId, topic: i32, text: &str) -> Stored {
         Stored {
+            attachments: Vec::new(),
             chat,
             topic,
             text: text.to_owned(),
@@ -284,13 +293,22 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.sqlite3");
         let store = Store::open(&path).await.unwrap();
-        let initial = Snapshot::from([
+        let mut initial = Snapshot::from([
             (
                 100,
                 vec![stored(7, 0, "a界🙂"), stored(7, 44, "Topic draft")],
             ),
             (200, vec![stored(7, 0, "Other account")]),
         ]);
+        initial.get_mut(&100).unwrap()[0]
+            .attachments
+            .push(crate::staging::Attachment {
+                path: directory.path().join("attachment.txt"),
+                size: 12,
+                digest: [7; 32],
+                as_photo: false,
+                photo_supported: false,
+            });
         store.save(&initial, &Snapshot::new()).await.unwrap();
         let duplicate = stored(7, 0, "duplicate");
         assert!(

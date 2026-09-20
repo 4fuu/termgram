@@ -42,6 +42,7 @@ const TRANSIENT_SENDER_NAME_LIMIT: usize = 256;
 const MESSAGE_SENDER_CACHE_LIMIT: usize = 512;
 const UNRESOLVED_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 const MAX_CONCURRENT_TRANSFERS: usize = 3;
+const MAX_PENDING_TRANSFERS: usize = 32;
 const QR_MIGRATION_LIMIT: usize = 4;
 const MIN_QR_REFRESH_DELAY: Duration = Duration::from_millis(500);
 const DEFAULT_QR_REFRESH_DELAY: Duration = Duration::from_secs(30);
@@ -63,6 +64,7 @@ struct MetadataRefresh {
 
 #[derive(Default)]
 struct WorkerCache {
+    transfer_slots: Option<Arc<tokio::sync::Semaphore>>,
     dialogs: MetadataRefresh,
     folders: MetadataRefresh,
     dialog_pins: MetadataRefresh,
@@ -137,6 +139,7 @@ enum TransferCompletion {
         chat_id: ChatId,
         local_id: i32,
         path: PathBuf,
+        digest: [u8; 32],
         caption: String,
         as_photo: bool,
         reply_to: Option<i32>,
@@ -1341,6 +1344,10 @@ async fn handle_command(
     transfers: &mut JoinSet<TransferCompletion>,
     requests: &mut JoinSet<requests::Completion>,
 ) -> Result<bool> {
+    let slots = cache
+        .transfer_slots
+        .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
+        .clone();
     match command {
         command @ (TelegramCommand::LoadOlder { .. }
         | TelegramCommand::ChangeDialogPin { .. }
@@ -1409,6 +1416,7 @@ async fn handle_command(
             chat_id,
             local_id,
             path,
+            digest,
             caption,
             as_photo,
             reply_to,
@@ -1419,6 +1427,7 @@ async fn handle_command(
                         chat_id,
                         local_id,
                         path,
+                        digest,
                         caption,
                         as_photo,
                         reply_to,
@@ -1427,16 +1436,17 @@ async fn handle_command(
                     .await?;
                 return Ok(false);
             };
-            if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
+            if transfers.len() >= MAX_PENDING_TRANSFERS {
                 events
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
                         path,
+                        digest,
                         caption,
                         as_photo,
                         reply_to,
-                        error: "too many Telegram transfers are already running".to_owned(),
+                        error: "Telegram transfer queue is full".to_owned(),
                     })
                     .await?;
                 return Ok(false);
@@ -1444,14 +1454,34 @@ async fn handle_command(
             let client = client.clone();
             let cache_owner = cache.cache_owner.clone();
             transfers.spawn(async move {
+                let permit = Arc::new(
+                    slots
+                        .acquire_owned()
+                        .await
+                        .expect("transfer queue is never closed"),
+                );
                 let _cache_owner = cache_owner.clone();
-                let result = upload_attachment(&client, peer, &path, &caption, as_photo, reply_to)
+                let result = async {
+                    let original = path.clone();
+                    // Blocking validation retains its permit if this async task
+                    // is cancelled; cancellation cannot create unbounded copies.
+                    let copy_permit = permit.clone();
+                    let upload = tokio::task::spawn_blocking(move || {
+                        let _permit = copy_permit;
+                        crate::staging::upload_copy(&original, digest)
+                    })
                     .await
-                    .map_err(|error| format!("{error:#}"));
+                    .context("attachment validation worker failed")??;
+                    upload_attachment(&client, peer, &upload.path, &caption, as_photo, reply_to)
+                        .await
+                }
+                .await
+                .map_err(|error| format!("{error:#}"));
                 TransferCompletion::Send {
                     chat_id,
                     local_id,
                     path,
+                    digest,
                     caption,
                     as_photo,
                     reply_to,
@@ -1471,8 +1501,8 @@ async fn handle_command(
                     .get(&chat_id)
                     .copied()
                     .context("conversation is missing its Telegram peer reference")?;
-                if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
-                    bail!("too many Telegram transfers are already running; close and retry");
+                if transfers.len() >= MAX_PENDING_TRANSFERS {
+                    bail!("Telegram transfer queue is full; close and retry");
                 }
                 let directory = ensure_download_dir(cache).await?;
                 Ok::<_, anyhow::Error>((peer, directory))
@@ -1483,6 +1513,10 @@ async fn handle_command(
                     let client = client.clone();
                     let cache_owner = cache.cache_owner.clone();
                     transfers.spawn(async move {
+                        let _permit = slots
+                            .acquire_owned()
+                            .await
+                            .expect("transfer queue is never closed");
                         let _cache_owner = cache_owner.clone();
                         let result = if thumbnail {
                             download_preview_thumbnail(
@@ -1544,13 +1578,13 @@ async fn handle_command(
                     .await?;
                 return Ok(false);
             };
-            if transfers.len() >= MAX_CONCURRENT_TRANSFERS {
+            if transfers.len() >= MAX_PENDING_TRANSFERS {
                 events
                     .send(NetworkEvent::AttachmentDownloadFailed {
                         request_id,
                         chat_id,
                         message_id,
-                        error: "too many Telegram transfers are already running".to_owned(),
+                        error: "Telegram transfer queue is full".to_owned(),
                     })
                     .await?;
                 return Ok(false);
@@ -1559,6 +1593,10 @@ async fn handle_command(
             let client = client.clone();
             let cache_owner = cache.cache_owner.clone();
             transfers.spawn(async move {
+                let _permit = slots
+                    .acquire_owned()
+                    .await
+                    .expect("transfer queue is never closed");
                 let _cache_owner = cache_owner.clone();
                 let result = download_attachment(
                     &client,
@@ -1579,7 +1617,8 @@ async fn handle_command(
                 }
             });
         }
-        TelegramCommand::SearchCached(_)
+        TelegramCommand::PrepareAttachments(_)
+        | TelegramCommand::SearchCached(_)
         | TelegramCommand::CancelSearch
         | TelegramCommand::LoadCachedContext { .. } => {
             unreachable!("local searches never reach Telegram")
@@ -1726,6 +1765,7 @@ async fn process_transfer_completion(
             chat_id,
             local_id,
             path,
+            digest,
             caption,
             as_photo,
             reply_to,
@@ -1750,6 +1790,7 @@ async fn process_transfer_completion(
                         chat_id,
                         local_id,
                         path,
+                        digest,
                         caption,
                         as_photo,
                         reply_to,

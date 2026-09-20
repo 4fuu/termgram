@@ -98,11 +98,13 @@ pub enum TelegramCommand {
         /// native Telegram reply.
         reply_to: Option<i32>,
     },
-    /// Upload a local path and send it as Telegram media.
+    PrepareAttachments(crate::staging::Request),
+    /// Upload a reviewed local file and send it as Telegram media.
     SendAttachment {
         chat_id: ChatId,
         local_id: i32,
         path: PathBuf,
+        digest: [u8; 32],
         caption: String,
         /// Compress image input as a Telegram photo; otherwise preserve it as
         /// a document.
@@ -230,6 +232,11 @@ impl TelegramCommand {
                 request_id,
                 error,
             },
+            TelegramCommand::PrepareAttachments(request) => NetworkEvent::AttachmentsPrepared {
+                key: request.key,
+                request_id: request.id,
+                result: Err(error),
+            },
             TelegramCommand::SendMessage {
                 chat_id,
                 local_id,
@@ -246,6 +253,7 @@ impl TelegramCommand {
                 chat_id,
                 local_id,
                 path,
+                digest,
                 caption,
                 as_photo,
                 reply_to,
@@ -253,6 +261,7 @@ impl TelegramCommand {
                 chat_id,
                 local_id,
                 path,
+                digest,
                 caption,
                 as_photo,
                 reply_to,
@@ -413,10 +422,15 @@ impl fmt::Debug for TelegramCommand {
                 .field("text", text)
                 .field("reply_to", reply_to)
                 .finish(),
+            Self::PrepareAttachments(request) => formatter
+                .debug_tuple("PrepareAttachments")
+                .field(request)
+                .finish(),
             Self::SendAttachment {
                 chat_id,
                 local_id,
                 path,
+                digest,
                 caption,
                 as_photo,
                 reply_to,
@@ -425,6 +439,7 @@ impl fmt::Debug for TelegramCommand {
                 .field("chat_id", chat_id)
                 .field("local_id", local_id)
                 .field("path", path)
+                .field("digest", digest)
                 .field("caption", caption)
                 .field("as_photo", as_photo)
                 .field("reply_to", reply_to)
@@ -655,6 +670,11 @@ pub enum NetworkEvent {
         user_name: Option<String>,
         chats: Vec<Chat>,
     },
+    AttachmentsPrepared {
+        key: crate::drafts::Key,
+        request_id: u64,
+        result: Result<crate::staging::Prepared, String>,
+    },
     CachedHistory {
         chat_id: ChatId,
         request_id: u64,
@@ -745,6 +765,7 @@ pub enum NetworkEvent {
         chat_id: ChatId,
         local_id: i32,
         path: PathBuf,
+        digest: [u8; 32],
         caption: String,
         as_photo: bool,
         reply_to: Option<i32>,

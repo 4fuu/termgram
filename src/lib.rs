@@ -14,6 +14,7 @@ pub mod model;
 pub mod pins;
 pub mod search;
 pub mod sidebar;
+pub mod staging;
 pub mod statusline;
 pub mod telegram;
 pub mod terminal;

@@ -16,6 +16,10 @@ impl App {
 
     pub(super) fn draft_data_mut(&mut self, chat: ChatId) -> &mut Draft {
         let key = self.draft_key(chat);
+        self.draft_at_mut(key)
+    }
+
+    pub(super) fn draft_at_mut(&mut self, key: Key) -> &mut Draft {
         self.drafts_dirty = true;
         if key.account > 0 {
             self.draft_modified_accounts.insert(key.account);

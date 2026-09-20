@@ -34,9 +34,14 @@ const IMAGE_BOUND: u32 = 8192;
 static KITTY_USED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MediaSource {
+    Message { chat_id: ChatId, message_id: i32 },
+    File(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaSlot {
-    pub chat_id: ChatId,
-    pub message_id: i32,
+    pub source: MediaSource,
     pub viewport: Rect,
     pub offset: i16,
     pub size: Size,
@@ -52,7 +57,10 @@ struct ImageKey {
 }
 
 type Encoded = Vec<(ImageKey, Result<SlicedProtocol>)>;
-pub type MediaFailure = (ChatId, i32, String);
+pub struct MediaFailure {
+    pub source: MediaSource,
+    pub error: String,
+}
 
 #[derive(Default)]
 pub struct PreviewRenderer {
@@ -75,12 +83,21 @@ impl PreviewRenderer {
             .media_slots
             .iter()
             .filter_map(|slot| {
-                let preview = app.media_previews.get(&(slot.chat_id, slot.message_id))?;
+                let (path, request_id) = match &slot.source {
+                    MediaSource::Message {
+                        chat_id,
+                        message_id,
+                    } => {
+                        let preview = app.media_previews.get(&(*chat_id, *message_id))?;
+                        (preview.path.clone()?, preview.request_id)
+                    }
+                    MediaSource::File(path) => (path.clone(), 0),
+                };
                 Some((
                     slot.clone(),
                     ImageKey {
-                        path: preview.path.clone()?,
-                        request_id: preview.request_id,
+                        path,
+                        request_id,
                         width: slot.size.width,
                         height: slot.size.height,
                         generation: self.generation,
@@ -157,7 +174,10 @@ impl PreviewRenderer {
                 return Ok(self
                     .targets
                     .iter()
-                    .map(|(slot, _)| (slot.chat_id, slot.message_id, format!("{error:#}")))
+                    .map(|(slot, _)| MediaFailure {
+                        source: slot.source.clone(),
+                        error: format!("{error:#}"),
+                    })
                     .collect());
             }
         };
@@ -170,7 +190,10 @@ impl PreviewRenderer {
                 Ok(protocol) => {
                     self.ready.insert(key, protocol);
                 }
-                Err(error) => failures.push((slot.chat_id, slot.message_id, format!("{error:#}"))),
+                Err(error) => failures.push(MediaFailure {
+                    source: slot.source.clone(),
+                    error: format!("{error:#}"),
+                }),
             }
         }
         Ok(failures)

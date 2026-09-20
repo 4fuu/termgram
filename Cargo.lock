@@ -3668,10 +3668,12 @@ dependencies = [
  "toml",
  "unicode-segmentation",
  "unicode-width",
+ "url",
  "vergen-gitcl",
  "yazi-adapter",
  "yazi-config",
  "yazi-emulator",
+ "yazi-shared",
  "yazi-term",
  "yazi-tty",
 ]

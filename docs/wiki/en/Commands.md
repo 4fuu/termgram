@@ -31,6 +31,8 @@ to disk. Multiline paste cannot execute a series of commands.
 | `folder <ID or name>` | Choose All chats, Archive, or an official Telegram folder |
 | `account [slot]` | Open the account picker or switch to an existing slot |
 | `search [regex]` | Open local search or submit a pattern in the current search scope |
+| `attach <paths...>` | Prepare local files in the captured chat draft; never sends automatically |
+| `attachments` | Review the open conversation’s staged files |
 | `latest` | Return the open conversation to its latest messages |
 | `reply` | Reply to an explicitly selected message |
 | `preview` | Expand a selected image or sticker |

@@ -80,3 +80,5 @@ Lua 解析之后不再有另一套硬编码按键兜底。
 
 导航模式按 `:` 打开[冒号命令](Commands.md)。Tab/Shift-Tab 或 Ctrl-N/Ctrl-P
 补全前后候选；Up/Down 召回匹配前缀的历史；Enter 执行；Esc/Ctrl-C 取消。
+
+输入框 Ctrl-O 打开附件列表，其中 a/p/d/o/O/i 分别添加、切换照片或文件、移除、预览、定位和编辑说明，见[附件](Attachments.md)。

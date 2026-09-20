@@ -16,6 +16,7 @@ pub enum Kind {
     Sidebar,
     Color,
     Status,
+    Attach,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +71,7 @@ impl Spec {
             Kind::Archive(_) => Some(Action::Archive),
             Kind::Sidebar => Some(Action::ToggleSidebar),
             Kind::Color => Some(Action::ChatColor),
+            Kind::Attach => Some(Action::Attach),
         }
     }
 }
@@ -88,6 +90,22 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "attach",
+        None,
+        "<paths...>",
+        Kind::Attach,
+        Chat,
+        "Add files to this chat's draft without sending"
+    ),
+    command!(
+        "attachments",
+        None,
+        "",
+        Kind::Action(Action::Attachments),
+        Conversation,
+        ""
+    ),
     command!(
         "help",
         Some("h"),

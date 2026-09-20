@@ -84,3 +84,5 @@ There is no separate hardcoded keyboard fallback after Lua resolution.
 Click a reply quote to jump to its original. For a selected reply, Enter opens
 that target by default; use `g n` / `g p` for its other actions. Media clicks select
 the attachment, so Enter then activates that media action.
+
+Composer Ctrl-O opens attachment review. Its a/p/d/o/O/i keys add, choose photo or file, remove, preview, reveal and edit the caption. See [Attachments](Attachments.md).

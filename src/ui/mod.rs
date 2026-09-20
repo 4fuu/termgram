@@ -5,6 +5,7 @@ mod icons;
 mod pins;
 mod preview;
 mod search;
+mod staging;
 mod statusline;
 mod transcript;
 use chrono::Local;
@@ -463,6 +464,8 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         commands::render(frame, area, app);
     } else if app.mode == Mode::Status {
         commands::render_status(frame, area, app);
+    } else if app.mode == Mode::Attachments {
+        staging::render(frame, area, app);
     } else if app.mode == Mode::Preview {
         preview::render(frame, area, app);
     } else if app.mode == Mode::Colors {
@@ -708,8 +711,10 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
                 .saturating_sub(u16::from(app.new_messages_while_scrolled > 0)),
         );
         app.media_slots.push(crate::media::MediaSlot {
-            chat_id,
-            message_id,
+            source: crate::media::MediaSource::Message {
+                chat_id,
+                message_id,
+            },
             viewport,
             offset,
             size: ratatui::layout::Size::new(width, height),
@@ -796,6 +801,7 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
         );
         return;
     }
+    let inner = staging::composer_summary(frame, inner, app);
     let empty = TextInput::new();
     let input = app.active_draft().unwrap_or(&empty);
     let (row, column) = input_cursor(input, inner.width.max(1));
@@ -1180,6 +1186,9 @@ fn composer_height(app: &AppState, width: u16) -> u16 {
     u16::try_from(lines.clamp(1, 4))
         .unwrap_or(4)
         .saturating_add(2)
+        .saturating_add(u16::from(
+            app.preparing_attachments() || !app.draft_attachments().is_empty(),
+        ))
 }
 
 fn editor_lines(value: &str, width: u16) -> Vec<String> {

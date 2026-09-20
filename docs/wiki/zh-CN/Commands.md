@@ -27,6 +27,8 @@
 | `folder <ID 或名称>` | 选择 All chats、Archive 或 Telegram 文件夹 |
 | `account [槽位]` | 打开账号选择器，或切换到已有账号槽位 |
 | `search [正则]` | 打开本地搜索，或在当前搜索范围提交正则 |
+| `attach <paths...>` | 将本地文件加入目标聊天草稿，不会自动发送 |
+| `attachments` | 查看当前会话草稿中的附件 |
 | `latest` | 回到已打开会话的最新消息 |
 | `reply` | 回复明确选中的消息 |
 | `preview` | 放大选中的图片或贴纸 |

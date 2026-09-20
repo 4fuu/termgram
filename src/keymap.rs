@@ -27,6 +27,7 @@ pub enum Context {
     Conversation,
     Compose,
     Command,
+    Attachments,
     Input,
     Overlay,
     Preview,
@@ -61,6 +62,7 @@ struct Configuration {
     statusline: crate::statusline::Configuration,
     sidebar: crate::sidebar::Configuration,
     messages: crate::transcript::Configuration,
+    attachments: crate::staging::Configuration,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +84,7 @@ pub struct Keymap {
     pub statusline: crate::statusline::Configuration,
     pub sidebar: crate::sidebar::Configuration,
     pub messages: crate::transcript::Configuration,
+    pub attachments: crate::staging::Configuration,
     pending: Vec<Key>,
     count: usize,
     context: Option<Context>,
@@ -105,6 +108,7 @@ impl Default for Keymap {
             statusline: crate::statusline::Configuration::default(),
             sidebar: crate::sidebar::Configuration::default(),
             messages: crate::transcript::Configuration::default(),
+            attachments: crate::staging::Configuration::default(),
             ghost_text: "{send} to send".to_owned(),
             nerd_font: false,
             pending: Vec::new(),
@@ -212,6 +216,7 @@ impl Default for Keymap {
             (
                 Context::Compose,
                 &[
+                    ("<C-o>", "attachments"),
                     ("<Enter>", "send"),
                     ("<S-Enter>", "newline"),
                     ("<C-j>", "newline"),
@@ -310,6 +315,32 @@ impl Default for Keymap {
                 })
                 .expect("valid command binding");
         }
+        for (key, run) in [
+            ("<Esc>", "cancel"),
+            ("q", "cancel"),
+            ("i", "compose"),
+            ("j", "down"),
+            ("k", "up"),
+            ("<Up>", "up"),
+            ("<Down>", "down"),
+            ("a", "attach"),
+            ("d", "remove_attachment"),
+            ("<Delete>", "remove_attachment"),
+            ("p", "attachment_format"),
+            ("o", "preview"),
+            ("<Enter>", "preview"),
+            ("O", "reveal"),
+        ] {
+            result
+                .insert(BindingSpec {
+                    context: Context::Attachments,
+                    on: vec![key.to_owned()],
+                    run: run.to_owned(),
+                    count: 1,
+                    desc: None,
+                })
+                .expect("valid attachment binding");
+        }
         for context in [
             Context::Compose,
             Context::Input,
@@ -394,6 +425,7 @@ impl Keymap {
             statusline: configuration.statusline,
             sidebar: configuration.sidebar,
             messages: configuration.messages,
+            attachments: configuration.attachments,
             ..Self::default()
         };
         if let Some(text) = configuration.ghost_text {

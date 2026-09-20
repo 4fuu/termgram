@@ -9,6 +9,7 @@ mod message_pins;
 mod pins;
 mod replies;
 mod search;
+mod staging;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,7 +33,6 @@ use crate::{
 const PAGE_STEP: usize = 10;
 const MAX_MESSAGES_PER_CHAT: usize = 160;
 const MAX_CACHED_CHATS: usize = 12;
-const MAX_DROPPED_FILES: usize = 8;
 
 type MessageHitRegion = (u16, u16, u16, (i32, Option<usize>));
 
@@ -161,6 +161,7 @@ pub enum Mode {
     Compose,
     Command,
     Status,
+    Attachments,
     Preview,
     Filter,
     Search,
@@ -191,6 +192,7 @@ struct ReplyRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AttachmentRetry {
     path: PathBuf,
+    digest: [u8; 32],
     caption: String,
     as_photo: bool,
     reply_to: Option<ReplyInfo>,
@@ -230,6 +232,7 @@ pub struct App {
     pub filter: TextInput,
     pub search: search::State,
     pub commands: commands::State,
+    pub attachment_draft: staging::State,
     pub narrow_conversation: bool,
     pub sidebar_hidden: bool,
     pub should_quit: bool,
@@ -341,6 +344,7 @@ impl Default for App {
             filter: TextInput::new(),
             search: search::State::default(),
             commands: commands::State::default(),
+            attachment_draft: staging::State::default(),
             narrow_conversation: false,
             sidebar_hidden: false,
             should_quit: false,
@@ -531,6 +535,7 @@ impl App {
         self.settings_hit_regions.clear();
         self.account_hit_regions.clear();
         self.commands.hit_regions.clear();
+        self.attachment_draft.hit_regions.clear();
         self.chat_pane_region = None;
         self.composer_region = None;
         self.conversation_pane_region = None;
@@ -554,6 +559,7 @@ impl App {
             match self.mode {
                 Mode::Compose => Context::Compose,
                 Mode::Command => Context::Command,
+                Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
@@ -613,6 +619,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.attachment_binding(run) {
+            return commands;
+        }
         if let Some(commands) = self.command_binding(run) {
             return commands;
         }
@@ -638,6 +647,14 @@ impl App {
         }
         match run {
             Action::CommandLine => return self.begin_command(),
+            Action::Attachments => return self.open_attachments(),
+            Action::Attach => {
+                self.begin_command();
+                if self.mode == Mode::Command {
+                    self.commands.input.set_value("attach ");
+                }
+                return Vec::new();
+            }
             Action::ToggleSidebar => {
                 if self.screen != Screen::Main
                     || !matches!(self.mode, Mode::Navigate | Mode::Compose)
@@ -903,6 +920,25 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
+        if self.mode == Mode::Attachments {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) =
+                        pointer_row_hit(&self.attachment_draft.hit_regions, mouse.column, mouse.row)
+                    {
+                        self.attachment_draft.selected = index;
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    self.attachment_binding(&Action::Up);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.attachment_binding(&Action::Down);
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.mode == Mode::Command {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                 && let Some(index) =
@@ -1146,6 +1182,14 @@ impl App {
                 self.restore_drafts(user_id, drafts);
                 Vec::new()
             }
+            NetworkEvent::AttachmentsPrepared {
+                key,
+                request_id,
+                result,
+            } => {
+                self.attachments_prepared(key, request_id, result);
+                Vec::new()
+            }
             NetworkEvent::SearchResults { request_id, page } => {
                 self.finish_search(request_id, Ok(page));
                 Vec::new()
@@ -1375,6 +1419,7 @@ impl App {
                 chat_id,
                 local_id,
                 path,
+                digest,
                 caption,
                 as_photo,
                 reply_to,
@@ -1396,6 +1441,7 @@ impl App {
                         (chat_id, local_id),
                         AttachmentRetry {
                             path,
+                            digest,
                             caption,
                             as_photo,
                             reply_to,
@@ -1844,21 +1890,15 @@ impl App {
             return Vec::new();
         }
         let normalized = sanitize_terminal_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
-        if matches!(self.screen, Screen::Main)
+        if self.screen == Screen::Main
             && matches!(self.mode, Mode::Navigate | Mode::Compose)
             && self.focus == Focus::Conversation
-            && let (Some(chat_id), Some(paths)) =
-                (self.active_chat_id, dropped_file_paths(&normalized))
+            && self.active_chat_id.is_some()
         {
-            let caption = (self.mode == Mode::Compose)
-                .then(|| &mut self.draft_data_mut(chat_id).input)
-                .filter(|draft| !draft.value().trim().is_empty())
-                .map(TextInput::take)
-                .unwrap_or_default();
-            let reply_to = (self.mode == Mode::Compose)
-                .then(|| self.draft_data_mut(chat_id).reply.take())
-                .flatten();
-            return self.send_dropped_files(chat_id, paths, caption, reply_to);
+            if self.keymap.attachments.auto_attach_paths {
+                return self.prepare_attachments(normalized, true);
+            }
+            self.mode = Mode::Compose;
         }
         match self.screen {
             Screen::Auth(
@@ -2003,7 +2043,7 @@ impl App {
             }
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
-            Mode::PinnedMessages | Mode::PinPrompt => Vec::new(),
+            Mode::Attachments | Mode::PinnedMessages | Mode::PinPrompt => Vec::new(),
             Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
@@ -2510,6 +2550,18 @@ impl App {
     }
 
     fn send_draft(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
+        if self.preparing_attachments() {
+            self.status_message = Some(
+                "Wait for attachment preparation or cancel it in the attachment list".to_owned(),
+            );
+            return Vec::new();
+        }
+        if self
+            .draft_data(chat_id)
+            .is_some_and(|draft| !draft.attachments.is_empty())
+        {
+            return self.send_staged_attachments(chat_id);
+        }
         let draft = &mut self.draft_data_mut(chat_id).input;
         if draft.value().trim().is_empty() {
             return Vec::new();
@@ -2549,20 +2601,24 @@ impl App {
         commands
     }
 
-    fn send_dropped_files(
-        &mut self,
-        chat_id: ChatId,
-        paths: Vec<PathBuf>,
-        mut caption: String,
-        mut reply_to: Option<ReplyInfo>,
-    ) -> Vec<TelegramCommand> {
-        let total = paths.len();
+    fn send_staged_attachments(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
+        let draft = std::mem::take(self.draft_data_mut(chat_id));
+        let mut caption = draft.input.value().to_owned();
+        let mut reply_to = draft.reply;
+        let total = draft.attachments.len();
         let mut commands = Vec::new();
-        for (index, path) in paths.into_iter().take(MAX_DROPPED_FILES).enumerate() {
+        for (index, staged) in draft.attachments.into_iter().enumerate() {
+            let path = staged.path;
             let local_id = self.next_pending_id;
             self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
-            let attachment = attachment_from_path(&path);
-            let as_photo = attachment.kind == AttachmentKind::Photo;
+            let mut attachment = attachment_from_path(&path);
+            attachment.size = Some(staged.size);
+            let as_photo = staged.as_photo;
+            attachment.kind = if as_photo {
+                AttachmentKind::Photo
+            } else {
+                AttachmentKind::File
+            };
             let item_caption = if index == 0 {
                 std::mem::take(&mut caption)
             } else {
@@ -2588,19 +2644,13 @@ impl App {
                 chat_id,
                 local_id,
                 path,
+                digest: staged.digest,
                 caption: item_caption,
                 as_photo,
                 reply_to: item_reply.map(|reply| reply.message_id),
             });
         }
-        let sent = total.min(MAX_DROPPED_FILES);
-        self.status_message = Some(if total > MAX_DROPPED_FILES {
-            format!("Sending {sent} files · drop at most {MAX_DROPPED_FILES} at a time")
-        } else if sent == 1 {
-            "Sending attachment…".to_owned()
-        } else {
-            format!("Sending {sent} attachments…")
-        });
+        self.status_message = Some(format!("Sending {total} attachment(s)…"));
         commands
     }
 
@@ -2794,11 +2844,6 @@ impl App {
         message: &Message,
     ) -> Vec<TelegramCommand> {
         if let Some(retry) = self.retry_attachments.get(&(chat_id, message_id)).cloned() {
-            if !retry.path.is_file() {
-                self.status_message =
-                    Some("Original attachment no longer exists · drop it again".to_owned());
-                return Vec::new();
-            }
             if let Some(message) = self
                 .messages
                 .get_mut(&chat_id)
@@ -2812,6 +2857,7 @@ impl App {
                 chat_id,
                 local_id: message_id,
                 path: retry.path,
+                digest: retry.digest,
                 caption: retry.caption,
                 as_photo: retry.as_photo,
                 reply_to: retry.reply_to.map(|reply| reply.message_id),
@@ -2933,18 +2979,25 @@ impl App {
             2_usize.saturating_sub(self.media_previews.values().filter(|p| p.loading).count());
         let mut commands = Vec::new();
         for slot in self.media_slots.clone() {
+            let crate::media::MediaSource::Message {
+                chat_id,
+                message_id,
+            } = slot.source
+            else {
+                continue;
+            };
             if budget == 0 {
                 break;
             }
             let Some(attachment) = self
                 .messages
-                .get(&slot.chat_id)
-                .and_then(|messages| messages.iter().find(|m| m.id == slot.message_id))
+                .get(&chat_id)
+                .and_then(|messages| messages.iter().find(|m| m.id == message_id))
                 .and_then(|message| message.attachment.clone())
             else {
                 continue;
             };
-            let requested = self.request_media_preview(slot.chat_id, slot.message_id, &attachment);
+            let requested = self.request_media_preview(chat_id, message_id, &attachment);
             budget = budget.saturating_sub(requested.len());
             commands.extend(requested);
         }
@@ -4179,64 +4232,6 @@ fn pointer_in_region(region: Option<(u16, u16, u16, u16)>, column: u16, row: u16
     })
 }
 
-fn dropped_file_paths(text: &str) -> Option<Vec<PathBuf>> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let direct = Path::new(trimmed);
-    if direct.is_file() {
-        return std::fs::canonicalize(direct).ok().map(|path| vec![path]);
-    }
-
-    let tokens = shellish_paths(trimmed)?;
-    if tokens.is_empty() {
-        return None;
-    }
-    tokens
-        .into_iter()
-        .map(PathBuf::from)
-        .map(|path| {
-            path.is_file()
-                .then(|| std::fs::canonicalize(path).ok())
-                .flatten()
-        })
-        .collect::<Option<Vec<_>>>()
-}
-
-fn shellish_paths(value: &str) -> Option<Vec<String>> {
-    let mut paths = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    for character in value.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-        match (quote, character) {
-            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
-            (None, '\\') => escaped = true,
-            (Some(_), _) => current.push(character),
-            (None, '\'' | '"') => quote = Some(character),
-            (None, character) if character.is_whitespace() => {
-                if !current.is_empty() {
-                    paths.push(std::mem::take(&mut current));
-                }
-            }
-            (None, character) => current.push(character),
-        }
-    }
-    if escaped || quote.is_some() {
-        return None;
-    }
-    if !current.is_empty() {
-        paths.push(current);
-    }
-    Some(paths)
-}
-
 fn attachment_from_path(path: &Path) -> Attachment {
     let extension = path
         .extension()
@@ -4264,7 +4259,7 @@ fn attachment_from_path(path: &Path) -> Attachment {
             .and_then(|name| name.to_str())
             .map(sanitize_terminal_line),
         mime_type: mime_type.map(str::to_owned),
-        size: path.metadata().ok().map(|metadata| metadata.len()),
+        size: None,
         fallback_emoji: None,
     }
 }
@@ -4630,6 +4625,7 @@ mod tests {
     fn restored_drafts_preserve_cursor_reply_and_account_identity() {
         let mut app = ready_app();
         let saved = crate::drafts::Stored {
+            attachments: Vec::new(),
             chat: 1,
             topic: 0,
             text: "a界🙂 old draft".to_owned(),
@@ -5710,61 +5706,111 @@ mod tests {
     }
 
     #[test]
-    fn dropped_existing_path_sends_attachment_outside_compose_mode() {
+    fn plain_path_paste_remains_text_even_when_the_file_exists() {
         let mut app = ready_app();
         open_first(&mut app);
         app.mode = Mode::Navigate;
-        let path = std::env::temp_dir().join(format!(
-            "termgram-drag-{}-{}.txt",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::write(&path, b"hello").expect("create dragged fixture");
-        let commands = app.update(AppEvent::Paste(format!("'{}'", path.display())));
-        assert!(matches!(
-            commands.as_slice(),
-            [TelegramCommand::SendAttachment { chat_id: 1, local_id: -1, path: sent, as_photo: false, .. }]
-                if sent == &fs::canonicalize(&path).expect("canonical fixture")
-        ));
-        assert!(app.active_messages().last().unwrap().attachment.is_some());
-        fs::remove_file(path).expect("remove fixture");
+        let file = tempfile::NamedTempFile::new().expect("fixture");
+        let text = format!("'{}'", file.path().display());
+        assert!(app.update(AppEvent::Paste(text.clone())).is_empty());
+        assert_eq!(app.mode, Mode::Compose);
+        assert_eq!(app.active_draft().unwrap().value(), text);
+        assert!(!app.active_messages().iter().any(|message| message.id < 0));
+    }
+
+    fn prepare_file(app: &mut App, path: &std::path::Path) {
+        let commands = app.prepare_attachments(path.display().to_string(), false);
+        let [TelegramCommand::PrepareAttachments(request)] = commands.as_slice() else {
+            panic!("only a preparation request is emitted before confirmation");
+        };
+        app.handle_network(NetworkEvent::AttachmentsPrepared {
+            key: request.key,
+            request_id: request.id,
+            result: crate::staging::prepare(request).map_err(|error| error.to_string()),
+        });
     }
 
     #[test]
-    fn dropped_file_uses_the_composer_as_a_caption_and_preserves_reply_context() {
+    fn staged_files_preserve_caption_reply_and_source_chat_until_explicit_send() {
         let mut app = ready_app();
         open_first(&mut app);
         app.handle_action(KeyAction::Character('R'));
-        for character in "caption".chars() {
-            app.handle_action(KeyAction::Character(character));
-        }
-        let path = std::env::temp_dir().join(format!(
-            "termgram-caption-{}-{}.txt",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::write(&path, b"hello").expect("create caption fixture");
-
-        let commands = app.update(AppEvent::Paste(path.display().to_string()));
-        assert!(matches!(
-            commands.as_slice(),
-            [TelegramCommand::SendAttachment {
-                chat_id: 1,
-                local_id: -1,
-                caption,
-                reply_to: Some(20),
-                ..
-            }] if caption == "caption"
-        ));
+        app.draft_data_mut(1).input.set_value("caption");
+        let file = tempfile::NamedTempFile::new().expect("fixture");
+        fs::write(file.path(), b"hello").unwrap();
+        let commands = app.prepare_attachments(file.path().display().to_string(), false);
+        let [TelegramCommand::PrepareAttachments(request)] = commands.as_slice() else {
+            panic!("prepare");
+        };
+        let prepared = crate::staging::prepare(request).unwrap();
+        assert!(
+            app.send_draft(1).is_empty(),
+            "cannot send while preparation is pending"
+        );
+        app.active_chat_id = Some(2);
+        app.handle_network(NetworkEvent::AttachmentsPrepared {
+            key: request.key,
+            request_id: request.id,
+            result: Ok(prepared),
+        });
+        assert!(app.draft_attachments().is_empty());
+        assert_eq!(app.draft_data(1).unwrap().attachments.len(), 1);
+        app.active_chat_id = Some(1);
+        assert!(!app.active_messages().iter().any(|message| message.id < 0));
+        let commands = app.send_draft(1);
+        assert!(
+            matches!(commands.as_slice(), [TelegramCommand::SendAttachment {
+            chat_id: 1, local_id: -1, caption, reply_to: Some(20), as_photo: false, ..
+        }] if caption == "caption")
+        );
         let pending = app.active_messages().last().expect("optimistic attachment");
         assert_eq!(pending.text, "caption");
         assert_eq!(
             pending.reply_to.as_ref().map(|reply| reply.message_id),
             Some(20)
         );
-        assert!(app.active_draft().is_some_and(TextInput::is_empty));
-        assert!(app.active_reply_target().is_none());
-        fs::remove_file(path).expect("remove caption fixture");
+        assert!(app.draft_data(1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn attachment_review_reuses_preview_and_does_not_send_or_delete_originals() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("picture.png");
+        image::RgbImage::new(2, 2).save(&path).unwrap();
+        prepare_file(&mut app, &path);
+        app.open_attachments();
+        for width in [40, 100] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 15)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert_eq!(app.attachment_draft.hit_regions.len(), 1);
+            assert!(app.run_binding("preview", 1).is_empty());
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert!(matches!(
+                app.media_slots.as_slice(),
+                [crate::media::MediaSlot {
+                    source: crate::media::MediaSource::File(_),
+                    ..
+                }]
+            ));
+            assert!(
+                app.request_visible_media().is_empty(),
+                "local preview never issues Telegram RPCs"
+            );
+            app.run_binding("cancel", 1);
+        }
+        app.run_binding("attachment_format", 1);
+        assert!(!app.draft_attachments()[0].as_photo);
+        app.run_binding("remove_attachment", 1);
+        assert!(app.draft_attachments().is_empty());
+        assert!(path.exists());
+        assert!(!app.active_messages().iter().any(|message| message.id < 0));
     }
 
     #[test]
@@ -5785,17 +5831,6 @@ mod tests {
         assert!(app.update(paste).is_empty());
         assert!(!app.active_messages().iter().any(|message| message.id < 0));
         fs::remove_file(path).expect("remove fixture");
-    }
-
-    #[test]
-    fn quoted_windows_paths_preserve_separator_backslashes() {
-        assert_eq!(
-            super::shellish_paths(r#""C:\Users\A B\image.jpg" "D:\two.txt""#),
-            Some(vec![
-                r"C:\Users\A B\image.jpg".to_owned(),
-                r"D:\two.txt".to_owned(),
-            ])
-        );
     }
 
     #[test]
@@ -6374,9 +6409,12 @@ mod tests {
         open_first(&mut app);
         let path = std::env::temp_dir().join(format!("termgram-retry-{}.png", std::process::id()));
         fs::write(&path, b"png").expect("create retry fixture");
-        let command = app.update(AppEvent::Paste(path.display().to_string()));
+        prepare_file(&mut app, &path);
+        let command = app.send_draft(1);
+        app.mode = Mode::Navigate;
         let TelegramCommand::SendAttachment {
             local_id,
+            digest,
             path: sent_path,
             ..
         } = command.into_iter().next().expect("send command")
@@ -6387,6 +6425,7 @@ mod tests {
             chat_id: 1,
             local_id,
             path: sent_path.clone(),
+            digest,
             caption: String::new(),
             as_photo: true,
             reply_to: None,
@@ -6399,6 +6438,7 @@ mod tests {
                 chat_id: 1,
                 local_id,
                 path: sent_path,
+                digest,
                 caption: String::new(),
                 as_photo: true,
                 reply_to: None,
@@ -6551,8 +6591,10 @@ mod tests {
             });
             app.handle_network(NetworkEvent::NewMessage(photo));
             app.media_slots.push(crate::media::MediaSlot {
-                chat_id: 1,
-                message_id: id,
+                source: crate::media::MediaSource::Message {
+                    chat_id: 1,
+                    message_id: id,
+                },
                 viewport: ratatui::layout::Rect::new(0, 0, 24, 30),
                 offset: 0,
                 size: ratatui::layout::Size::new(24, 6),

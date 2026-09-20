@@ -114,3 +114,9 @@ cargo test --locked --manifest-path vendor/libsql/Cargo.toml \
   --no-default-features --features core --lib \
   drop_closes_the_handle_exactly_once --target-dir target/libsql-regression
 ```
+
+Attachment path arguments in `src/staging.rs` call the pinned `yazi-shared`
+`shell/unix.rs` and `shell/windows.rs` implementations directly. Native Windows
+quoting and Unix quoting remain upstream responsibilities. The former local
+shell-like parser is removed. The file URL adapter uses the `url` crate; there
+is no shell execution, variable expansion or copied argument parser.

@@ -172,9 +172,18 @@ impl App {
         let Some(origin) = &self.commands.origin else {
             return String::new();
         };
-        let chat = origin
-            .chat
-            .and_then(|id| self.chats.iter().find(|chat| chat.id == id));
+        let (name, _) = commands::split(self.commands.input.value());
+        let target = if commands::find(name).is_some_and(|spec| {
+            matches!(
+                spec.target,
+                Target::Conversation | Target::Message | Target::Attachment | Target::Preview
+            )
+        }) {
+            origin.conversation
+        } else {
+            origin.chat
+        };
+        let chat = target.and_then(|id| self.chats.iter().find(|chat| chat.id == id));
         format!(
             "Account {} · {}{}",
             origin.account.0,
@@ -624,6 +633,18 @@ impl App {
         self.status_message = None;
         let outgoing = match &spec.kind {
             Kind::Action(action) => self.run_action(action, 1),
+            Kind::Attach => {
+                let id = origin.chat.expect("validated chat target");
+                let mut commands = if self.active_chat_id == Some(id) {
+                    Vec::new()
+                } else {
+                    self.open_chat_by_id(id)
+                };
+                commands.extend(
+                    self.prepare_attachments(raw_argument.unwrap_or_default().to_owned(), false),
+                );
+                commands
+            }
             Kind::Chat => self.open_chat_by_id(chat.expect("validated chat")),
             Kind::Folder => {
                 self.folder_id = folder.expect("validated folder");

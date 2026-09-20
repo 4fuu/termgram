@@ -172,3 +172,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 可重绑 `complete_next`、`complete_previous`、`history_previous`、`history_next`、
 `open`、`cancel` 及输入编辑动作。底栏的模式会显示 COMMAND。
 命令栏默认用 Ctrl-C 取消；其他上下文仍用 Ctrl-C 退出。
+
+## 附件输入
+
+`attachments = { auto_attach_paths = false }` 默认将普通粘贴保留为文字。设为 `true` 后，识别到的本机路径会加入草稿，仍需主动发送。也可用 `:attach` 明确添加文件。列表操作见[附件](Attachments.md)。

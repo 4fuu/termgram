@@ -34,8 +34,10 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let status =
         if let (Some(chat_id), Some(message_id)) = (app.active_chat_id, app.selected_message) {
             app.media_slots.push(MediaSlot {
-                chat_id,
-                message_id,
+                source: crate::media::MediaSource::Message {
+                    chat_id,
+                    message_id,
+                },
                 viewport: inner,
                 offset: 0,
                 size: Size::new(inner.width, inner.height),

@@ -62,11 +62,10 @@ failed outgoing message returns it to the composer for retry.
 
 ## Files, links and mouse input
 
-Drop file paths from your desktop into an open conversation to upload them.
-Composer text becomes the first file's caption and retains the reply target.
-JPG/JPEG/PNG/WebP inputs are uploaded as Telegram photos; other files are sent
-as documents. Photos, image documents and stickers preview inline. `O` reveals
-the original in the system file manager; see [Attachments](Attachments.md).
+Use `:attach <paths...>` to prepare files in the chat draft. Plain pasted paths
+remain text by default. Ctrl-O in the composer opens attachment review for format,
+preview and removal; Enter in the composer explicitly sends, using its text and
+reply target for the first file. See [Attachments](Attachments.md).
 
 Click media to select it, then `o` for a larger preview or `i` to reply. Use
 `g n` / `g p` to select actionable entries, then Enter to activate. Telegram

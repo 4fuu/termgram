@@ -78,6 +78,7 @@ pub(super) async fn serve(
     ));
     let mut search = crate::search::Worker::new(std::path::PathBuf::from(cache_path));
     let mut pending = VecDeque::new();
+    let mut preparation = crate::staging::Worker::default();
     let mut changes = Vec::new();
     let mut ready = false;
     let mut flush = tokio::time::interval(Duration::from_millis(100));
@@ -86,9 +87,14 @@ pub(super) async fn serve(
     loop {
         search.start_pending();
         tokio::select! {
+            event = preparation.next() => { events.send(event).await?; },
             result = search.next(), if search.running() => { if let Some(event) = result { events.send(event).await?; } },
             command = commands.recv() => {
                 let Some(command) = command else { break; };
+                if let TelegramCommand::PrepareAttachments(request) = command {
+                    if let Some(event) = preparation.start(request) { events.send(event).await?; }
+                    continue;
+                }
                 if serve_cached(&command, &mut store, &mut changes, &events, &mut search).await? { continue; }
                 if authentication_command(&command) {
                     pending.push_front(command);

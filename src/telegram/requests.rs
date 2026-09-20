@@ -24,6 +24,7 @@ pub(super) const MAX_REQUESTS: usize = 8;
 pub(super) struct Completion {
     command: TelegramCommand,
     result: Result<Response>,
+    notify_revision: u64,
 }
 
 pub(super) async fn refresh_dialogs(
@@ -91,6 +92,7 @@ pub(super) async fn refresh_pending(
 
 enum Response {
     Search(super::search::Page),
+    Muted(i64),
     Saved(super::forwarding::Destination),
     ForwardReview(Box<super::forwarding::Review>),
     Copied(String),
@@ -142,7 +144,8 @@ pub(super) fn spawn(
         | TelegramCommand::SendMessage { chat_id, .. }
         | TelegramCommand::ActivateButton { chat_id, .. }
         | TelegramCommand::MarkRead { chat_id, .. }
-        | TelegramCommand::SetChatUnread { chat_id, .. } => Some(*chat_id),
+        | TelegramCommand::SetChatUnread { chat_id, .. }
+        | TelegramCommand::SetChatMute { chat_id, .. } => Some(*chat_id),
         _ => None,
     };
     let peer = chat_id.and_then(|id| cache.peers.get(&id).copied());
@@ -177,6 +180,7 @@ pub(super) fn spawn(
         }
         _ => None,
     };
+    let notify_revision = cache.notify_revision;
     let self_id = cache.self_id;
     let client = client.clone();
     let handle = requests.spawn(async move {
@@ -189,7 +193,11 @@ pub(super) fn spawn(
             other_peer,
         ))
         .await;
-        Completion { command, result }
+        Completion {
+            command,
+            result,
+            notify_revision,
+        }
     });
     if let Some(id) = search_id {
         cache.cloud_search = Some((id, handle));
@@ -207,6 +215,9 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::SetChatMute { mute, .. } => Ok(Response::Muted(
+            super::notifications::set_mute(client, peer()?, *mute).await?,
+        )),
         TelegramCommand::SearchCloud(request) => Ok(Response::Search(
             super::search::search(client, peer()?, request, other_peer).await?,
         )),
@@ -444,7 +455,11 @@ pub(super) async fn complete(
     cache: &mut WorkerCache,
     events: &mpsc::Sender<NetworkEvent>,
 ) -> Result<()> {
-    let Completion { command, result } = completion;
+    let Completion {
+        command,
+        result,
+        notify_revision,
+    } = completion;
     if let Some(id) = command.cloud_search_id() {
         if cache
             .cloud_search
@@ -455,7 +470,10 @@ pub(super) async fn complete(
         }
         cache.cloud_search = None;
     }
-    if matches!(command, TelegramCommand::SetChatUnread { .. }) {
+    if matches!(
+        command,
+        TelegramCommand::SetChatUnread { .. } | TelegramCommand::SetChatMute { .. }
+    ) {
         // A failed second RPC may follow a successful first RPC. Refresh even
         // on partial failure so the authoritative mark/count can settle.
         cache.dialogs.dirty = true;
@@ -500,6 +518,18 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::SetChatMute {
+                chat_id,
+                request_id,
+                ..
+            },
+            Response::Muted(until),
+        ) => NetworkEvent::ChatMuteFinished {
+            chat_id,
+            request_id,
+            result: Ok((cache.notify_revision == notify_revision).then_some(until)),
+        },
         (TelegramCommand::SearchCloud(request), Response::Search(page)) => {
             let mut messages = page
                 .messages
@@ -908,4 +938,66 @@ pub(super) async fn complete(
     };
     events.send(event).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mute_completion_never_overwrites_a_newer_notification_update() {
+        let (events, mut received) = mpsc::channel(2);
+        let mut cache = WorkerCache {
+            notify_revision: 2,
+            ..Default::default()
+        };
+        complete(
+            Completion {
+                command: TelegramCommand::SetChatMute {
+                    chat_id: 42,
+                    mute: crate::notifications::Mute::Off,
+                    request_id: 7,
+                },
+                result: Ok(Response::Muted(0)),
+                notify_revision: 1,
+            },
+            &mut cache,
+            &events,
+        )
+        .await
+        .unwrap();
+        assert!(
+            cache.dialogs.dirty,
+            "read the authoritative settings again after a race"
+        );
+        assert!(matches!(
+            received.recv().await.unwrap(),
+            NetworkEvent::ChatMuteFinished {
+                result: Ok(None),
+                ..
+            }
+        ));
+        complete(
+            Completion {
+                command: TelegramCommand::SetChatMute {
+                    chat_id: 42,
+                    mute: crate::notifications::Mute::Hour,
+                    request_id: 8,
+                },
+                result: Ok(Response::Muted(2000)),
+                notify_revision: 2,
+            },
+            &mut cache,
+            &events,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            received.recv().await.unwrap(),
+            NetworkEvent::ChatMuteFinished {
+                result: Ok(Some(2000)),
+                ..
+            }
+        ));
+    }
 }

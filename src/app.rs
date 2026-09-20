@@ -9,6 +9,7 @@ mod drafts;
 mod editing;
 mod forwarding;
 mod message_pins;
+mod notifications;
 mod pins;
 mod reads;
 mod replies;
@@ -215,6 +216,7 @@ pub struct App {
     pub focus: Focus,
     pub connection: ConnectionStatus,
     pub metrics: crate::statusline::Metrics,
+    pub notifications: notifications::State,
     pub user_name: Option<String>,
     pub account_user_id: Option<i64>,
     pub appearance: crate::appearance::Preferences,
@@ -335,6 +337,7 @@ impl Default for App {
             focus: Focus::Chats,
             connection: ConnectionStatus::Connecting,
             metrics: crate::statusline::Metrics::default(),
+            notifications: notifications::State::default(),
             user_name: None,
             account_user_id: None,
             appearance: crate::appearance::Preferences::default(),
@@ -679,6 +682,8 @@ impl App {
             Action::FirstUnread => return self.first_unread(),
             Action::MarkRead => return self.mark_focused_chat(false),
             Action::MarkUnread => return self.mark_focused_chat(true),
+            Action::MuteChat => return self.mute_focused_chat(crate::notifications::Mute::Forever),
+            Action::UnmuteChat => return self.mute_focused_chat(crate::notifications::Mute::Off),
             Action::CopyText => return self.copy_message(false),
             Action::CopyLink => return self.copy_message(true),
             Action::PasteClipboard => return self.paste_clipboard(),
@@ -1296,6 +1301,18 @@ impl App {
                 request_id, page, ..
             } => {
                 self.finish_search(request_id, Ok(search::Results::Cloud(page)));
+                Vec::new()
+            }
+            NetworkEvent::ChatMuteChanged { chat_id, until } => {
+                self.apply_chat_mute(chat_id, until);
+                Vec::new()
+            }
+            NetworkEvent::ChatMuteFinished {
+                chat_id,
+                request_id,
+                result,
+            } => {
+                self.finish_chat_mute(chat_id, request_id, result);
                 Vec::new()
             }
             NetworkEvent::SearchFailed { request_id, error } => {
@@ -4860,6 +4877,108 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn mute_commands_capture_chat_and_wait_for_authoritative_settings() {
+        use crate::notifications::Mute;
+        let mut app = ready_app();
+        app.run_binding("command", 1);
+        app.commands.input.set_value("mute 8h");
+        app.chats.reverse();
+        app.selected_chat = 0;
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::SetChatMute {
+                chat_id: 1,
+                mute: Mute::EightHours,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("mute original target")
+        };
+        assert_eq!(
+            app.chats
+                .iter()
+                .find(|chat| chat.id == 1)
+                .unwrap()
+                .membership
+                .mute_until,
+            0
+        );
+        assert!(
+            app.set_chat_mute(1, Mute::Off).is_empty(),
+            "serialize settings changes for one chat"
+        );
+        let until = i64::from(Mute::EightHours.until(chrono::Utc::now().timestamp()));
+        app.handle_network(NetworkEvent::ChatMuteFinished {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Ok(Some(until)),
+        });
+        assert_eq!(
+            app.chats
+                .iter()
+                .find(|chat| chat.id == 1)
+                .unwrap()
+                .membership
+                .mute_until,
+            until
+        );
+        app.preserve_chat_selection(Some(1));
+        assert!(app.focused_mute_label().unwrap().starts_with("Muted until"));
+        app.run_binding("command", 1);
+        app.commands.input.set_value("mute unsupported");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.mode, Mode::Command);
+        app.commands.input.set_value("unmute");
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::SetChatMute {
+                request_id,
+                mute: Mute::Off,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("unmute")
+        };
+        app.handle_network(NetworkEvent::ChatMuteFinished {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Err("failed".to_owned()),
+        });
+        assert_eq!(
+            app.chats
+                .iter()
+                .find(|chat| chat.id == 1)
+                .unwrap()
+                .membership
+                .mute_until,
+            until
+        );
+        let commands = app.run_binding("unmute_chat", 1);
+        let [TelegramCommand::SetChatMute { request_id, .. }] = commands.as_slice() else {
+            panic!("retry")
+        };
+        app.handle_network(NetworkEvent::ChatMuteChanged {
+            chat_id: 1,
+            until: i64::from(i32::MAX),
+        });
+        app.handle_network(NetworkEvent::ChatMuteFinished {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Ok(None),
+        });
+        assert_eq!(app.focused_mute_label().as_deref(), Some("Muted forever"));
+        app.handle_network(NetworkEvent::ChatMuteChanged {
+            chat_id: 1,
+            until: 0,
+        });
+        assert!(app.focused_mute_label().is_none());
+        app.connection = crate::event::ConnectionStatus::Offline;
+        assert!(app.run_binding("mute_chat", 1).is_empty());
     }
 
     #[test]

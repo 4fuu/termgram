@@ -193,3 +193,11 @@ media/date filters, bounded iteration and pagination remain the SDK implementati
 at the same pinned Grammers revision. Termgram's cloud command arguments reuse
 the pinned Yazi platform tokenizer and Clap 4.6.7 (already a transitive dependency);
 local regex queries never pass through either parser.
+
+Telegram mute changes follow the peer-override lifecycle in Desktop's
+`Telegram/SourceFiles/data/notify/data_peer_notify_settings.cpp` at
+`4d4da471fbee771c10e173a83c003ba1728989f1`: read the complete peer settings,
+change mute time, preserve unrelated fields, and synchronize the returned state.
+`src/telegram/notifications.rs` is an original typed-RPC adapter; no Desktop code
+is copied. The shared RPC coordinator rejects stale mute snapshots after a
+notification-settings update and refreshes authoritative dialogs.

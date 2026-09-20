@@ -119,9 +119,14 @@ fn row(
         String::new()
     };
     let icon = icons.chat(chat.kind);
+    let muted = if chat.membership.mute_until > now.timestamp() {
+        icons.muted()
+    } else {
+        ""
+    };
     let title = truncate_cells(
         &chat.title,
-        title_width.saturating_sub(icon.width() + pin.width()),
+        title_width.saturating_sub(icon.width() + pin.width() + muted.width()),
     );
     let mut title_style = Style::default().fg(app.color(Target::Chat(chat.id)));
     if chat.unread > 0 || chat.membership.unread_mark || is_selected {
@@ -140,6 +145,7 @@ fn row(
         Cell::from(Line::from(vec![
             Span::styled(icon, Style::default().fg(MUTED)),
             Span::styled(pin, Style::default().fg(ACCENT)),
+            Span::styled(muted, Style::default().fg(MUTED)),
             Span::styled(title, title_style),
         ])),
         Cell::from(Line::from(chat.activity_label(now)).alignment(Alignment::Right))

@@ -360,6 +360,17 @@ impl Store {
                 } => {
                     self.search_revision = Some((*request_id, *chat_id, revision));
                 }
+                NetworkEvent::ChatMuteChanged { chat_id, until }
+                | NetworkEvent::ChatMuteFinished {
+                    chat_id,
+                    result: Ok(Some(until)),
+                    ..
+                } => {
+                    if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
+                        chat.membership.mute_until = *until;
+                        write_chat(&transaction, &chat, revision).await?;
+                    }
+                }
                 NetworkEvent::SearchFailed { request_id, .. }
                 | NetworkEvent::CloudSearchCancelled { request_id } => {
                     if self

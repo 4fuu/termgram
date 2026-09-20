@@ -52,6 +52,7 @@ to disk. Multiline paste cannot execute a series of commands.
 | `pins` | Browse the open conversation's pinned messages |
 | `pin chat`, `unpin chat` | Set the chat's pin state in the captured folder |
 | `pin message`, `unpin message` | Set the selected message's pin state using Telegram's existing options prompt |
+| `mute [duration]`, `unmute` | Set Telegram notification state for the captured chat ([details](Notifications.md)) |
 | `archive`, `unarchive` | Move the captured chat into or out of Archive |
 | `sidebar [show, hide or toggle]` | Control the sidebar; omitted argument toggles |
 | `color chat`, `color folder` | Open the target's color picker |

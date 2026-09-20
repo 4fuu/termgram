@@ -242,7 +242,12 @@ impl App {
         self.target_error(spec.target).or_else(|| {
             (matches!(
                 spec.kind,
-                Kind::Pin(_) | Kind::Archive(_) | Kind::Read(_) | Kind::Copy | Kind::Forward
+                Kind::Pin(_)
+                    | Kind::Archive(_)
+                    | Kind::Read(_)
+                    | Kind::Copy
+                    | Kind::Forward
+                    | Kind::Mute(_)
             ) && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
@@ -357,6 +362,15 @@ impl App {
                     ("message", "Selected message")
                 };
                 add(value.to_owned(), value.to_owned(), description.to_owned());
+            }
+            Kind::Mute(true) => {
+                for value in ["1h", "8h", "2d", "forever"] {
+                    add(
+                        value.to_owned(),
+                        value.to_owned(),
+                        "Mute this chat on Telegram".to_owned(),
+                    );
+                }
             }
             Kind::Copy => {
                 for value in ["text", "link"] {
@@ -583,6 +597,13 @@ impl App {
             return Vec::new();
         }
         // Resolve and validate arguments before leaving COMMAND or changing focus.
+        let mute = match spec.kind {
+            Kind::Mute(true) => match crate::notifications::Mute::parse(argument) {
+                Some(mute) => mute,
+                None => return self.command_error("Use :mute 1h, 8h, 2d or forever"),
+            },
+            _ => crate::notifications::Mute::Off,
+        };
         let cloud_search = if matches!(spec.kind, Kind::Search) {
             if let Some(value) = argument
                 .strip_prefix("--cloud")
@@ -741,6 +762,9 @@ impl App {
                     self.run_action(&Action::Accounts, 1)
                 }
             }
+            Kind::Mute(_) => origin
+                .chat
+                .map_or_else(Vec::new, |id| self.set_chat_mute(id, mute)),
             Kind::Search => {
                 if let Some((chat_id, query, filters)) = cloud_search {
                     self.start_cloud_search(chat_id, query, filters)

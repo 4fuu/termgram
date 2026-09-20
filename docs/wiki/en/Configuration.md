@@ -68,7 +68,7 @@ segments; omitted fields keep these defaults:
 statusline = {
   enabled = true,
   left = { "mode", "app", "account", "message", "context" },
-  right = { "connection", "latency", "dc", "position" },
+  right = { "notifications", "connection", "latency", "dc", "position" },
 },
 ```
 
@@ -79,6 +79,7 @@ statusline = {
 | `account` | Local account slot and Telegram display name |
 | `message` | Selected/last-visible message time, delivery, pin and media state |
 | `context` | Effective selection/help keys or an available update |
+| `notifications` | Focused chat’s confirmed mute state and local deadline ([details](Notifications.md)) |
 | `connection` | Connecting, online, reconnecting or offline |
 | `latency` | Latest completed primary-connection Ping in milliseconds |
 | `dc` | The authenticated session's home data center ID |

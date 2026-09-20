@@ -11,7 +11,7 @@ return {
   statusline = {
     enabled = true,
     left = { "mode", "app", "account", "message", "context" },
-    right = { "connection", "latency", "dc", "position" },
+    right = { "notifications", "connection", "latency", "dc", "position" },
   },
   keymap = {
     -- { context = "conversation", on = { "<C-u>" }, run = "message_up", count = 20 },

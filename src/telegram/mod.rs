@@ -5,6 +5,7 @@ mod forwarding;
 mod local;
 mod media_cache;
 mod message_actions;
+mod notifications;
 mod pins;
 mod reads;
 mod requests;
@@ -73,6 +74,7 @@ struct MetadataRefresh {
 struct WorkerCache {
     cloud_search: Option<(u64, tokio::task::AbortHandle)>,
     search_sender: Option<PeerRef>,
+    notify_revision: u64,
     transfer_slots: Option<Arc<tokio::sync::Semaphore>>,
     upload_order: HashMap<ChatId, tokio::sync::oneshot::Receiver<()>>,
     dialogs: MetadataRefresh,
@@ -550,8 +552,24 @@ async fn process_update(
                 | tl::enums::Update::DialogFilters => {
                     cache.folders.dirty = true;
                 }
-                tl::enums::Update::NotifySettings(_)
-                | tl::enums::Update::PeerSettings(_)
+                tl::enums::Update::NotifySettings(update) => {
+                    cache.notify_revision = cache.notify_revision.wrapping_add(1);
+                    cache.dialogs.dirty = true;
+                    if let tl::enums::NotifyPeer::Peer(target) = &update.peer
+                        && let Some(chat_id) = PeerId::from(target.peer.clone()).bot_api_dialog_id()
+                        && let tl::enums::PeerNotifySettings::Settings(settings) =
+                            &update.notify_settings
+                        && let Some(until) = settings.mute_until
+                    {
+                        events
+                            .send(NetworkEvent::ChatMuteChanged {
+                                chat_id,
+                                until: i64::from(until),
+                            })
+                            .await?;
+                    }
+                }
+                tl::enums::Update::PeerSettings(_)
                 | tl::enums::Update::ReadMessagesContents(_)
                 | tl::enums::Update::ChannelReadMessagesContents(_) => {
                     cache.dialogs.dirty = true;
@@ -1422,7 +1440,8 @@ async fn handle_command(
         | TelegramCommand::ResolveTelegramLink { .. }
         | TelegramCommand::ActivateButton { .. }
         | TelegramCommand::SetChatUnread { .. }
-        | TelegramCommand::MarkRead { .. }) => {
+        | TelegramCommand::MarkRead { .. }
+        | TelegramCommand::SetChatMute { .. }) => {
             if let TelegramCommand::LoadPinnedMessages {
                 chat_id,
                 request_id,

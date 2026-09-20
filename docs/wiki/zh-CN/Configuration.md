@@ -59,7 +59,7 @@ return {
 statusline = {
   enabled = true,
   left = { "mode", "app", "account", "message", "context" },
-  right = { "connection", "latency", "dc", "position" },
+  right = { "notifications", "connection", "latency", "dc", "position" },
 },
 ```
 
@@ -70,6 +70,7 @@ statusline = {
 | `account` | 本地账号槽位与 Telegram 显示名称 |
 | `message` | 选中或最后可见消息的时间、送达、置顶和媒体状态 |
 | `context` | 当前选择/帮助的实际快捷键，或可用更新 |
+| `notifications` | 当前焦点聊天已确认的静音状态和本地截止时间（[说明](Notifications.md)） |
 | `connection` | 正在连接、在线、重连或离线 |
 | `latency` | 主连接最近一次成功 Ping 的毫秒数 |
 | `dc` | 已认证会话的主数据中心 ID |

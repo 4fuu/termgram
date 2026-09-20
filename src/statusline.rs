@@ -14,6 +14,7 @@ pub enum Item {
     Dc,
     Position,
     Message,
+    Notifications,
     Context,
 }
 
@@ -36,7 +37,13 @@ impl Default for Configuration {
                 Item::Message,
                 Item::Context,
             ],
-            right: vec![Item::Connection, Item::Latency, Item::Dc, Item::Position],
+            right: vec![
+                Item::Notifications,
+                Item::Connection,
+                Item::Latency,
+                Item::Dc,
+                Item::Position,
+            ],
         }
     }
 }

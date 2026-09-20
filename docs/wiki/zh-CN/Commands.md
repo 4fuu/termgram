@@ -48,6 +48,7 @@
 | `pins` | 浏览当前会话的置顶消息 |
 | `pin chat`、`unpin chat` | 设置聊天在打开命令栏时的文件夹中的置顶状态 |
 | `pin message`、`unpin message` | 设置选中消息的置顶状态，沿用 Telegram 选项确认界面 |
+| `mute [duration]`、`unmute` | 修改捕获聊天的 Telegram 通知状态（[说明](Notifications.md)） |
 | `archive`、`unarchive` | 将指定聊天归档，或从 Archive 恢复 |
 | `sidebar [show、hide 或 toggle]` | 显示、隐藏或切换侧栏；省略参数时切换 |
 | `color chat`、`color folder` | 打开对应颜色选择器 |

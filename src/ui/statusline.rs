@@ -169,6 +169,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
             (text, MUTED, 40)
         }
         Item::Message => message_metadata(app)?,
+        Item::Notifications => (app.focused_mute_label()?, MUTED, 35),
         Item::Context => (context(app, narrow), MUTED, 90),
     };
     if text.is_empty() {

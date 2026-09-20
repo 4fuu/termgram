@@ -197,6 +197,11 @@ pub enum TelegramCommand {
         request_id: u64,
     },
     RefreshDialogs,
+    SetChatMute {
+        chat_id: ChatId,
+        mute: crate::notifications::Mute,
+        request_id: u64,
+    },
     RefreshDialogPins,
     LoadPinnedMessages {
         chat_id: ChatId,
@@ -463,6 +468,15 @@ impl TelegramCommand {
                 chat_id,
                 request_id,
                 error,
+            },
+            TelegramCommand::SetChatMute {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::ChatMuteFinished {
+                chat_id,
+                request_id,
+                result: Err(error),
             },
             TelegramCommand::SearchCached(request) => NetworkEvent::SearchFailed {
                 request_id: request.id,
@@ -750,6 +764,16 @@ impl fmt::Debug for TelegramCommand {
                 .field("message_id", message_id)
                 .field("request_id", request_id)
                 .finish(),
+            Self::SetChatMute {
+                chat_id,
+                mute,
+                request_id,
+            } => formatter
+                .debug_struct("SetChatMute")
+                .field("chat_id", chat_id)
+                .field("mute", mute)
+                .field("request_id", request_id)
+                .finish(),
             Self::CancelSearch => formatter.write_str("CancelSearch"),
             Self::RefreshFolders => formatter.write_str("RefreshFolders"),
             Self::RefreshDialogs => formatter.write_str("RefreshDialogs"),
@@ -933,6 +957,15 @@ pub enum NetworkEvent {
         error: String,
     },
     Folders(Vec<crate::folders::Folder>),
+    ChatMuteChanged {
+        chat_id: ChatId,
+        until: i64,
+    },
+    ChatMuteFinished {
+        chat_id: ChatId,
+        request_id: u64,
+        result: Result<Option<i64>, String>,
+    },
     UnreadChanged {
         chat_id: ChatId,
         max_id: i32,

@@ -11,6 +11,10 @@ use crate::model::{AttachmentKind, ChatKind};
 pub(super) struct Icons(pub bool);
 
 impl Icons {
+    pub(super) const fn muted(self) -> &'static str {
+        if self.0 { "\u{f1f6} " } else { "[m] " } // nf-fa-bell_slash
+    }
+
     pub(super) const fn pin(self) -> &'static str {
         if self.0 { "\u{f08d}" } else { "^" } // nf-fa-thumbtack
     }

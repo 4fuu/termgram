@@ -50,7 +50,7 @@ remains text. Bindings use the `attachments` context and the actions `attach`,
 
 Use `:paste`, Ctrl-V or Ctrl-Alt-V in the conversation/composer. In attachment
 review these shortcuts also add files, and `?` opens the effective key list.
-The native clipboard reads a file list first, preserving every original file
+With no detected terminal MIME capability, the native clipboard reads a file list first, preserving every original file
 within the draft limit. If there is no file list, an image becomes a PNG draft
 asset; ordinary text is inserted at the saved cursor. Nothing is sent until you
 send from the composer. Lua action: `paste_clipboard`.
@@ -59,6 +59,7 @@ send from the composer. Lua action: `paste_clipboard`.
 attachments = {
   auto_attach_paths = false,
   clipboard_as_photo = true,
+  terminal_clipboard = true,
 },
 ```
 
@@ -82,13 +83,39 @@ persisted drafts and in-process drafts still waiting for a background save.
 | Linux X11 / XWayland | arboard X11 backend |
 | Linux Wayland | arboard data-control backend when the compositor supports it; X11 fallback |
 | WSL | Native first, then Windows PowerShell clipboard data and `wslpath`; child processes have output limits and a four-second timeout |
-| SSH / an unavailable desktop clipboard | Use files accessible to the remote host with `:attach`; terminal MIME paste is separate |
+| SSH / no desktop clipboard | A detected OSC 5522 terminal can supply images/text; otherwise use `:attach` with files readable on this host |
 
 Cmd-V and Ctrl-Shift-V are usually handled by the terminal. They may deliver
 text paths, or no image at all. Use `:paste` when the terminal captures the
 application shortcuts. Reading the native clipboard on an SSH host does not
 read the local desktop's clipboard. Cross-platform clipboard access depends on
 the desktop session and its permissions; no additional terminal input reader is used.
+
+## Terminal MIME paste
+
+When the terminal positively reports OSC 5522 support, `:paste` and the clipboard
+shortcuts request its clipboard instead. The terminal's own paste shortcut can
+also supply a MIME paste event. Set `attachments.terminal_clipboard = false` to
+keep native reads and ordinary terminal text paste.
+
+Files are preferred, followed by PNG/JPEG/WebP/GIF and plain UTF-8 text. Encoded
+images keep their original bytes in draft-owned files; they are not converted to
+PNG. GIFs use original-file mode. Images are limited to 16 MiB encoded, 8192 pixels
+per dimension and 128 MiB decoded. Text and file lists are limited to 1 MiB.
+
+Only one terminal read is pending at a time. Each request phase expires after ten
+seconds. A timeout, denied permission, busy terminal or unsupported content is
+reported in the status bar; it does not silently read a different clipboard.
+Switching chats keeps the captured draft destination. Cancellation or account
+switching discards late results. Search, filter, command and login fields accept
+only plain text and cancel if their destination changes.
+
+Over SSH the terminal can transmit image bytes and text. A file URL still refers
+to a path on the terminal's host; Termgram rejects that file list rather than
+assuming the remote machine has the same file. Use `:attach` for files already
+available remotely. OSC 5522 requires support through the complete terminal and
+multiplexer chain; SSH/tmux combinations have not all been exercised. The single
+Yazi input parser and TTY owner handle negotiation, payloads and exit restoration.
 
 ## Received files
 

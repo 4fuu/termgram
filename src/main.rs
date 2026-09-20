@@ -26,6 +26,7 @@ enum RuntimeEvent {
     ShutdownSignal(io::Result<()>),
     Preview(Result<Vec<termgram::media::MediaFailure>>),
     DraftError(String),
+    ClipboardTimeout,
     Tick,
 }
 
@@ -145,10 +146,19 @@ async fn main() -> Result<()> {
     let mut draft_writer = base_config.clone().map(termgram::drafts::Writer::spawn);
     let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
     let mut pending_commands = VecDeque::new();
+    let mut clipboard = termgram::terminal::clipboard::Broker::default();
     let mut redraw = true;
     let mut runtime_error: Option<anyhow::Error> = None;
 
     loop {
+        if let Err(error) =
+            terminal.set_clipboard_enabled(app.keymap.attachments.terminal_clipboard)
+        {
+            runtime_error =
+                Some(anyhow::Error::from(error).context("terminal clipboard mode failed"));
+            break;
+        }
+        clipboard.configure(terminal.clipboard_supported(), &mut app);
         if let Some(writer) = &draft_writer
             && let Some(snapshot) = app.take_draft_snapshot()
         {
@@ -178,6 +188,8 @@ async fn main() -> Result<()> {
         let mut outgoing = app.request_visible_media();
         outgoing.extend(app.request_visible_replies());
         outgoing.extend(app.request_visible_read());
+        let outgoing = clipboard.route(&mut app, outgoing);
+        clipboard.flush(&mut app);
         dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
         if missing_previews
             .iter()
@@ -193,6 +205,7 @@ async fn main() -> Result<()> {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
+                () = clipboard.expired() => RuntimeEvent::ClipboardTimeout,
                 event = network.recv() => RuntimeEvent::Network(Box::new(event)),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
@@ -203,6 +216,7 @@ async fn main() -> Result<()> {
                 event = terminal.next_event() => RuntimeEvent::Terminal(event),
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
+                () = clipboard.expired() => RuntimeEvent::ClipboardTimeout,
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
                 () = animation_tick => RuntimeEvent::Tick,
@@ -217,6 +231,9 @@ async fn main() -> Result<()> {
             }
             RuntimeEvent::Terminal(Some(Ok(Event::Paste(text)))) => {
                 app.update(AppEvent::Paste(text))
+            }
+            RuntimeEvent::Terminal(Some(Ok(Event::Clipboard(event)))) => {
+                clipboard.event(&mut app, event)
             }
             RuntimeEvent::Terminal(Some(Ok(Event::FocusIn))) => {
                 app.update(AppEvent::TerminalFocus(true))
@@ -325,10 +342,17 @@ async fn main() -> Result<()> {
                 Vec::new()
             }
             RuntimeEvent::Tick => app.update(AppEvent::Tick),
+            RuntimeEvent::ClipboardTimeout => {
+                clipboard.timeout(&mut app);
+                Vec::new()
+            }
         };
 
+        let outgoing = clipboard.route(&mut app, outgoing);
+        clipboard.flush(&mut app);
         let account_switch = dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
         if let Some(account) = account_switch {
+            clipboard.cancel();
             if let Err(error) = draw_interface(&mut terminal, &mut preview, &mut app)
                 .context("failed to draw account-switch feedback")
             {

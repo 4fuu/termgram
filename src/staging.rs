@@ -21,6 +21,7 @@ pub struct Configuration {
     /// Plain terminal paste remains text unless explicitly enabled.
     pub auto_attach_paths: bool,
     pub clipboard_as_photo: bool,
+    pub terminal_clipboard: bool,
 }
 
 impl Default for Configuration {
@@ -28,6 +29,7 @@ impl Default for Configuration {
         Self {
             auto_attach_paths: false,
             clipboard_as_photo: true,
+            terminal_clipboard: true,
         }
     }
 }
@@ -63,6 +65,7 @@ impl Attachment {
 pub enum Input {
     Paths(String),
     Clipboard,
+    Terminal(crate::clipboard::Payload),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -296,6 +299,9 @@ impl Worker {
                 let result = match &work.input {
                     Input::Paths(_) => prepare(&work),
                     Input::Clipboard => crate::clipboard::read(&state, &work),
+                    Input::Terminal(payload) => {
+                        crate::clipboard::prepare_payload(&state, &work, payload)
+                    }
                 };
                 let _ = sender.send(result);
             })
@@ -343,7 +349,7 @@ impl Worker {
 }
 
 impl Request {
-    fn failure(&self, error: String) -> NetworkEvent {
+    pub(crate) fn failure(&self, error: String) -> NetworkEvent {
         NetworkEvent::AttachmentsPrepared {
             key: self.key,
             request_id: self.id,

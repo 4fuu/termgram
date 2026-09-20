@@ -1,6 +1,6 @@
 //! Bounded Windows clipboard fallback for WSL, following Codex's platform
 //! approach while retaining every file and owning any exported bitmap.
-use super::{MAX_PNG, MAX_TEXT, Prepared, Request};
+use super::{MAX_ENCODED, MAX_TEXT, Prepared, Request};
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use serde::Deserialize;
@@ -77,7 +77,7 @@ pub(super) fn read(state: &Path, request: &Request) -> Result<Prepared> {
                 Payload::Image { png } => {
                     let bytes = base64::engine::general_purpose::STANDARD.decode(png)?;
                     ensure!(
-                        bytes.len() as u64 <= MAX_PNG,
+                        bytes.len() as u64 <= MAX_ENCODED,
                         "Clipboard PNG exceeds 16 MiB"
                     );
                     let root = super::prepare_root(state, request.key.account)?;
@@ -86,7 +86,7 @@ pub(super) fn read(state: &Path, request: &Request) -> Result<Prepared> {
                         .suffix(".png")
                         .tempfile_in(root)?;
                     file.write_all(&bytes)?;
-                    super::finish_png(file, request)
+                    super::finish_asset(file, request)
                 }
                 Payload::Text { text } => {
                     ensure!(text.len() <= MAX_TEXT, "Clipboard text exceeds 1 MiB");

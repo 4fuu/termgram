@@ -151,6 +151,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `up`、`down`、`page_up`、`page_down` | 列表选择、显示行滚动或搜索选择，支持 `count` |
 | `message_up`、`message_down` | 会话消息光标，支持 `count` |
 | `oldest`、`latest` | 首末聊天，或已加载历史起点/最新会话 |
+| `first_unread`、`mark_read`、`mark_unread` | 跳到首条未读、明确将聊天全部标为已读、设置 Telegram 未读提醒 |
 | `compose`、`send`、`newline` | 进入草稿或回复会话中明确选中的消息 / 发送 / 换行 |
 | `preview` | 展开所选图片或贴纸；大图通过 `preview` 上下文配置按键 |
 | `home`、`end`、`left`、`right`、`backspace`、`delete`、`clear`、`delete_word` | 编辑器 |
@@ -178,3 +179,5 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 `attachments = { auto_attach_paths = false }` 默认将普通粘贴保留为文字。设为 `true` 后，识别到的本机路径会加入草稿，仍需主动发送。也可用 `:attach` 明确添加文件。列表操作见[附件](Attachments.md)。
 
 `attachments.clipboard_as_photo = true` 将剪贴板图片默认作为 Telegram 照片，设为 `false` 则作为原文件。可在 `conversation`、`compose`、`attachments` 上下文重绑 `paste_clipboard`。
+
+`attachments.terminal_clipboard = true` 在检测到支持时优先使用 OSC 5522 MIME 粘贴。设为 `false` 关闭此终端模式，使用原生剪贴板。见[终端](Terminal.md)。

@@ -43,6 +43,6 @@ The app restores terminal modes on normal exit, initialization failure and the
 panic hook. One owner coordinates text and graphics cleanup. Upstream revisions,
 licenses, and small adaptations are recorded in [vendor provenance](../../../vendor/README.md).
 
-## Native clipboard
+## Clipboard
 
-Ctrl-V / Ctrl-Alt-V and `:paste` read the system clipboard through arboard, off the terminal thread. This is separate from the terminal’s ordinary text paste and its OSC capabilities. Backend support, limits and WSL behavior are described in [Attachments](Attachments.md).
+Ctrl-V / Ctrl-Alt-V and `:paste` use OSC 5522 when the terminal reports support, or arboard on a background thread otherwise. Terminal MIME paste reuses Yazi’s parser and formatter, with request IDs and bounded transfers. The terminal owner enables and restores the negotiated mode. Disable it with `attachments.terminal_clipboard = false`. Ordinary text paste remains supported. Backend details, limits and WSL/SSH behavior: [Attachments](Attachments.md).

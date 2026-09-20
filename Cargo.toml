@@ -67,10 +67,11 @@ pedantic = "warn"
 
 [patch."https://github.com/sxyazi/yazi"]
 yazi-term = { path = "vendor/yazi-term" }
+yazi-tty = { path = "vendor/yazi-tty" }
 
 [workspace]
 members = ["."]
-exclude = ["vendor/yazi-term", "vendor/grammers-session", "vendor/grammers-client", "vendor/libsql"]
+exclude = ["vendor/yazi-term", "vendor/yazi-tty", "vendor/grammers-session", "vendor/grammers-client", "vendor/libsql"]
 
 [patch.crates-io]
 grammers-session = { path = "vendor/grammers-session" }

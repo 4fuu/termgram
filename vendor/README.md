@@ -14,14 +14,25 @@ It is a small original adapter, not copied source: Yazi's existing background
 report supplies the color, with no Codex probing code or additional input reader.
 
 Yazi is pinned to `9203fd2604f867ab5ec18f24203b918975c4c00a` from
-https://github.com/sxyazi/yazi. All Yazi crates except `yazi-term` are Git
+https://github.com/sxyazi/yazi. All Yazi crates except `yazi-term` and `yazi-tty` are Git
 dependencies at that revision.
 
 `yazi-term/` copies the complete upstream `yazi-term/src` and its MIT license.
 Its standalone manifest resolves upstream workspace dependencies explicitly.
-The only source changes expose mouse coordinates/modifiers, key state, and
-`KeyEvent::new` to Rust consumers; upstream exposes some of these only to Lua.
-Parsing, platform input, timeouts, and restoration code are unchanged.
+Local source changes expose mouse coordinates/modifiers, key state,
+`KeyEvent::new`, and clipboard payload access to Rust consumers. Clipboard reads
+retain the OSC 5522 request ID in parsed success and error events, reject
+oversized or inconsistent IDs, and include it in the existing aggregate budget.
+The upstream parser, platform reader, size limits, timeouts, and restoration
+lifecycle remain in use.
+
+`yazi-tty/` contains the complete upstream crate source and MIT license at the
+same revision, with an explicit standalone manifest. `ReadClipboard::new` and
+`with_id` provide a Rust construction path for the existing sequence formatter;
+the optional ID is restricted to the protocol's character set and 128 bytes.
+The Lua path retains its previous behavior with an empty ID. All other sequence
+and TTY access code is unchanged. This small API patch avoids copying the
+formatter or creating a separate parser or Lua host in Termgram.
 
 When updating, replace from one upstream revision, reapply these visibility
 changes, update all Yazi Git revisions together, and review the integration in

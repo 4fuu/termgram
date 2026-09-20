@@ -29,6 +29,28 @@ impl App {
         self.prepare_attachment_input(Input::Clipboard, None)
     }
 
+    /// Reserve the same captured draft destination used by a native read,
+    /// before the terminal asynchronously supplies its MIME payload.
+    pub fn reserve_terminal_paste(&mut self) -> Option<Request> {
+        if self.screen != super::Screen::Main
+            || self.active_chat_id.is_none()
+            || !(matches!(self.mode, Mode::Navigate | Mode::Compose)
+                && self.focus == Focus::Conversation
+                || self.mode == Mode::Attachments)
+        {
+            return None;
+        }
+        self.prepare_attachment_input(Input::Clipboard, None)
+            .into_iter()
+            .find_map(|command| {
+                if let TelegramCommand::PrepareAttachments(request) = command {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+    }
+
     fn prepare_attachment_input(
         &mut self,
         input: Input,

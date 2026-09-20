@@ -36,6 +36,6 @@ TERMGRAM_TMUX_PASSTHROUGH=1 tg
 正常退出、初始化失败和 panic hook 都会恢复终端模式。文本与图形清理由单一所有者协调。
 上游版本、许可证与局部修改记录在 [vendor 说明](../../../vendor/README.md)。
 
-## 原生剪贴板
+## 剪贴板
 
-Ctrl-V / Ctrl-Alt-V 和 `:paste` 使用 arboard 在后台读取系统剪贴板，与终端普通文字粘贴和 OSC 能力分开。平台支持、限制和 WSL 行为见[附件](Attachments.md)。
+Ctrl-V / Ctrl-Alt-V 和 `:paste` 在检测到支持时使用 OSC 5522，否则由 arboard 在后台读取系统剪贴板。MIME 粘贴复用 Yazi 解析器与格式化器，用请求 ID 区分操作并限制传输体积；终端所有者负责开启和恢复协商后的模式。可用 `attachments.terminal_clipboard = false` 关闭，普通文字粘贴仍可用。平台、体积限制与 WSL/SSH 行为见[附件](Attachments.md)。

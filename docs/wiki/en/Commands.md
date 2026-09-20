@@ -32,7 +32,7 @@ to disk. Multiline paste cannot execute a series of commands.
 | `account [slot]` | Open the account picker or switch to an existing slot |
 | `search [regex]` | Open local search or submit a pattern in the current search scope |
 | `attach <paths...>` | Prepare local files in the captured chat draft; never sends automatically |
-| `paste` | Paste native clipboard files, an image or text into the captured chat draft |
+| `paste` | Paste clipboard files, an image or text into the captured chat draft |
 | `attachments` | Review the open conversation’s staged files |
 | `latest` | Return the open conversation to its latest messages |
 | `unread` | Open the first incoming message after the chat's saved read boundary |

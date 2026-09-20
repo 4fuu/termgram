@@ -177,6 +177,7 @@ binding can become visible again.
 | `up`, `down`, `page_up`, `page_down` | List selection, rendered-row scrolling, or search selection; accept `count` |
 | `message_up`, `message_down` | Conversation message cursor; accept `count` |
 | `oldest`, `latest` | First/last chat, or loaded-history start/latest conversation |
+| `first_unread`, `mark_read`, `mark_unread` | Jump to the first unread message; explicitly read the chat or set Telegram’s unread reminder |
 | `compose`, `send`, `newline` | Enter a draft or reply to the explicit conversation selection / send / newline |
 | `preview` | Expand a selected image or sticker; `preview` context controls the expanded view |
 | `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |
@@ -205,3 +206,5 @@ Ctrl-C cancels command entry by default; it still quits in other contexts.
 `attachments = { auto_attach_paths = false }` keeps ordinary paste as text. Set it to `true` to stage recognized local paths, with explicit send still required. Use `:attach` for explicit file selection. Details and review keys: [Attachments](Attachments.md).
 
 `attachments.clipboard_as_photo = true` starts clipboard images as Telegram photos. Set `false` for original files. Rebind `paste_clipboard` in the `conversation`, `compose` and `attachments` contexts.
+
+`attachments.terminal_clipboard = true` uses detected OSC 5522 MIME paste before native clipboard reads. Set `false` to disable this terminal mode. See [Terminal](Terminal.md).

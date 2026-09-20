@@ -4,7 +4,7 @@ mod wsl;
 
 use crate::staging::{Attachment, Prepared, Request};
 use anyhow::{Context, Result, ensure};
-use image::ImageEncoder;
+use image::{ImageDecoder, ImageEncoder};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -24,8 +24,124 @@ fn live_assets() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Weak<Asset>>
 }
 
 const MAX_RGBA: usize = 128 * 1024 * 1024;
-const MAX_PNG: u64 = 16 * 1024 * 1024;
+const MAX_ENCODED: u64 = 16 * 1024 * 1024;
 const MAX_TEXT: usize = 1024 * 1024;
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct Payload {
+    pub mime: String,
+    pub bytes: Arc<[u8]>,
+    pub remote: bool,
+}
+
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClipboardPayload")
+            .field("mime", &self.mime)
+            .field("bytes", &self.bytes.len())
+            .field("remote", &self.remote)
+            .finish()
+    }
+}
+
+pub(crate) fn prepare_payload(
+    state: &Path,
+    request: &Request,
+    payload: &Payload,
+) -> Result<Prepared> {
+    ensure!(
+        u64::try_from(payload.bytes.len())? <= MAX_ENCODED,
+        "Terminal clipboard exceeds 16 MiB"
+    );
+    if matches!(
+        payload.mime.as_str(),
+        "text/plain" | "text/plain;charset=utf-8"
+    ) {
+        ensure!(
+            payload.bytes.len() <= MAX_TEXT,
+            "Clipboard text exceeds 1 MiB"
+        );
+        return Ok(Prepared {
+            text: Some(std::str::from_utf8(&payload.bytes)?.to_owned()),
+            ..Prepared::default()
+        });
+    }
+    if payload.mime == "text/uri-list" {
+        ensure!(
+            !payload.remote,
+            "Clipboard file paths belong to the terminal host; use :attach with a file readable on this machine"
+        );
+        ensure!(
+            payload.bytes.len() <= MAX_TEXT,
+            "Clipboard file list exceeds 1 MiB"
+        );
+        let text = std::str::from_utf8(&payload.bytes)?;
+        let mut paths = Vec::new();
+        let mut errors = Vec::new();
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            ensure!(
+                paths.len() + errors.len() < crate::staging::MAX_FILES,
+                "Clipboard contains more than eight files"
+            );
+            match url::Url::parse(line)
+                .ok()
+                .filter(|url| url.scheme() == "file")
+                .and_then(|url| url.to_file_path().ok())
+            {
+                Some(path) => paths.push(path),
+                None => errors.push(
+                    "Clipboard contains a file URL that is not local to this machine".to_owned(),
+                ),
+            }
+        }
+        ensure!(
+            !paths.is_empty() || !errors.is_empty(),
+            "Clipboard file list is empty"
+        );
+        let mut prepared = crate::staging::prepare_paths(paths, request);
+        prepared.errors.extend(errors);
+        return Ok(prepared);
+    }
+    let (format, suffix) = match payload.mime.as_str() {
+        "image/png" => (image::ImageFormat::Png, ".png"),
+        "image/jpeg" => (image::ImageFormat::Jpeg, ".jpg"),
+        "image/webp" => (image::ImageFormat::WebP, ".webp"),
+        "image/gif" => (image::ImageFormat::Gif, ".gif"),
+        _ => anyhow::bail!("Unsupported clipboard MIME type"),
+    };
+    ensure!(
+        image::guess_format(&payload.bytes)? == format,
+        "Clipboard image does not match its MIME type"
+    );
+    ensure!(
+        request.available_files > 0,
+        "Remove an attachment before adding another"
+    );
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&payload.bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_RGBA as u64);
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    reader.limits(limits);
+    let decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    ensure!(
+        width > 0 && height > 0 && decoder.total_bytes() <= MAX_RGBA as u64,
+        "Clipboard image exceeds the 128 MiB decoded size limit"
+    );
+    let directory = prepare_root(state, request.key.account)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("clipboard-")
+        .suffix(suffix)
+        .tempfile_in(directory)?;
+    std::io::Write::write_all(file.as_file_mut(), &payload.bytes)?;
+    finish_asset(file, request)
+}
 
 #[derive(Debug)]
 pub(crate) struct Asset {
@@ -155,7 +271,12 @@ fn managed_path(directory: &Path, path: &Path) -> bool {
         && path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("clipboard-") && name.ends_with(".png"))
+            .is_some_and(|name| {
+                name.starts_with("clipboard-")
+                    && [".png", ".jpg", ".webp", ".gif"]
+                        .iter()
+                        .any(|suffix| name.ends_with(suffix))
+            })
 }
 
 pub(crate) fn read(state: &Path, request: &Request) -> Result<Prepared> {
@@ -220,20 +341,20 @@ fn bitmap(state: &Path, request: &Request, image: &arboard::ImageData<'_>) -> Re
         height,
         image::ExtendedColorType::Rgba8,
     )?;
-    finish_png(file, request)
+    finish_asset(file, request)
 }
 
-fn finish_png(file: tempfile::NamedTempFile, request: &Request) -> Result<Prepared> {
+fn finish_asset(file: tempfile::NamedTempFile, request: &Request) -> Result<Prepared> {
     file.as_file().sync_all()?;
     ensure!(
-        file.as_file().metadata()?.len() <= MAX_PNG.min(request.available_bytes),
-        "Clipboard PNG exceeds 16 MiB or the draft budget"
+        file.as_file().metadata()?.len() <= MAX_ENCODED.min(request.available_bytes),
+        "Clipboard image exceeds 16 MiB or the draft budget"
     );
     let mut prepared = crate::staging::prepare_paths(vec![file.path().to_owned()], request);
     let attachment: &mut Attachment = prepared
         .attachments
         .first_mut()
-        .context("could not prepare clipboard PNG")?;
+        .context("could not prepare clipboard image")?;
     let (_, path) = file.keep()?;
     attachment.owned = true;
     attachment.lease = Some(Asset::new(path, false));
@@ -248,6 +369,57 @@ mod tests {
         staging::{Input, MAX_BYTES, MAX_FILES},
     };
     use std::borrow::Cow;
+
+    #[test]
+    fn terminal_images_keep_encoded_bytes_and_reject_remote_file_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state.sqlite3");
+        let request = Request {
+            key: Key {
+                account: 100,
+                chat: 7,
+                topic: 0,
+            },
+            id: 1,
+            input: Input::Clipboard,
+            as_photo: false,
+            available_files: MAX_FILES,
+            available_bytes: MAX_BYTES,
+        };
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded)
+            .write_image(&[120_u8; 16], 2, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let mut payload = Payload {
+            mime: "image/png".to_owned(),
+            bytes: encoded.clone().into(),
+            remote: true,
+        };
+        let prepared = prepare_payload(&state, &request, &payload).unwrap();
+        let path = prepared.attachments[0].path.clone();
+        assert_eq!(std::fs::read(&path).unwrap(), encoded);
+        assert!(!prepared.attachments[0].as_photo);
+        drop(prepared);
+        assert!(!path.exists());
+        payload.mime = "image/jpeg".to_owned();
+        assert!(prepare_payload(&state, &request, &payload).is_err());
+        payload.mime = "text/uri-list".to_owned();
+        payload.bytes = b"file:///a/local/desktop/file".as_slice().into();
+        assert!(
+            prepare_payload(&state, &request, &payload)
+                .unwrap_err()
+                .to_string()
+                .contains("terminal host")
+        );
+        payload.mime = "text/plain".to_owned();
+        assert_eq!(
+            prepare_payload(&state, &request, &payload)
+                .unwrap()
+                .text
+                .as_deref(),
+            Some("file:///a/local/desktop/file")
+        );
+    }
 
     #[test]
     fn bitmap_assets_survive_draft_restore_and_clean_up_only_when_released() {

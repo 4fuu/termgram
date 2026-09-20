@@ -191,10 +191,8 @@ struct ReplyRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AttachmentRetry {
-    path: PathBuf,
-    digest: [u8; 32],
+    attachment: crate::staging::Attachment,
     caption: String,
-    as_photo: bool,
     reply_to: Option<ReplyInfo>,
 }
 
@@ -648,6 +646,7 @@ impl App {
         match run {
             Action::CommandLine => return self.begin_command(),
             Action::Attachments => return self.open_attachments(),
+            Action::PasteClipboard => return self.paste_clipboard(),
             Action::Attach => {
                 self.begin_command();
                 if self.mode == Mode::Command {
@@ -1418,10 +1417,8 @@ impl App {
             NetworkEvent::AttachmentSendFailed {
                 chat_id,
                 local_id,
-                path,
-                digest,
+                attachment,
                 caption,
-                as_photo,
                 reply_to,
                 error,
             } => {
@@ -1440,10 +1437,8 @@ impl App {
                     self.retry_attachments.insert(
                         (chat_id, local_id),
                         AttachmentRetry {
-                            path,
-                            digest,
+                            attachment,
                             caption,
-                            as_photo,
                             reply_to,
                         },
                     );
@@ -2608,10 +2603,10 @@ impl App {
         let total = draft.attachments.len();
         let mut commands = Vec::new();
         for (index, staged) in draft.attachments.into_iter().enumerate() {
-            let path = staged.path;
+            let path = &staged.path;
             let local_id = self.next_pending_id;
             self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
-            let mut attachment = attachment_from_path(&path);
+            let mut attachment = attachment_from_path(path);
             attachment.size = Some(staged.size);
             let as_photo = staged.as_photo;
             attachment.kind = if as_photo {
@@ -2643,10 +2638,8 @@ impl App {
             commands.push(TelegramCommand::SendAttachment {
                 chat_id,
                 local_id,
-                path,
-                digest: staged.digest,
+                attachment: staged,
                 caption: item_caption,
-                as_photo,
                 reply_to: item_reply.map(|reply| reply.message_id),
             });
         }
@@ -2856,10 +2849,8 @@ impl App {
             return vec![TelegramCommand::SendAttachment {
                 chat_id,
                 local_id: message_id,
-                path: retry.path,
-                digest: retry.digest,
+                attachment: retry.attachment,
                 caption: retry.caption,
-                as_photo: retry.as_photo,
                 reply_to: retry.reply_to.map(|reply| reply.message_id),
             }];
         }
@@ -5760,7 +5751,7 @@ mod tests {
         let commands = app.send_draft(1);
         assert!(
             matches!(commands.as_slice(), [TelegramCommand::SendAttachment {
-            chat_id: 1, local_id: -1, caption, reply_to: Some(20), as_photo: false, ..
+            chat_id: 1, local_id: -1, caption, reply_to: Some(20), attachment: crate::staging::Attachment { as_photo: false, .. }, ..
         }] if caption == "caption")
         );
         let pending = app.active_messages().last().expect("optimistic attachment");
@@ -6414,8 +6405,7 @@ mod tests {
         app.mode = Mode::Navigate;
         let TelegramCommand::SendAttachment {
             local_id,
-            digest,
-            path: sent_path,
+            attachment: sent_attachment,
             ..
         } = command.into_iter().next().expect("send command")
         else {
@@ -6424,10 +6414,8 @@ mod tests {
         app.handle_network(NetworkEvent::AttachmentSendFailed {
             chat_id: 1,
             local_id,
-            path: sent_path.clone(),
-            digest,
+            attachment: sent_attachment.clone(),
             caption: String::new(),
-            as_photo: true,
             reply_to: None,
             error: "offline".to_owned(),
         });
@@ -6437,10 +6425,8 @@ mod tests {
             vec![TelegramCommand::SendAttachment {
                 chat_id: 1,
                 local_id,
-                path: sent_path,
-                digest,
+                attachment: sent_attachment,
                 caption: String::new(),
-                as_photo: true,
                 reply_to: None,
             }]
         );

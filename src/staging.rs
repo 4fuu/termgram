@@ -15,11 +15,21 @@ pub const MAX_FILES: usize = 8;
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 static PREPARATION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     /// Plain terminal paste remains text unless explicitly enabled.
     pub auto_attach_paths: bool,
+    pub clipboard_as_photo: bool,
+}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            auto_attach_paths: false,
+            clipboard_as_photo: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -29,13 +39,38 @@ pub struct Attachment {
     pub digest: [u8; 32],
     pub photo_supported: bool,
     pub as_photo: bool,
+    #[serde(default)]
+    pub owned: bool,
+    #[serde(skip)]
+    pub(crate) lease: Option<std::sync::Arc<crate::clipboard::Asset>>,
+}
+
+impl Attachment {
+    pub(crate) fn retain_owned(&self) {
+        if let Some(lease) = &self.lease {
+            lease.retain();
+        }
+    }
+
+    pub(crate) fn discard_owned(&self) {
+        if let Some(lease) = &self.lease {
+            lease.discard();
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Input {
+    Paths(String),
+    Clipboard,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
     pub key: Key,
     pub id: u64,
-    pub paths: String,
+    pub input: Input,
+    pub as_photo: bool,
     pub available_files: usize,
     pub available_bytes: u64,
 }
@@ -44,6 +79,7 @@ pub struct Request {
 pub struct Prepared {
     pub attachments: Vec<Attachment>,
     pub errors: Vec<String>,
+    pub text: Option<String>,
 }
 
 /// Parse native file arguments; no shell expansion or execution takes place.
@@ -114,7 +150,13 @@ fn hash_copy(
 }
 
 pub(crate) fn prepare(request: &Request) -> Result<Prepared> {
-    let paths = paths(&request.paths)?;
+    let Input::Paths(value) = &request.input else {
+        anyhow::bail!("native clipboard requires the preparation worker");
+    };
+    Ok(prepare_paths(paths(value)?, request))
+}
+
+pub(crate) fn prepare_paths(paths: Vec<PathBuf>, request: &Request) -> Prepared {
     let mut result = Prepared::default();
     let mut remaining = request.available_bytes;
     for path in paths {
@@ -151,7 +193,9 @@ pub(crate) fn prepare(request: &Request) -> Result<Prepared> {
                 size,
                 digest,
                 photo_supported,
-                as_photo: photo_supported,
+                as_photo: photo_supported && request.as_photo,
+                owned: false,
+                lease: None,
             })
         })();
         match item {
@@ -165,7 +209,7 @@ pub(crate) fn prepare(request: &Request) -> Result<Prepared> {
             )),
         }
     }
-    Ok(result)
+    result
 }
 
 /// A private immutable upload copy retains the reviewed bytes even if the
@@ -209,46 +253,101 @@ pub fn upload_copy(path: &Path, expected: [u8; 32]) -> Result<Upload> {
     })
 }
 
-#[derive(Default)]
+struct Work {
+    request: Request,
+    receiver: tokio::sync::oneshot::Receiver<Result<Prepared>>,
+    deadline: Option<tokio::time::Instant>,
+    expired: bool,
+}
+
 pub(crate) struct Worker {
-    task: Option<(Request, tokio::task::JoinHandle<Result<Prepared>>)>,
+    task: Option<Work>,
+    state: PathBuf,
+    owner: std::sync::Arc<File>,
 }
 
 impl Worker {
+    pub fn new(state: PathBuf, owner: std::sync::Arc<File>) -> Self {
+        Self {
+            task: None,
+            state,
+            owner,
+        }
+    }
+
     pub fn start(&mut self, request: Request) -> Option<NetworkEvent> {
         let permit = PREPARATION.try_acquire();
         if self.task.is_some() || permit.is_err() {
-            return Some(NetworkEvent::AttachmentsPrepared {
-                key: request.key,
-                request_id: request.id,
-                result: Err("Another attachment is still being prepared".to_owned()),
-            });
+            return Some(request.failure(
+                "Another attachment or clipboard read is still being prepared".to_owned(),
+            ));
         }
+        let state = self.state.clone();
+        let owner = self.owner.clone();
         let work = request.clone();
-        self.task = Some((
-            request,
-            tokio::task::spawn_blocking(move || {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        // A hung OS clipboard call must neither accumulate workers nor keep
+        // Tokio's runtime shutdown waiting after the terminal has been restored.
+        if let Err(error) = std::thread::Builder::new()
+            .name("termgram-attachments".to_owned())
+            .spawn(move || {
                 let _permit = permit;
-                prepare(&work)
-            }),
-        ));
+                let _owner = owner;
+                let result = match &work.input {
+                    Input::Paths(_) => prepare(&work),
+                    Input::Clipboard => crate::clipboard::read(&state, &work),
+                };
+                let _ = sender.send(result);
+            })
+        {
+            return Some(request.failure(error.to_string()));
+        }
+        self.task = Some(Work {
+            deadline: matches!(request.input, Input::Clipboard)
+                .then(|| tokio::time::Instant::now() + std::time::Duration::from_secs(10)),
+            expired: false,
+            request,
+            receiver,
+        });
         None
     }
 
-    pub async fn next(&mut self) -> NetworkEvent {
-        let result = if let Some((_, task)) = &mut self.task {
-            task.await
-        } else {
+    pub async fn next(&mut self) -> Option<NetworkEvent> {
+        let Some(work) = &mut self.task else {
             return std::future::pending().await;
         };
-        let (request, _) = self.task.take().expect("active preparation");
-        NetworkEvent::AttachmentsPrepared {
-            key: request.key,
-            request_id: request.id,
+        let result = tokio::select! {
+            result = &mut work.receiver => result,
+            () = async {
+                if let Some(deadline) = work.deadline { tokio::time::sleep_until(deadline).await; }
+                else { std::future::pending::<()>().await; }
+            } => {
+                work.expired = true;
+                work.deadline = None;
+                return Some(work.request.failure("Clipboard read timed out; its backend must finish before another read can start".to_owned()));
+            }
+        };
+        let work = self.task.take().expect("active preparation");
+        if work.expired {
+            return None;
+        }
+        Some(NetworkEvent::AttachmentsPrepared {
+            key: work.request.key,
+            request_id: work.request.id,
             result: result
                 .map_err(anyhow::Error::from)
                 .and_then(std::convert::identity)
                 .map_err(|error| format!("{error:#}")),
+        })
+    }
+}
+
+impl Request {
+    fn failure(&self, error: String) -> NetworkEvent {
+        NetworkEvent::AttachmentsPrepared {
+            key: self.key,
+            request_id: self.id,
+            result: Err(error),
         }
     }
 }
@@ -256,6 +355,48 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn expired_preparation_stays_bounded_and_discards_its_late_result() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut worker = Worker::new(
+            file.path().to_owned(),
+            std::sync::Arc::new(file.reopen().unwrap()),
+        );
+        let request = Request {
+            key: Key {
+                account: 1,
+                chat: 2,
+                topic: 0,
+            },
+            id: 1,
+            input: Input::Clipboard,
+            as_photo: true,
+            available_files: MAX_FILES,
+            available_bytes: MAX_BYTES,
+        };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        worker.task = Some(Work {
+            request: request.clone(),
+            receiver,
+            deadline: Some(tokio::time::Instant::now()),
+            expired: false,
+        });
+        assert!(matches!(
+            worker.next().await,
+            Some(NetworkEvent::AttachmentsPrepared { result: Err(_), .. })
+        ));
+        assert!(
+            worker.start(request).is_some(),
+            "timeout does not free a still-running backend"
+        );
+        sender.send(Ok(Prepared::default())).unwrap();
+        assert!(
+            worker.next().await.is_none(),
+            "late completion never reaches the UI"
+        );
+        assert!(worker.task.is_none());
+    }
 
     #[test]
     fn reviewed_bytes_are_copied_privately_and_changes_rejected() {
@@ -269,7 +410,8 @@ mod tests {
                 topic: 0,
             },
             id: 1,
-            paths: url::Url::from_file_path(&original).unwrap().to_string(),
+            input: Input::Paths(url::Url::from_file_path(&original).unwrap().to_string()),
+            as_photo: true,
             available_files: MAX_FILES,
             available_bytes: MAX_BYTES,
         })

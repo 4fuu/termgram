@@ -86,3 +86,5 @@ mod tests {
         );
     }
 }
+
+mod clipboard;

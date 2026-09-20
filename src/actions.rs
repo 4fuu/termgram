@@ -35,6 +35,7 @@ macro_rules! actions {
 actions! {
     Quit => ("quit", "Exit Termgram"),
     CommandLine => ("command", "Browse and run application commands"),
+    PasteClipboard => ("paste_clipboard", "Paste clipboard files, an image or text into the draft"),
     Attach => ("attach", "Add files to the current draft"),
     Attachments => ("attachments", "Review the draft's attachments"),
     RemoveAttachment => ("remove_attachment", "Remove the selected draft attachment"),

@@ -633,16 +633,18 @@ impl App {
         self.status_message = None;
         let outgoing = match &spec.kind {
             Kind::Action(action) => self.run_action(action, 1),
-            Kind::Attach => {
+            Kind::Attach | Kind::Paste => {
                 let id = origin.chat.expect("validated chat target");
                 let mut commands = if self.active_chat_id == Some(id) {
                     Vec::new()
                 } else {
                     self.open_chat_by_id(id)
                 };
-                commands.extend(
-                    self.prepare_attachments(raw_argument.unwrap_or_default().to_owned(), false),
-                );
+                commands.extend(if matches!(spec.kind, Kind::Paste) {
+                    self.paste_clipboard()
+                } else {
+                    self.prepare_attachments(raw_argument.unwrap_or_default().to_owned(), false)
+                });
                 commands
             }
             Kind::Chat => self.open_chat_by_id(chat.expect("validated chat")),

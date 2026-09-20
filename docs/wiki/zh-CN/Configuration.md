@@ -176,3 +176,5 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 ## 附件输入
 
 `attachments = { auto_attach_paths = false }` 默认将普通粘贴保留为文字。设为 `true` 后，识别到的本机路径会加入草稿，仍需主动发送。也可用 `:attach` 明确添加文件。列表操作见[附件](Attachments.md)。
+
+`attachments.clipboard_as_photo = true` 将剪贴板图片默认作为 Telegram 照片，设为 `false` 则作为原文件。可在 `conversation`、`compose`、`attachments` 上下文重绑 `paste_clipboard`。

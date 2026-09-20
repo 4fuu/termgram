@@ -65,6 +65,7 @@ struct MetadataRefresh {
 #[derive(Default)]
 struct WorkerCache {
     transfer_slots: Option<Arc<tokio::sync::Semaphore>>,
+    upload_order: HashMap<ChatId, tokio::sync::oneshot::Receiver<()>>,
     dialogs: MetadataRefresh,
     folders: MetadataRefresh,
     dialog_pins: MetadataRefresh,
@@ -138,10 +139,8 @@ enum TransferCompletion {
     Send {
         chat_id: ChatId,
         local_id: i32,
-        path: PathBuf,
-        digest: [u8; 32],
+        attachment: crate::staging::Attachment,
         caption: String,
-        as_photo: bool,
         reply_to: Option<i32>,
         result: Box<Result<TelegramMessage, String>>,
     },
@@ -1415,10 +1414,8 @@ async fn handle_command(
         TelegramCommand::SendAttachment {
             chat_id,
             local_id,
-            path,
-            digest,
+            attachment,
             caption,
-            as_photo,
             reply_to,
         } => {
             let Some(peer) = cache.peers.get(&chat_id).copied() else {
@@ -1426,10 +1423,8 @@ async fn handle_command(
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
-                        path,
-                        digest,
+                        attachment,
                         caption,
-                        as_photo,
                         reply_to,
                         error: "conversation is missing its Telegram peer reference".to_owned(),
                     })
@@ -1441,10 +1436,8 @@ async fn handle_command(
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
-                        path,
-                        digest,
+                        attachment,
                         caption,
-                        as_photo,
                         reply_to,
                         error: "Telegram transfer queue is full".to_owned(),
                     })
@@ -1453,7 +1446,21 @@ async fn handle_command(
             }
             let client = client.clone();
             let cache_owner = cache.cache_owner.clone();
+            cache.upload_order.retain(|_, previous| {
+                matches!(
+                    previous.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                )
+            });
+            let (finished, gate) = tokio::sync::oneshot::channel::<()>();
+            let after = cache.upload_order.insert(chat_id, gate);
             transfers.spawn(async move {
+                // Link tasks in admission order, before they are scheduled.
+                // Dropping the sender also releases the next item on cancellation.
+                let _finished = finished;
+                if let Some(previous) = after {
+                    let _ = previous.await;
+                }
                 let permit = Arc::new(
                     slots
                         .acquire_owned()
@@ -1462,7 +1469,8 @@ async fn handle_command(
                 );
                 let _cache_owner = cache_owner.clone();
                 let result = async {
-                    let original = path.clone();
+                    let original = attachment.path.clone();
+                    let digest = attachment.digest;
                     // Blocking validation retains its permit if this async task
                     // is cancelled; cancellation cannot create unbounded copies.
                     let copy_permit = permit.clone();
@@ -1472,18 +1480,23 @@ async fn handle_command(
                     })
                     .await
                     .context("attachment validation worker failed")??;
-                    upload_attachment(&client, peer, &upload.path, &caption, as_photo, reply_to)
-                        .await
+                    upload_attachment(
+                        &client,
+                        peer,
+                        &upload.path,
+                        &caption,
+                        attachment.as_photo,
+                        reply_to,
+                    )
+                    .await
                 }
                 .await
                 .map_err(|error| format!("{error:#}"));
                 TransferCompletion::Send {
                     chat_id,
                     local_id,
-                    path,
-                    digest,
+                    attachment,
                     caption,
-                    as_photo,
                     reply_to,
                     result: Box::new(result),
                 }
@@ -1764,19 +1777,19 @@ async fn process_transfer_completion(
         TransferCompletion::Send {
             chat_id,
             local_id,
-            path,
-            digest,
+            attachment,
             caption,
-            as_photo,
             reply_to,
             result,
         } => match *result {
             Ok(message) if message.id() <= 0 => {
+                attachment.discard_owned();
                 events
                     .send(NetworkEvent::MessageAccepted { chat_id, local_id })
                     .await?;
             }
             Ok(message) => {
+                attachment.discard_owned();
                 events
                     .send(NetworkEvent::MessageSent {
                         local_id,
@@ -1789,10 +1802,8 @@ async fn process_transfer_completion(
                     .send(NetworkEvent::AttachmentSendFailed {
                         chat_id,
                         local_id,
-                        path,
-                        digest,
+                        attachment,
                         caption,
-                        as_photo,
                         reply_to,
                         error: format!("Could not send attachment: {error}"),
                     })

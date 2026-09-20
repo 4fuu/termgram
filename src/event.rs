@@ -103,12 +103,8 @@ pub enum TelegramCommand {
     SendAttachment {
         chat_id: ChatId,
         local_id: i32,
-        path: PathBuf,
-        digest: [u8; 32],
+        attachment: crate::staging::Attachment,
         caption: String,
-        /// Compress image input as a Telegram photo; otherwise preserve it as
-        /// a document.
-        as_photo: bool,
         /// Positive message identifier in this conversation when the media is
         /// sent as a reply.
         reply_to: Option<i32>,
@@ -252,18 +248,14 @@ impl TelegramCommand {
             TelegramCommand::SendAttachment {
                 chat_id,
                 local_id,
-                path,
-                digest,
+                attachment,
                 caption,
-                as_photo,
                 reply_to,
             } => NetworkEvent::AttachmentSendFailed {
                 chat_id,
                 local_id,
-                path,
-                digest,
+                attachment,
                 caption,
-                as_photo,
                 reply_to,
                 error,
             },
@@ -429,19 +421,15 @@ impl fmt::Debug for TelegramCommand {
             Self::SendAttachment {
                 chat_id,
                 local_id,
-                path,
-                digest,
+                attachment,
                 caption,
-                as_photo,
                 reply_to,
             } => formatter
                 .debug_struct("SendAttachment")
                 .field("chat_id", chat_id)
                 .field("local_id", local_id)
-                .field("path", path)
-                .field("digest", digest)
+                .field("attachment", attachment)
                 .field("caption", caption)
-                .field("as_photo", as_photo)
                 .field("reply_to", reply_to)
                 .finish(),
             Self::DownloadAttachment {
@@ -764,10 +752,8 @@ pub enum NetworkEvent {
     AttachmentSendFailed {
         chat_id: ChatId,
         local_id: i32,
-        path: PathBuf,
-        digest: [u8; 32],
+        attachment: crate::staging::Attachment,
         caption: String,
-        as_photo: bool,
         reply_to: Option<i32>,
         error: String,
     },

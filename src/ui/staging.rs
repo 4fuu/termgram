@@ -15,6 +15,7 @@ use ratatui::{
     text::Line,
     widgets::{Cell, Clear, Paragraph, Row, Table, TableState},
 };
+use unicode_width::UnicodeWidthStr;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
@@ -109,22 +110,42 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         );
     }
     let hint = |action| app.keymap.hint(Context::Attachments, action);
+    let close = format!("{} back", hint("cancel"));
+    let footer = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(clamp_u16(close.width() + 1)),
+    ])
+    .split(rows[2]);
     let controls = if app.attachment_draft.preview {
-        format!("{} back · {} reveal", hint("cancel"), hint("reveal"))
+        format!("{} reveal", hint("reveal"))
+    } else if area.width < 72 {
+        format!(
+            "{} caption · {} add · {} help",
+            hint("compose"),
+            hint("attach"),
+            hint("help")
+        )
     } else {
         format!(
-            "{} add · {} photo/file · {} remove · {} preview · {} caption · {} back",
+            "{} add · {} paste · {} photo/file · {} remove · {} preview · {} caption · {} help",
             hint("attach"),
+            hint("paste_clipboard"),
             hint("attachment_format"),
             hint("remove_attachment"),
             hint("preview"),
             hint("compose"),
-            hint("cancel")
+            hint("help")
         )
     };
     frame.render_widget(
         Paragraph::new(controls).style(Style::default().fg(MUTED)),
-        rows[2],
+        footer[0],
+    );
+    frame.render_widget(
+        Paragraph::new(close)
+            .style(Style::default().fg(MUTED))
+            .alignment(Alignment::Right),
+        footer[1],
     );
 }
 

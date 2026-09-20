@@ -203,3 +203,5 @@ Ctrl-C cancels command entry by default; it still quits in other contexts.
 ## Attachment input
 
 `attachments = { auto_attach_paths = false }` keeps ordinary paste as text. Set it to `true` to stage recognized local paths, with explicit send still required. Use `:attach` for explicit file selection. Details and review keys: [Attachments](Attachments.md).
+
+`attachments.clipboard_as_photo = true` starts clipboard images as Telegram photos. Set `false` for original files. Rebind `paste_clipboard` in the `conversation`, `compose` and `attachments` contexts.

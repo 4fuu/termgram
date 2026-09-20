@@ -2,7 +2,7 @@ use super::{App, Focus, KeyAction, Mode, TelegramCommand};
 use crate::{
     actions::Action,
     drafts::Key,
-    staging::{MAX_BYTES, MAX_FILES, Prepared, Request},
+    staging::{Input, MAX_BYTES, MAX_FILES, Prepared, Request},
 };
 
 #[derive(Clone, Default)]
@@ -21,6 +21,19 @@ impl App {
         paths: String,
         fallback_text: bool,
     ) -> Vec<TelegramCommand> {
+        let fallback = fallback_text.then(|| paths.clone());
+        self.prepare_attachment_input(Input::Paths(paths), fallback)
+    }
+
+    pub(super) fn paste_clipboard(&mut self) -> Vec<TelegramCommand> {
+        self.prepare_attachment_input(Input::Clipboard, None)
+    }
+
+    fn prepare_attachment_input(
+        &mut self,
+        input: Input,
+        fallback: Option<String>,
+    ) -> Vec<TelegramCommand> {
         let Some(chat) = self.active_chat_id else {
             self.status_message = Some("Open a chat before attaching files".to_owned());
             return Vec::new();
@@ -37,14 +50,16 @@ impl App {
         self.attachment_draft.next_request =
             self.attachment_draft.next_request.wrapping_add(1).max(1);
         let id = self.attachment_draft.next_request;
-        self.attachment_draft.pending = Some((key, id, fallback_text.then(|| paths.clone())));
+        self.attachment_draft.pending = Some((key, id, fallback));
         self.mode = Mode::Compose;
         self.focus = Focus::Conversation;
         self.status_message = Some("Preparing attachments…".to_owned());
         vec![TelegramCommand::PrepareAttachments(Request {
             key,
             id,
-            paths,
+            as_photo: !matches!(&input, Input::Clipboard)
+                || self.keymap.attachments.clipboard_as_photo,
+            input,
             available_files,
             available_bytes,
         })]
@@ -91,8 +106,21 @@ impl App {
             Err(error) => Prepared {
                 attachments: Vec::new(),
                 errors: vec![error],
+                text: None,
             },
         };
+        if let Some(text) = prepared.text {
+            self.draft_at_mut(key)
+                .input
+                .insert_str(&crate::model::sanitize_terminal_text(
+                    &text.replace("\r\n", "\n").replace('\r', "\n"),
+                ));
+            self.status_message = None;
+            return;
+        }
+        for attachment in &prepared.attachments {
+            attachment.retain_owned();
+        }
         if prepared.attachments.is_empty()
             && let Some(text) = fallback
         {
@@ -164,7 +192,7 @@ impl App {
                     let index = self.attachment_draft.selected;
                     let attachments = &mut self.draft_data_mut(chat).attachments;
                     if index < attachments.len() {
-                        attachments.remove(index);
+                        attachments.remove(index).discard_owned();
                     }
                     self.attachment_draft.selected = index.min(attachments.len().saturating_sub(1));
                 }
@@ -195,12 +223,13 @@ impl App {
                     self.reveal_download(&file.path);
                 }
             }
+            Action::PasteClipboard => return Some(self.paste_clipboard()),
             Action::Attach => {
                 self.mode = Mode::Navigate;
                 self.begin_command();
                 self.commands.input.set_value("attach ");
             }
-            Action::Quit | Action::NextAccount | Action::AddAccount => return None,
+            Action::Help | Action::Quit | Action::NextAccount | Action::AddAccount => return None,
             Action::Redraw => {
                 self.handle_action(KeyAction::Redraw);
             }

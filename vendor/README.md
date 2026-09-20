@@ -120,3 +120,14 @@ Attachment path arguments in `src/staging.rs` call the pinned `yazi-shared`
 quoting and Unix quoting remain upstream responsibilities. The former local
 shell-like parser is removed. The file URL adapter uses the `url` crate; there
 is no shell execution, variable expansion or copied argument parser.
+
+Native clipboard handling in `src/clipboard.rs` directly depends on arboard
+3.6.1 (`image-data`, `wayland-data-control`). File-list priority and the WSL
+PowerShell fallback follow the approach in Codex `clipboard_paste.rs` at
+`78245b47af2a7aafcabe025828ceecca69db4df1`; no Codex source is copied. Termgram
+preserves all original file references, owns PNG assets with persistent drafts,
+and bounds blocking work and child output/time. The WSL adapter uses constant
+PowerShell source and JSON, not interpolation of clipboard values into commands.
+The Wayland dependency retains its default Rust backend; `native_lib` and `dlopen`
+are not enabled, so the existing Linux musl builds do not require new Wayland
+C development packages. Actual clipboard availability is desktop-dependent.

@@ -78,7 +78,7 @@ pub(super) async fn serve(
     ));
     let mut search = crate::search::Worker::new(std::path::PathBuf::from(cache_path));
     let mut pending = VecDeque::new();
-    let mut preparation = crate::staging::Worker::default();
+    let mut preparation = crate::staging::Worker::new(state_path.clone(), store.owner());
     let mut changes = Vec::new();
     let mut ready = false;
     let mut flush = tokio::time::interval(Duration::from_millis(100));
@@ -87,7 +87,7 @@ pub(super) async fn serve(
     loop {
         search.start_pending();
         tokio::select! {
-            event = preparation.next() => { events.send(event).await?; },
+            event = preparation.next() => { if let Some(event) = event { events.send(event).await?; } },
             result = search.next(), if search.running() => { if let Some(event) = result { events.send(event).await?; } },
             command = commands.recv() => {
                 let Some(command) = command else { break; };

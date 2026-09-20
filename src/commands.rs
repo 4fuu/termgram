@@ -17,6 +17,7 @@ pub enum Kind {
     Color,
     Status,
     Attach,
+    Paste,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +73,7 @@ impl Spec {
             Kind::Sidebar => Some(Action::ToggleSidebar),
             Kind::Color => Some(Action::ChatColor),
             Kind::Attach => Some(Action::Attach),
+            Kind::Paste => Some(Action::PasteClipboard),
         }
     }
 }
@@ -90,6 +92,14 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "paste",
+        None,
+        "",
+        Kind::Paste,
+        Chat,
+        "Paste clipboard files, an image or text into this chat's draft"
+    ),
     command!(
         "attach",
         None,

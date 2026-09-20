@@ -84,7 +84,11 @@ pub async fn load(path: std::path::PathBuf, account: i64) -> Result<Vec<Stored>>
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(async { Store::open(&path).await?.load(account).await })
+            .block_on(async {
+                let mut drafts = Store::open(&path).await?.load(account).await?;
+                crate::clipboard::restore(&path, account, &mut drafts)?;
+                Ok(drafts)
+            })
     })
     .await
     .context("draft reader stopped unexpectedly")?
@@ -308,6 +312,8 @@ mod tests {
                 digest: [7; 32],
                 as_photo: false,
                 photo_supported: false,
+                owned: false,
+                lease: None,
             });
         store.save(&initial, &Snapshot::new()).await.unwrap();
         let duplicate = stored(7, 0, "duplicate");

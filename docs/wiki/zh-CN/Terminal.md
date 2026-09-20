@@ -35,3 +35,7 @@ TERMGRAM_TMUX_PASSTHROUGH=1 tg
 
 正常退出、初始化失败和 panic hook 都会恢复终端模式。文本与图形清理由单一所有者协调。
 上游版本、许可证与局部修改记录在 [vendor 说明](../../../vendor/README.md)。
+
+## 原生剪贴板
+
+Ctrl-V / Ctrl-Alt-V 和 `:paste` 使用 arboard 在后台读取系统剪贴板，与终端普通文字粘贴和 OSC 能力分开。平台支持、限制和 WSL 行为见[附件](Attachments.md)。

@@ -318,6 +318,7 @@ impl Default for Keymap {
         for (key, run) in [
             ("<Esc>", "cancel"),
             ("q", "cancel"),
+            ("?", "help"),
             ("i", "compose"),
             ("j", "down"),
             ("k", "up"),
@@ -340,6 +341,23 @@ impl Default for Keymap {
                     desc: None,
                 })
                 .expect("valid attachment binding");
+        }
+        for context in [
+            Context::Compose,
+            Context::Conversation,
+            Context::Attachments,
+        ] {
+            for key in ["<C-v>", "<C-A-v>"] {
+                result
+                    .insert(BindingSpec {
+                        context,
+                        on: vec![key.to_owned()],
+                        run: "paste_clipboard".to_owned(),
+                        count: 1,
+                        desc: None,
+                    })
+                    .expect("valid clipboard binding");
+            }
         }
         for context in [
             Context::Compose,

@@ -26,7 +26,7 @@ to review the names, sizes and chosen send format. Click a row or use j/k to sel
 Enter **in the composer** sends the reviewed files. The first file carries the
 composer caption and reply target. There are at most eight files and 2 GiB per
 draft. Uploads and downloads share a queue of at most 32 tasks with three running
-at once. This revision sends individual messages; album grouping follows later.
+at once. Files in the same chat are uploaded in admission order. This revision sends individual messages; album grouping follows later.
 
 File references, chosen formats and content fingerprints survive normal restarts
 with the [local draft](UX.md). Removing an attachment never deletes its original.
@@ -45,6 +45,50 @@ attachments = { auto_attach_paths = true },
 This adds files to the draft; it still requires explicit send. Unrecognized input
 remains text. Bindings use the `attachments` context and the actions `attach`,
 `attachments`, `remove_attachment`, `attachment_format`, `preview` and `reveal`.
+
+## Paste from the clipboard
+
+Use `:paste`, Ctrl-V or Ctrl-Alt-V in the conversation/composer. In attachment
+review these shortcuts also add files, and `?` opens the effective key list.
+The native clipboard reads a file list first, preserving every original file
+within the draft limit. If there is no file list, an image becomes a PNG draft
+asset; ordinary text is inserted at the saved cursor. Nothing is sent until you
+send from the composer. Lua action: `paste_clipboard`.
+
+```lua
+attachments = {
+  auto_attach_paths = false,
+  clipboard_as_photo = true,
+},
+```
+
+Set `clipboard_as_photo = false` to start clipboard images in original-file
+mode; `p` still changes individual images in review. Bitmap data is limited to
+128 MiB after the OS read, the PNG asset to 16 MiB and text to 1 MiB. A ten-second
+preparation timeout keeps the interface responsive. If the OS call is still
+running, another read is rejected until it finishes; timeout does not spawn a
+second blocked reader. Late results are discarded and their unused assets removed.
+
+Unsent screenshots live beside the user-state database in
+`<state filename>.attachments/<Telegram account ID>/`, outside download-cache
+retention. Normal restart keeps referenced drafts. Removal and successful send
+release owned files after the last active reference; failures keep the retry's
+file. Startup removes orphaned screenshot assets for that account, preserving
+persisted drafts and in-process drafts still waiting for a background save.
+
+| Environment | Clipboard backend |
+| --- | --- |
+| macOS / Windows | arboard native file lists, images and text |
+| Linux X11 / XWayland | arboard X11 backend |
+| Linux Wayland | arboard data-control backend when the compositor supports it; X11 fallback |
+| WSL | Native first, then Windows PowerShell clipboard data and `wslpath`; child processes have output limits and a four-second timeout |
+| SSH / an unavailable desktop clipboard | Use files accessible to the remote host with `:attach`; terminal MIME paste is separate |
+
+Cmd-V and Ctrl-Shift-V are usually handled by the terminal. They may deliver
+text paths, or no image at all. Use `:paste` when the terminal captures the
+application shortcuts. Reading the native clipboard on an SSH host does not
+read the local desktop's clipboard. Cross-platform clipboard access depends on
+the desktop session and its permissions; no additional terminal input reader is used.
 
 ## Received files
 

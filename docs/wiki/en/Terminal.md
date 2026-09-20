@@ -42,3 +42,7 @@ exits. This option is read before the Telegram credentials `.env` is loaded.
 The app restores terminal modes on normal exit, initialization failure and the
 panic hook. One owner coordinates text and graphics cleanup. Upstream revisions,
 licenses, and small adaptations are recorded in [vendor provenance](../../../vendor/README.md).
+
+## Native clipboard
+
+Ctrl-V / Ctrl-Alt-V and `:paste` read the system clipboard through arboard, off the terminal thread. This is separate from the terminal’s ordinary text paste and its OSC capabilities. Backend support, limits and WSL behavior are described in [Attachments](Attachments.md).

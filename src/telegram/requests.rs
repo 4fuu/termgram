@@ -529,7 +529,12 @@ async fn execute(
             Ok(Response::Message(Box::new(message)))
         }
         TelegramCommand::ResolveTelegramLink { url } => {
-            let (chat, peer, message) = resolve_telegram_link(client, private_link, url).await?;
+            let (chat, peer, message) = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                resolve_telegram_link(client, private_link, url),
+            )
+            .await
+            .context("Telegram lookup timed out")??;
             Ok(Response::Link(chat, peer, message.map(Box::new)))
         }
         TelegramCommand::ActivateButton {
@@ -1121,7 +1126,7 @@ pub(super) async fn complete(
                 }
             }
         }
-        (TelegramCommand::ResolveTelegramLink { .. }, Response::Link(chat, peer, raw)) => {
+        (TelegramCommand::ResolveTelegramLink { url }, Response::Link(chat, peer, raw)) => {
             cache.peers.insert(chat.id, peer);
             cache.linked_peers.insert(chat.id);
             cache_sender_name(cache, peer.id, chat.title.clone());
@@ -1132,7 +1137,7 @@ pub(super) async fn complete(
                 .as_ref()
                 .map(|raw| map_message(raw, cache))
                 .transpose()?;
-            NetworkEvent::LinkResolved { chat, message }
+            NetworkEvent::LinkResolved { url, chat, message }
         }
         (
             TelegramCommand::ActivateButton {

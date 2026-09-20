@@ -635,6 +635,11 @@ impl Store {
                 NetworkEvent::Ready { user_name } => {
                     set_metadata(&transaction, "user_name", user_name).await?;
                 }
+                NetworkEvent::LinkResolved { chat, .. } => {
+                    if load_chat(&transaction, chat.id).await?.is_none() {
+                        write_chat(&transaction, chat, revision).await?;
+                    }
+                }
                 NetworkEvent::SyncCheckpoint(cursor) => {
                     set_metadata(&transaction, "cursor", &serde_json::to_string(cursor)?).await?;
                 }

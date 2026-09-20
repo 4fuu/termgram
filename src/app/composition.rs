@@ -74,6 +74,7 @@ impl App {
     }
 
     pub(super) fn start_composing(&mut self) -> Vec<TelegramCommand> {
+        self.pending_telegram_link = None;
         let mut commands = Vec::new();
         if self.active_chat_id.is_none() {
             let remembered = self

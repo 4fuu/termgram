@@ -1407,6 +1407,7 @@ pub enum NetworkEvent {
         error: String,
     },
     LinkResolved {
+        url: String,
         chat: Chat,
         message: Option<Message>,
     },

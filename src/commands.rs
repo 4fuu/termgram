@@ -8,6 +8,7 @@ pub enum Kind {
     Action(Action),
     Help,
     Chat,
+    Open,
     Folder,
     Account,
     Search,
@@ -68,7 +69,7 @@ impl Spec {
     pub fn action(&self) -> Option<Action> {
         match &self.kind {
             Kind::Action(action) => Some(action.clone()),
-            Kind::Chat | Kind::Status => None,
+            Kind::Chat | Kind::Open | Kind::Status => None,
             Kind::Help => Some(Action::CommandLine),
             Kind::Folder => Some(Action::FolderNext),
             Kind::Account => Some(Action::Accounts),
@@ -248,6 +249,14 @@ pub static COMMANDS: &[Spec] = &[
         Kind::Chat,
         None,
         "Open a cached chat in this account"
+    ),
+    command!(
+        "open",
+        None,
+        "<@username or Telegram link>",
+        Kind::Open,
+        None,
+        "Look up and open a Telegram user or group"
     ),
     command!(
         "folder",

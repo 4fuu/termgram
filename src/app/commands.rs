@@ -249,6 +249,7 @@ impl App {
                     | Kind::Forward
                     | Kind::Mute(_)
                     | Kind::Mentions
+                    | Kind::Open
             ) && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
@@ -598,6 +599,14 @@ impl App {
             return Vec::new();
         }
         // Resolve and validate arguments before leaving COMMAND or changing focus.
+        let open_target = if matches!(spec.kind, Kind::Open) {
+            match crate::chat_discovery::target(argument) {
+                Ok(target) => Some(target),
+                Err(error) => return self.command_error(error),
+            }
+        } else {
+            None
+        };
         let mute = match spec.kind {
             Kind::Mute(true) => match crate::notifications::Mute::parse(argument) {
                 Some(mute) => mute,
@@ -747,6 +756,7 @@ impl App {
                 commands
             }
             Kind::Chat => self.open_chat_by_id(chat.expect("validated chat")),
+            Kind::Open => self.activate_url(open_target.as_deref().expect("validated target")),
             Kind::Folder => {
                 self.folder_id = folder.expect("validated folder");
                 self.filter.clear();

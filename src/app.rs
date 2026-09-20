@@ -1845,14 +1845,18 @@ impl App {
                 ));
                 Vec::new()
             }
-            NetworkEvent::LinkResolved { chat, message } => {
+            NetworkEvent::LinkResolved { url, chat, message } => {
+                if self.pending_telegram_link.as_deref() != Some(url.as_str()) {
+                    return Vec::new();
+                }
                 self.pending_telegram_link = None;
                 self.open_resolved_link(chat, message)
             }
             NetworkEvent::LinkFailed { url, error } => {
-                if self.pending_telegram_link.as_deref() == Some(url.as_str()) {
-                    self.pending_telegram_link = None;
+                if self.pending_telegram_link.as_deref() != Some(url.as_str()) {
+                    return Vec::new();
                 }
+                self.pending_telegram_link = None;
                 self.status_message = Some(format!(
                     "Could not open Telegram link: {}",
                     sanitize_terminal_line(&error)
@@ -3563,15 +3567,16 @@ impl App {
         mut chat: Chat,
         message: Option<Message>,
     ) -> Vec<TelegramCommand> {
+        self.pending_telegram_link = None;
         let chat_id = chat.id;
         let selected_message = message.as_ref().map(|message| message.id);
         let mut known_chat = self.chats.iter().position(|chat| chat.id == chat_id);
         chat.title = sanitize_terminal_line(&chat.title);
         chat.last_message = sanitize_terminal_text(&chat.last_message);
         if let Some(index) = known_chat {
-            chat.membership.clone_from(&self.chats[index].membership);
-            chat.read_inbox_max_id = self.chats[index].read_inbox_max_id;
-            self.chats[index] = chat;
+            // A username lookup has no dialog counters or ordering. Preserve
+            // those server-owned fields instead of replacing them with zeros.
+            self.chats[index].title = chat.title;
         } else {
             self.chats.push(chat);
             known_chat = Some(self.chats.len() - 1);
@@ -3624,6 +3629,7 @@ impl App {
         let Some(chat_id) = self.selected_chat_entry().map(|chat| chat.id) else {
             return Vec::new();
         };
+        self.pending_telegram_link = None;
         self.active_chat_id = Some(chat_id);
         self.remember_chat(chat_id);
         self.selected_message = None;
@@ -6992,6 +6998,89 @@ mod tests {
     }
 
     #[test]
+    fn open_command_resolves_usernames_and_ignores_superseded_results() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.connection = crate::event::ConnectionStatus::Online;
+        app.draft_data_mut(1).input.set_value("keep this draft");
+        app.run_binding("command", 1);
+        app.commands.input.set_value("open not a username");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.mode, Mode::Command);
+        app.commands.input.set_value("open @alice_name");
+        assert_eq!(
+            app.run_binding("open", 1),
+            [TelegramCommand::ResolveTelegramLink {
+                url: "https://t.me/alice_name".to_owned()
+            }]
+        );
+        app.run_binding("command", 1);
+        app.commands.input.set_value("open @bob_name");
+        app.run_binding("open", 1);
+        app.handle_network(NetworkEvent::LinkResolved {
+            url: "https://t.me/alice_name".to_owned(),
+            chat: chat(90, "Alice"),
+            message: None,
+        });
+        assert_eq!(app.active_chat_id, Some(1));
+        app.handle_network(NetworkEvent::LinkFailed {
+            url: "https://t.me/alice_name".to_owned(),
+            error: "old failure".to_owned(),
+        });
+        assert!(
+            !app.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("old failure")
+        );
+        let commands = app.handle_network(NetworkEvent::LinkResolved {
+            url: "https://t.me/bob_name".to_owned(),
+            chat: chat(91, "Bob"),
+            message: None,
+        });
+        assert!(matches!(
+            commands.as_slice(),
+            [TelegramCommand::LoadHistory { chat_id: 91, .. }]
+        ));
+        assert_eq!(app.active_chat_id, Some(91));
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "keep this draft");
+        app.activate_url("https://t.me/alice_name");
+        app.start_composing();
+        app.handle_network(NetworkEvent::LinkResolved {
+            url: "https://t.me/alice_name".to_owned(),
+            chat: chat(90, "Alice"),
+            message: None,
+        });
+        assert_eq!(app.active_chat_id, Some(91));
+        assert_eq!(app.mode, Mode::Compose);
+    }
+
+    #[test]
+    fn username_lookup_keeps_existing_dialog_counters_and_folder_membership() {
+        let mut app = ready_app();
+        let known = app.chats.iter_mut().find(|chat| chat.id == 2).unwrap();
+        known.membership.archived = true;
+        known.last_message_id = Some(500);
+        known.last_message = "Latest message".to_owned();
+        let before = known.clone();
+        app.activate_url("https://t.me/beta");
+        let mut lookup = chat(2, "New title");
+        lookup.unread = 0;
+        app.handle_network(NetworkEvent::LinkResolved {
+            url: "https://t.me/beta".to_owned(),
+            chat: lookup,
+            message: None,
+        });
+        let after = app.chats.iter().find(|chat| chat.id == 2).unwrap();
+        assert_eq!(after.unread, before.unread);
+        assert_eq!(after.last_message_id, before.last_message_id);
+        assert_eq!(after.last_message, before.last_message);
+        assert_eq!(after.membership, before.membership);
+        assert_eq!(after.title, "New title");
+        assert_eq!(app.folder_id, 1);
+    }
+
+    #[test]
     fn linked_target_survives_history_and_dialog_refresh_with_anchor() {
         let mut app = ready_app();
         open_first(&mut app);
@@ -7007,7 +7096,9 @@ mod tests {
             last_message: "linked target".to_owned(),
             last_activity: None,
         };
+        app.pending_telegram_link = Some("https://t.me/example/5".to_owned());
         let commands = app.handle_network(NetworkEvent::LinkResolved {
+            url: "https://t.me/example/5".to_owned(),
             chat: linked_chat,
             message: Some(linked),
         });
@@ -7053,7 +7144,9 @@ mod tests {
                 .collect(),
         );
 
+        app.pending_telegram_link = Some("https://t.me/example/5".to_owned());
         app.handle_network(NetworkEvent::LinkResolved {
+            url: "https://t.me/example/5".to_owned(),
             chat: chat(2, "Beta"),
             message: Some(message(5, 2, "old exact target", false)),
         });

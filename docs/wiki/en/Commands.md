@@ -46,6 +46,7 @@ to disk. Multiline paste cannot execute a series of commands.
 | `forward <chat or saved>` | Choose a destination using Tab, then review the selected message before forwarding |
 | `save` | Review a native forward of the selected message to this account’s Saved Messages |
 | `saved` | Open Saved Messages, including when absent from the recent chat list |
+| `open @username`, `open <Telegram link>` | Look up and open a user or group outside the cached chat list |
 | `reply` | Reply to an explicitly selected message |
 | `poll` | Review and vote in the selected [poll or quiz](Polls.md) |
 | `spoiler` | Reveal/hide the selected message’s spoilers |
@@ -84,3 +85,11 @@ context has `complete_next`, `complete_previous`, `history_previous` and
 share the same application dispatch and descriptions.
 
 `:react` opens the selected message’s [emoji reaction picker](Reactions.md).
+
+Use `:open @alice_name` to start a conversation by username, then `i` to compose.
+`:open https://t.me/example/123` also opens a linked message. Resolution runs only
+after Enter, with a timeout; typing does not query Telegram. Existing drafts,
+unread counters and folder membership are preserved. Starting to compose or
+opening another chat cancels the pending navigation, and superseded lookup
+results cannot change your view. Use `:chat` for cached names, aliases or IDs.
+Broadcast channels remain unsupported in this revision.

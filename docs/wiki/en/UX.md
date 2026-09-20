@@ -236,3 +236,5 @@ F2 cycles existing slots and F3 adds a slot, up to eight. Only the active accoun
 has a running network worker. Sessions, messages, media, and color overrides are
 isolated. Switching resets searches and conversation views while retaining each
 account's local drafts.
+
+To open a new private chat, use `:open @username`, then `i` to compose. Chat/message links also work with `:open`; see [Commands](Commands.md).

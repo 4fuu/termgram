@@ -202,3 +202,5 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 
 桌面提醒使用 Lua 的 `notifications` 表，后端、预览、无声投递和合并方式见
 [通知设置](Notifications.md)。它与底栏名为 `notifications` 的组件分别配置。
+
+投票面板快捷键使用 `poll` 上下文，见[投票与测验](Polls.md)。

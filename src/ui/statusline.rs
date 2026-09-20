@@ -106,6 +106,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
                 Mode::Compose => " INSERT ",
                 Mode::Edit => " EDIT ",
                 Mode::ForwardPrompt => " FORWARD ",
+                Mode::Poll => " POLL ",
                 Mode::DeletePrompt => " DELETE ",
                 Mode::Command => " COMMAND ",
                 Mode::Filter | Mode::Search => " SEARCH ",
@@ -211,6 +212,7 @@ fn selected_context(app: &AppState) -> Option<String> {
             hints.push(format!("{} original", hint("open")));
         }
         match app.message_actions(message).get(app.selected_action) {
+            Some(MessageAction::Poll) => hints.push(format!("{} poll", hint("open"))),
             Some(MessageAction::Spoilers) => hints.push(format!(
                 "{} {} spoiler",
                 hint("open"),
@@ -262,7 +264,22 @@ fn selected_context(app: &AppState) -> Option<String> {
     None
 }
 
+#[allow(clippy::too_many_lines)]
 fn context(app: &AppState, narrow: bool) -> String {
+    if app.mode == Mode::Poll {
+        let hint = |action| app.keymap.hint(Context::Poll, action);
+        if narrow {
+            return format!("{} vote · {} close", hint("send"), hint("cancel"));
+        }
+        return format!(
+            "{} choose · {} vote · {} retract · {} refresh · {} close",
+            hint("toggle_poll_answer"),
+            hint("send"),
+            hint("retract_vote"),
+            hint("refresh"),
+            hint("cancel")
+        );
+    }
     if app.mode == Mode::ForwardPrompt {
         return format!(
             "{} forward · {} cancel",
@@ -372,6 +389,9 @@ fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {
             })
             .to_string(),
     );
+    if let Some(poll) = &message.poll {
+        parts.push(super::polls::status(poll));
+    }
     let mut color = MUTED;
     if message.outgoing {
         let (state, tone) = match message.delivery {

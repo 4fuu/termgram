@@ -28,6 +28,16 @@ pub(super) struct State {
     pending: Option<(ChatId, u64)>,
 }
 
+impl State {
+    pub(super) fn visit_messages(&mut self, visit: &mut impl FnMut(&mut Message)) {
+        for entry in self.entries.values_mut() {
+            if let Preview::Ready(message) = &mut entry.preview {
+                visit(message);
+            }
+        }
+    }
+}
+
 impl App {
     #[must_use]
     pub fn reply_message(&self, reply: &ReplyInfo) -> Option<&Message> {

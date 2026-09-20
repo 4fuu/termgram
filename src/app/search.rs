@@ -45,7 +45,7 @@ impl Results {
             Self::Cloud(page) => &page.messages,
         }
     }
-    fn messages_mut(&mut self) -> &mut Vec<Message> {
+    pub(super) fn messages_mut(&mut self) -> &mut Vec<Message> {
         match self {
             Self::Local(page) => &mut page.messages,
             Self::Cloud(page) => &mut page.messages,

@@ -47,6 +47,7 @@ to disk. Multiline paste cannot execute a series of commands.
 | `save` | Review a native forward of the selected message to this account’s Saved Messages |
 | `saved` | Open Saved Messages, including when absent from the recent chat list |
 | `reply` | Reply to an explicitly selected message |
+| `poll` | Review and vote in the selected [poll or quiz](Polls.md) |
 | `spoiler` | Reveal/hide the selected message’s spoilers |
 | `quote` | Expand/collapse its expandable quotes |
 | `preview` | Expand a selected image or sticker |

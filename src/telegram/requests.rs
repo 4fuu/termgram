@@ -91,6 +91,7 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Poll(crate::polls::Poll),
     Search(super::search::Page),
     Muted(i64),
     AlertSettings(crate::notifications::Resolved),
@@ -126,7 +127,10 @@ pub(super) fn spawn(
     let chat_id = match &command {
         TelegramCommand::ResolveAlertSettings { key, .. } => Some(key.chat),
         TelegramCommand::SearchCloud(request) => Some(request.chat_id),
-        TelegramCommand::SearchMentions { chat_id, .. }
+        TelegramCommand::LoadPoll { chat_id, .. }
+        | TelegramCommand::VotePoll { chat_id, .. }
+        | TelegramCommand::RefreshPoll { chat_id, .. }
+        | TelegramCommand::SearchMentions { chat_id, .. }
         | TelegramCommand::ReadMentions { chat_id, .. }
         | TelegramCommand::LoadCloudContext { chat_id, .. }
         | TelegramCommand::ReviewForward { chat_id, .. }
@@ -298,6 +302,40 @@ async fn execute(
         } => {
             super::deletion::delete(client, peer()?, *message_id, self_id, *revision, *scope)
                 .await?;
+            Ok(Response::Applied)
+        }
+        TelegramCommand::LoadPoll { message_id, .. } => Ok(Response::Poll(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                super::polls::load(client, peer()?, *message_id),
+            )
+            .await
+            .context("Poll lookup timed out")??,
+        )),
+        TelegramCommand::RefreshPoll {
+            message_id, hash, ..
+        } => {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                super::polls::refresh(client, peer()?, *message_id, *hash),
+            )
+            .await
+            .context("Poll refresh timed out")??;
+            Ok(Response::Applied)
+        }
+        TelegramCommand::VotePoll {
+            message_id,
+            poll_id,
+            revision,
+            options,
+            ..
+        } => {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                super::polls::vote(client, peer()?, *message_id, *poll_id, *revision, options),
+            )
+            .await
+            .context("Vote status is uncertain; refresh the poll before retrying")??;
             Ok(Response::Applied)
         }
         TelegramCommand::LoadEdit { message_id, .. } => Ok(Response::EditSource(
@@ -720,6 +758,49 @@ pub(super) async fn complete(
                 error: None,
             }
         }
+        (
+            TelegramCommand::LoadPoll {
+                chat_id,
+                message_id,
+                request_id,
+            },
+            Response::Poll(poll),
+        ) => NetworkEvent::PollLoaded {
+            chat_id,
+            message_id,
+            request_id,
+            result: Ok(poll),
+        },
+        (
+            TelegramCommand::RefreshPoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            },
+            Response::Applied,
+        ) => NetworkEvent::PollFinished {
+            chat_id,
+            message_id,
+            request_id,
+            voting: false,
+            error: None,
+        },
+        (
+            TelegramCommand::VotePoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            },
+            Response::Applied,
+        ) => NetworkEvent::PollFinished {
+            chat_id,
+            message_id,
+            request_id,
+            voting: true,
+            error: None,
+        },
         (
             TelegramCommand::LoadEdit {
                 chat_id,

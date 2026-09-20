@@ -138,7 +138,7 @@ pub(super) async fn serve(
                     store.apply(&changes).await?;
                     changes.clear();
                     store.reconcile_cloud_search(&mut event).await?;
-                    store.reconcile_contents(&mut event);
+                    store.reconcile_snapshots(&mut event).await?;
                 }
                 let checkpoint = matches!(&event, NetworkEvent::SyncCheckpoint(_));
                 changes.push(event.clone());

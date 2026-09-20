@@ -11,8 +11,10 @@ mod editing;
 mod entities;
 mod forwarding;
 mod message_pins;
+mod message_views;
 mod notifications;
 mod pins;
+pub(crate) mod polls;
 mod reads;
 mod replies;
 pub(crate) mod search;
@@ -69,6 +71,7 @@ pub enum MessageAction {
     Reply,
     Spoilers,
     ExpandQuote,
+    Poll,
     Link(usize),
     Button(usize),
 }
@@ -172,6 +175,7 @@ pub enum Mode {
     Edit,
     DeletePrompt,
     ForwardPrompt,
+    Poll,
     Command,
     Status,
     Attachments,
@@ -232,6 +236,7 @@ pub struct App {
     pub folder_id: i32,
     pub pins: pins::State,
     pub message_pins: message_pins::State,
+    pub polls: polls::State,
     replies: replies::State,
     /// Position in the filtered chat list, never a persistent model identity.
     pub selected_chat: usize,
@@ -355,6 +360,7 @@ impl Default for App {
             folder_id: 0,
             pins: pins::State::default(),
             message_pins: message_pins::State::default(),
+            polls: polls::State::default(),
             replies: replies::State::default(),
             selected_chat: 0,
             active_chat_id: None,
@@ -587,6 +593,7 @@ impl App {
                 Mode::Compose => Context::Compose,
                 Mode::Edit => Context::Edit,
                 Mode::ForwardPrompt => Context::Forward,
+                Mode::Poll => Context::Poll,
                 Mode::Command => Context::Command,
                 Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
@@ -607,7 +614,8 @@ impl App {
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
                 if (matches!(run, Action::Reveal | Action::ToggleSidebar)
-                    || (self.mode == Mode::ForwardPrompt && run == Action::Send))
+                    || (matches!(self.mode, Mode::ForwardPrompt | Mode::Poll)
+                        && run == Action::Send))
                     && key.kind == yazi_term::event::KeyEventKind::Repeat
                 {
                     return Vec::new();
@@ -650,6 +658,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.poll_binding(run, count) {
+            return commands;
+        }
         if let Some(commands) = self.forwarding_binding(run) {
             return commands;
         }
@@ -985,6 +996,32 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
+        if self.mode == Mode::Poll {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) =
+                        pointer_row_hit(&self.polls.hit_rows, mouse.column, mouse.row)
+                    {
+                        if let Some(review) = &mut self.polls.review {
+                            review.selected = index;
+                        }
+                        self.toggle_poll_answer();
+                    }
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    if let Some(review) = &mut self.polls.review {
+                        review.follow = false;
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            review.top = review.top.saturating_sub(3);
+                        } else {
+                            review.top = review.top.saturating_add(3);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.mode == Mode::Attachments {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1180,6 +1217,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.observe_polls(&event) {
+            return commands;
+        }
         self.observe_alerts(&event);
         self.observe_search(&event);
         self.observe_deletion(&event);
@@ -1446,7 +1486,11 @@ impl App {
                 }
                 Vec::new()
             }
-            NetworkEvent::CloudSearchLoading { .. }
+            NetworkEvent::PollChanged(_)
+            | NetworkEvent::PollLoading { .. }
+            | NetworkEvent::PollLoaded { .. }
+            | NetworkEvent::PollFinished { .. }
+            | NetworkEvent::CloudSearchLoading { .. }
             | NetworkEvent::CloudSearchCancelled { .. }
             | NetworkEvent::HistoryLoading { .. }
             | NetworkEvent::ReplyPreviewsLoading { .. }
@@ -2009,6 +2053,9 @@ impl App {
         {
             actions.push(MessageAction::Attachment);
         }
+        if message.poll.is_some() {
+            actions.push(MessageAction::Poll);
+        }
         if message.has_spoilers() {
             actions.push(MessageAction::Spoilers);
         }
@@ -2274,7 +2321,8 @@ impl App {
             | Mode::PinnedMessages
             | Mode::PinPrompt
             | Mode::DeletePrompt
-            | Mode::ForwardPrompt => Vec::new(),
+            | Mode::ForwardPrompt
+            | Mode::Poll => Vec::new(),
             Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
@@ -2809,6 +2857,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,
@@ -2863,6 +2912,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                poll: None,
                 entities: Vec::new(),
                 notification: None,
                 mention: None,
@@ -3047,6 +3097,9 @@ impl App {
 
         if action == MessageAction::Attachment {
             return self.activate_attachment(chat_id, message_id, &message);
+        }
+        if action == MessageAction::Poll {
+            return self.begin_poll();
         }
         if action == MessageAction::Reply {
             return self.navigate_to_selected_reply();
@@ -4758,6 +4811,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,
@@ -4806,6 +4860,212 @@ mod tests {
                 .map(|id| message(id, 1, &format!("message {id}"), false))
                 .collect(),
         });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn poll_review_requires_explicit_submission_and_keeps_errors_readable() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.connection = crate::event::ConnectionStatus::Online;
+        app.selected_message = Some(20);
+        let poll = crate::polls::example();
+        app.messages.get_mut(&1).unwrap().last_mut().unwrap().poll = Some(poll.clone());
+        let commands = app.run_binding("poll", 1);
+        let [TelegramCommand::LoadPoll { request_id, .. }] = commands.as_slice() else {
+            panic!("refresh before voting")
+        };
+        assert_eq!(app.mode, Mode::Poll);
+        assert!(app.run_binding("send", 1).is_empty());
+        app.handle_network(NetworkEvent::PollLoaded {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(poll.clone()),
+        });
+        for width in [40, 110] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(text.contains("Choose your drink"));
+            assert!(text.contains("anonymous"));
+            assert!(!text.contains('%'), "hide results before voting");
+        }
+        let (x, _, y, _) = app.polls.hit_rows[0];
+        assert!(
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: Modifiers::empty()
+            })
+            .is_empty()
+        );
+        assert!(app.run_binding("down", 1).is_empty());
+        assert!(app.run_binding("toggle_poll_answer", 1).is_empty());
+        assert_eq!(app.polls.review.as_ref().unwrap().choices.len(), 2);
+        let commands = app.run_binding("send", 1);
+        let [
+            TelegramCommand::VotePoll {
+                request_id,
+                options,
+                revision,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("explicit send")
+        };
+        assert_eq!(options, &[vec![0, 255], vec![1, 128]]);
+        assert_eq!(*revision, poll.definition.revision());
+        assert!(app.run_binding("send", 1).is_empty(), "one pending request");
+        let error = "Vote status is uncertain; refresh the poll before retrying";
+        app.handle_network(NetworkEvent::PollFinished {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            voting: true,
+            error: Some(error.to_owned()),
+        });
+        assert_eq!(app.polls.review.as_ref().unwrap().choices.len(), 2);
+        assert!(
+            app.run_binding("send", 1).is_empty(),
+            "refresh after uncertain RPC"
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(text.contains("Vote status is uncertain"));
+        let commands = app.run_binding("refresh", 1);
+        let [TelegramCommand::LoadPoll { request_id, .. }] = commands.as_slice() else {
+            panic!("refresh")
+        };
+        let mut voted = poll.clone();
+        voted.results.counts.push(crate::polls::Count {
+            option: vec![0, 255],
+            chosen: true,
+            voters: Some(2),
+            correct: false,
+        });
+        app.handle_network(NetworkEvent::PollLoaded {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(voted),
+        });
+        assert!(app.run_binding("retract_vote", 1).is_empty());
+        let commands = app.run_binding("send", 1);
+        let [
+            TelegramCommand::VotePoll {
+                request_id,
+                options,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("explicit retract")
+        };
+        assert!(options.is_empty());
+        app.run_binding("cancel", 1);
+        assert_eq!(app.mode, Mode::Navigate);
+        assert!(
+            app.run_binding("poll", 1).is_empty(),
+            "pending vote retained after closing"
+        );
+        assert!(
+            app.handle_network(NetworkEvent::PollFinished {
+                chat_id: 1,
+                message_id: 20,
+                request_id: *request_id,
+                voting: true,
+                error: None
+            })
+            .is_empty()
+        );
+        assert!(app.polls.review.is_none());
+        let commands = app.run_binding("poll", 1);
+        let [TelegramCommand::LoadPoll { request_id, .. }] = commands.as_slice() else {
+            panic!("open again")
+        };
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![20],
+        });
+        app.handle_network(NetworkEvent::PollLoaded {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(poll),
+        });
+        assert!(!app.polls.review.as_ref().unwrap().ready);
+        assert!(
+            app.polls
+                .review
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("deleted")
+        );
+    }
+
+    #[test]
+    fn poll_refresh_is_bounded_visible_and_focus_aware() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.connection = crate::event::ConnectionStatus::Online;
+        for message in app.messages.get_mut(&1).unwrap() {
+            message.poll = Some(crate::polls::example());
+        }
+        app.set_visible_polls((1..=20).map(|id| (1, id)).collect());
+        let commands = app.request_visible_polls();
+        assert_eq!(commands.len(), 2);
+        assert!(app.request_visible_polls().is_empty());
+        assert!(app.next_poll_deadline().is_none());
+        for command in commands {
+            let TelegramCommand::RefreshPoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } = command
+            else {
+                unreachable!()
+            };
+            app.handle_network(NetworkEvent::PollFinished {
+                chat_id,
+                message_id,
+                request_id,
+                voting: false,
+                error: None,
+            });
+        }
+        app.terminal_focused = false;
+        assert!(app.request_visible_polls().is_empty());
+        assert!(app.next_poll_deadline().is_none());
+        app.terminal_focused = true;
+        app.set_visible_polls(Vec::new());
+        assert!(app.request_visible_polls().is_empty());
+        assert!(app.next_poll_deadline().is_none());
     }
 
     #[test]
@@ -7044,6 +7304,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,
@@ -7069,6 +7330,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,
@@ -7083,6 +7345,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,

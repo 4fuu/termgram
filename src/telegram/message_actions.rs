@@ -47,6 +47,12 @@ pub(super) fn revision(message: &Message) -> [u8; 32] {
                 Some(tl::enums::Document::Document(document)) => document.id,
                 _ => 0,
             },
+            Some(tl::enums::MessageMedia::Poll(media)) => {
+                // Poll choices may change independently of the text. Counts
+                // intentionally do not invalidate a reviewed message action.
+                hash.update(media.poll.to_bytes());
+                0
+            }
             _ => 0,
         };
         hash.update(media_id.to_le_bytes());

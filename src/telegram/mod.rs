@@ -8,6 +8,7 @@ mod media_cache;
 mod message_actions;
 mod notifications;
 mod pins;
+mod polls;
 mod reads;
 mod requests;
 mod search;
@@ -537,6 +538,11 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::MessagePoll(update) => {
+                    events
+                        .send(NetworkEvent::PollChanged(polls::update(update)))
+                        .await?;
+                }
                 tl::enums::Update::PinnedMessages(update) => {
                     if let Some(chat_id) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
                         events
@@ -1460,7 +1466,10 @@ async fn handle_command(
                 requests::spawn(command, client, cache, requests);
             }
         }
-        command @ (TelegramCommand::ResolveAlertSettings { .. }
+        command @ (TelegramCommand::LoadPoll { .. }
+        | TelegramCommand::VotePoll { .. }
+        | TelegramCommand::RefreshPoll { .. }
+        | TelegramCommand::ResolveAlertSettings { .. }
         | TelegramCommand::ReviewForward { .. }
         | TelegramCommand::ForwardMessage { .. }
         | TelegramCommand::OpenSaved { .. }
@@ -1535,6 +1544,13 @@ async fn handle_command(
                 events
                     .send(NetworkEvent::ReplyPreviewsLoading {
                         chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadPoll { request_id, .. } = &command {
+                events
+                    .send(NetworkEvent::PollLoading {
                         request_id: *request_id,
                     })
                     .await?;
@@ -2409,6 +2425,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        poll: polls::map(message),
         entities,
         notification: Some(crate::notifications::Metadata {
             sender: message
@@ -2625,6 +2642,13 @@ fn peer_id(message: &TelegramMessage) -> Result<ChatId> {
 }
 
 fn message_preview(message: &TelegramMessage) -> String {
+    if let Some(poll) = polls::map(message) {
+        return format!(
+            "[{}] {}",
+            if poll.definition.quiz { "quiz" } else { "poll" },
+            poll.definition.question.preview()
+        );
+    }
     let media = message.media();
     let (text, entities) = entities::map(
         message.text(),
@@ -3089,6 +3113,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,
@@ -3153,6 +3178,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,

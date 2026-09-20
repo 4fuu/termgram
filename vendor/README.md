@@ -255,3 +255,12 @@ quote prefixes and code whitespace. No Codex code or runtime was copied. The
 existing Ratatui and unicode-segmentation dependencies supply styles and grapheme
 boundaries. Telegram's entity protocol supplies spoiler and collapsed-quote
 semantics: https://core.telegram.org/api/entities.
+
+Polls use Grammers 0.10.0 typed TL requests and its existing ordered update
+stream, with no SDK changes. Partial-result merging and visible-poll refresh
+follow `Telegram/SourceFiles/data/data_poll.cpp` and
+`Telegram/SourceFiles/api/api_polls.cpp` in Telegram Desktop at
+`4d4da471fbee771c10e173a83c003ba1728989f1`; no Desktop source is copied.
+The application preserves choices omitted by minimal updates and validates
+stable answer bytes against a freshly fetched poll. The existing Ratatui entity
+renderer, Yazi key resolver and single event loop own display and input.

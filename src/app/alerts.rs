@@ -538,6 +538,7 @@ mod tests {
             outgoing: false,
             delivery: Delivery::Sent,
             mention: None,
+            poll: None,
             entities: Vec::new(),
             notification: Some(Metadata {
                 sender: Some(90),

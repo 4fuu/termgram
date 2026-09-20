@@ -1,6 +1,7 @@
 //! Account-local, discardable message storage. Authentication stays in the
 //! Telegram session; user preferences do not belong in this database.
 mod contents;
+mod polls;
 mod search;
 
 use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -14,7 +15,7 @@ use crate::{
     model::{Chat, ChatId, Delivery, Message},
 };
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const MAX_MESSAGES: i64 = 100_000;
 const MAX_CHAT_MESSAGES: i64 = 5_000;
 
@@ -37,6 +38,8 @@ pub struct Store {
     pin_revisions: BTreeMap<(ChatId, u64), i64>,
     search_revision: Option<(u64, ChatId, i64)>,
     contents_read: contents::Receipts,
+    poll_updates: polls::Journal,
+    poll_revisions: BTreeMap<u64, i64>,
     downloads: BTreeMap<(ChatId, i32), (u64, Option<i64>)>,
     owner: std::sync::Arc<std::fs::File>,
 }
@@ -99,6 +102,9 @@ impl Store {
         if version < 5 {
             transaction.execute_batch("ALTER TABLE chats ADD COLUMN last_message_id INTEGER; CREATE INDEX chats_last_message ON chats(last_message_id); PRAGMA user_version=5;").await?;
         }
+        if version < 6 {
+            transaction.execute_batch("CREATE INDEX messages_poll ON messages(json_extract(data,'$.poll.definition.id')); PRAGMA user_version=6;").await?;
+        }
         transaction.commit().await?;
         let revision = metadata(&connection, "revision")
             .await?
@@ -114,6 +120,8 @@ impl Store {
             pin_revisions: BTreeMap::new(),
             search_revision: None,
             contents_read: contents::Receipts::default(),
+            poll_updates: polls::Journal::default(),
+            poll_revisions: BTreeMap::new(),
             downloads: BTreeMap::new(),
         })
     }
@@ -357,6 +365,28 @@ impl Store {
             self.revision += 1;
             let revision = self.revision;
             match event {
+                NetworkEvent::PollLoading { request_id } => {
+                    self.poll_revisions.insert(*request_id, revision);
+                }
+                NetworkEvent::PollLoaded {
+                    request_id, result, ..
+                } => {
+                    if let Some(started) = self.poll_revisions.remove(request_id)
+                        && let Ok(poll) = result
+                    {
+                        let mut poll = poll.clone();
+                        polls::merge_cached(&transaction, &mut poll).await?;
+                        self.poll_updates.reconcile(&mut poll, started);
+                        let update = polls::snapshot(&poll);
+                        polls::apply(&transaction, &update, revision).await?;
+                        self.poll_updates.record(revision, update);
+                    }
+                }
+                NetworkEvent::PollChanged(update) => {
+                    polls::apply(&transaction, update, revision).await?;
+                    self.poll_updates.record(revision, update.clone());
+                }
+
                 NetworkEvent::CloudSearchLoading {
                     chat_id,
                     request_id,
@@ -409,6 +439,7 @@ impl Store {
                                 revision,
                                 started,
                                 &self.contents_read,
+                                &self.poll_updates,
                             )
                             .await?;
                         }
@@ -433,6 +464,7 @@ impl Store {
                             revision,
                             started,
                             &self.contents_read,
+                            &self.poll_updates,
                         )
                         .await?;
                     }
@@ -459,6 +491,7 @@ impl Store {
                             revision,
                             started,
                             &self.contents_read,
+                            &self.poll_updates,
                         )
                         .await?;
                     }
@@ -509,6 +542,7 @@ impl Store {
                             revision,
                             started,
                             &self.contents_read,
+                            &self.poll_updates,
                         )
                         .await?;
                     }
@@ -622,6 +656,7 @@ impl Store {
                             revision,
                             started,
                             &self.contents_read,
+                            &self.poll_updates,
                         )
                         .await?;
                     }
@@ -704,6 +739,7 @@ impl Store {
                         revision,
                         started,
                         &self.contents_read,
+                        &self.poll_updates,
                     )
                     .await?;
                     if let Some((mut chat, _)) = load_chat(&transaction, message.chat_id).await? {
@@ -803,6 +839,7 @@ impl Store {
                                 revision,
                                 revision,
                                 &self.contents_read,
+                                &self.poll_updates,
                             )
                             .await?;
                         }
@@ -894,6 +931,7 @@ impl Store {
                         .await?;
                 }
                 NetworkEvent::CacheInvalidated { chat_id } => {
+                    self.poll_revisions.clear();
                     if self
                         .search_revision
                         .is_some_and(|(_, id, _)| chat_id.is_none_or(|chat| chat == id))
@@ -929,6 +967,7 @@ impl Store {
             .history_revisions
             .values()
             .chain(self.pin_revisions.values())
+            .chain(self.poll_revisions.values())
             .copied()
             .chain(self.search_revision.map(|(_, _, revision)| revision))
             .min()
@@ -937,6 +976,7 @@ impl Store {
         set_metadata(&transaction, "revision", &self.revision.to_string()).await?;
         transaction.commit().await?;
         self.contents_read.prune(oldest_in_flight);
+        self.poll_updates.prune(oldest_in_flight);
         Ok(())
     }
 }
@@ -958,8 +998,14 @@ async fn write_message(
     revision: i64,
     started: i64,
     receipts: &contents::Receipts,
+    polls: &polls::Journal,
 ) -> Result<()> {
-    let message = receipts.reconcile(message, started);
+    let mut message = receipts.reconcile(message, started);
+    if message.poll.is_some() {
+        let poll = message.to_mut().poll.as_mut().expect("poll present");
+        polls::merge_cached(connection, poll).await?;
+        polls.reconcile(poll, started);
+    }
     if message.id <= 0 {
         return Ok(());
     }
@@ -1041,6 +1087,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            poll: None,
             entities: Vec::new(),
             notification: None,
             mention: None,
@@ -1058,6 +1105,148 @@ mod tests {
             links: Vec::new(),
             buttons: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn poll_snapshots_keep_live_results_and_choices_across_copies_and_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.db");
+        let mut store = Store::open(&path).await.unwrap();
+        let mut original = message(10, "");
+        original.poll = Some(crate::polls::example());
+        let mut copy = original.clone();
+        copy.id = 11;
+        let mut unseen = original.clone();
+        unseen.id = 12;
+        unseen.poll.as_mut().unwrap().definition.id = 124;
+        let result = crate::polls::ResultsPatch {
+            min: false,
+            counts: Some(vec![crate::polls::Count {
+                option: vec![0, 255],
+                voters: Some(7),
+                chosen: true,
+                correct: false,
+            }]),
+            total: Some(7),
+            solution: None,
+        };
+        store
+            .apply(&[
+                NetworkEvent::CacheMessage(original.clone()),
+                NetworkEvent::CacheMessage(copy.clone()),
+                NetworkEvent::HistoryLoading {
+                    chat_id: 42,
+                    request_id: 1,
+                },
+                NetworkEvent::PollLoading { request_id: 2 },
+                NetworkEvent::PollChanged(crate::polls::Update {
+                    id: 123,
+                    stale: false,
+                    definition: None,
+                    results: result.clone(),
+                }),
+                NetworkEvent::PollChanged(crate::polls::Update {
+                    id: 124,
+                    stale: false,
+                    definition: None,
+                    results: result,
+                }),
+                NetworkEvent::MessagesDeleted {
+                    channel_id: None,
+                    message_ids: vec![11],
+                },
+            ])
+            .await
+            .unwrap();
+        let mut history = NetworkEvent::History {
+            chat_id: 42,
+            request_id: 1,
+            messages: vec![original.clone(), copy, unseen],
+        };
+        store.reconcile_snapshots(&mut history).await.unwrap();
+        let NetworkEvent::History { messages, .. } = &history else {
+            unreachable!()
+        };
+        for message in messages {
+            let poll = message.poll.as_ref().unwrap();
+            assert!(poll.voted());
+            assert_eq!(poll.results.total, Some(7));
+        }
+        store.apply(&[history]).await.unwrap();
+        let mut loaded = NetworkEvent::PollLoaded {
+            chat_id: 42,
+            message_id: 10,
+            request_id: 2,
+            result: Ok(original.poll.clone().unwrap()),
+        };
+        store.reconcile_snapshots(&mut loaded).await.unwrap();
+        let NetworkEvent::PollLoaded {
+            result: Ok(poll), ..
+        } = &loaded
+        else {
+            unreachable!()
+        };
+        assert!(poll.voted());
+        store.apply(&[loaded]).await.unwrap();
+        // A later minimal history has no new patches to replay. It still must
+        // inherit this account's known choice from the durable poll copy.
+        original.id = 13;
+        let poll = original.poll.as_mut().unwrap();
+        poll.results = crate::polls::Results {
+            total: Some(9),
+            ..Default::default()
+        };
+        store
+            .apply(&[NetworkEvent::HistoryLoading {
+                chat_id: 42,
+                request_id: 3,
+            }])
+            .await
+            .unwrap();
+        let mut page = NetworkEvent::History {
+            chat_id: 42,
+            request_id: 3,
+            messages: vec![original],
+        };
+        store.reconcile_snapshots(&mut page).await.unwrap();
+        let NetworkEvent::History { messages, .. } = &page else {
+            unreachable!()
+        };
+        assert!(messages[0].poll.as_ref().unwrap().voted());
+        store
+            .apply(&[
+                page,
+                NetworkEvent::SyncCheckpoint(SyncCursor {
+                    pts: 88,
+                    ..Default::default()
+                }),
+            ])
+            .await
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).await.unwrap();
+        let messages = store.history(42, None, 10).await.unwrap();
+        assert_eq!(messages.len(), 3);
+        assert!(!messages.iter().any(|message| message.id == 11));
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.poll.as_ref().unwrap().voted())
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .find(|message| message.id == 13)
+                .unwrap()
+                .poll
+                .as_ref()
+                .unwrap()
+                .results
+                .total,
+            Some(9)
+        );
+        assert_eq!(store.cursor().await.unwrap().pts, 88);
     }
 
     #[tokio::test]
@@ -1734,7 +1923,7 @@ mod tests {
             request_id: 1,
             messages: vec![mention(10, 42), mention(11, 42), mention(12, 42)],
         };
-        store.reconcile_contents(&mut page);
+        store.reconcile_snapshots(&mut page).await.unwrap();
         let NetworkEvent::History { messages, .. } = &page else {
             unreachable!()
         };
@@ -1769,7 +1958,7 @@ mod tests {
             },
         };
         store.reconcile_cloud_search(&mut page).await.unwrap();
-        store.reconcile_contents(&mut page);
+        store.reconcile_snapshots(&mut page).await.unwrap();
         let NetworkEvent::CloudSearchResults { page: result, .. } = &page else {
             unreachable!()
         };

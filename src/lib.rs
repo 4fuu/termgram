@@ -18,6 +18,7 @@ pub mod media;
 pub mod model;
 pub mod notifications;
 pub mod pins;
+pub mod polls;
 pub mod search;
 pub mod sidebar;
 pub mod staging;

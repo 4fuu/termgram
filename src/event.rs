@@ -60,6 +60,25 @@ pub enum ConnectionStatus {
 /// Commands sent from the application to the Telegram worker.
 #[derive(Clone, Eq, PartialEq)]
 pub enum TelegramCommand {
+    LoadPoll {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
+    RefreshPoll {
+        chat_id: ChatId,
+        message_id: i32,
+        hash: i64,
+        request_id: u64,
+    },
+    VotePoll {
+        chat_id: ChatId,
+        message_id: i32,
+        poll_id: i64,
+        revision: u64,
+        options: Vec<Vec<u8>>,
+        request_id: u64,
+    },
     /// Start a short-lived QR-code login flow from the phone prompt.
     StartQrAuth,
     SubmitPhone(String),
@@ -281,6 +300,40 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::LoadPoll {
+                chat_id,
+                message_id,
+                request_id,
+            } => NetworkEvent::PollLoaded {
+                chat_id,
+                message_id,
+                request_id,
+                result: Err(error),
+            },
+            Self::RefreshPoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => NetworkEvent::PollFinished {
+                chat_id,
+                message_id,
+                request_id,
+                voting: false,
+                error: Some(error),
+            },
+            Self::VotePoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => NetworkEvent::PollFinished {
+                chat_id,
+                message_id,
+                request_id,
+                voting: true,
+                error: Some(error),
+            },
             Self::ResolveAlertSettings { key, request_id } => NetworkEvent::AlertSettingsReady {
                 key,
                 request_id,
@@ -540,6 +593,32 @@ impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LoadPoll {
+                chat_id,
+                message_id,
+                request_id,
+            }
+            | Self::RefreshPoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            }
+            | Self::VotePoll {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => formatter
+                .debug_struct(match self {
+                    Self::LoadPoll { .. } => "LoadPoll",
+                    Self::RefreshPoll { .. } => "RefreshPoll",
+                    _ => "VotePoll",
+                })
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish_non_exhaustive(),
             Self::SetChatUnread {
                 chat_id,
                 unread,
@@ -896,6 +975,23 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    PollChanged(crate::polls::Update),
+    PollLoading {
+        request_id: u64,
+    },
+    PollLoaded {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        result: Result<crate::polls::Poll, String>,
+    },
+    PollFinished {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        voting: bool,
+        error: Option<String>,
+    },
     ChatUnreadChanged {
         chat_id: ChatId,
         unread: bool,

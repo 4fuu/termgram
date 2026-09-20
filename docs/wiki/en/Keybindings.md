@@ -45,6 +45,9 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Conversation | O | Reveal attachment in the system file manager |
 | Conversation | / / c | Local regex search / chat color |
 | Conversation | p / P | Pin/unpin selected message / browse pins |
+| Conversation | v | Open the selected [poll or quiz](Polls.md) |
+| Poll | Space/Enter, then Ctrl-S | Choose answers, then submit |
+| Poll | u / Ctrl-R / Esc | Prepare vote retraction / refresh / close |
 | Pinned messages | Enter / Esc | Open selected message / close |
 | Pinned messages | Ctrl-N / Ctrl-P | Next / previous page |
 | Pinned messages | p / U | Confirm unpin / unpin all |

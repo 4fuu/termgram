@@ -205,6 +205,7 @@ mod tests {
         let mut events = vec![NetworkEvent::Dialogs(vec![chat(42), chat(43)])];
         for id in 1..=206 {
             events.push(NetworkEvent::NewMessage(Message {
+                poll: None,
                 entities: Vec::new(),
                 notification: None,
                 mention: None,

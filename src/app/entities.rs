@@ -13,6 +13,9 @@ fn revision(message: &Message) -> u64 {
     let mut hash = DefaultHasher::new();
     message.text.hash(&mut hash);
     message.entities.hash(&mut hash);
+    if let Some(poll) = &message.poll {
+        poll.definition.hash(&mut hash);
+    }
     hash.finish()
 }
 

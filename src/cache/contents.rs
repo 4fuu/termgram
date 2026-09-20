@@ -50,7 +50,8 @@ impl Store {
     pub(crate) fn has_message_snapshot(event: &NetworkEvent) -> bool {
         matches!(
             event,
-            NetworkEvent::History { .. }
+            NetworkEvent::PollLoaded { .. }
+                | NetworkEvent::History { .. }
                 | NetworkEvent::OlderHistory { .. }
                 | NetworkEvent::ReplyPreviews { complete: true, .. }
                 | NetworkEvent::PinnedMessages { .. }
@@ -62,7 +63,22 @@ impl Store {
     }
 
     /// Called before the snapshot is applied and its generation is retired.
-    pub(crate) fn reconcile_contents(&self, event: &mut NetworkEvent) {
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn reconcile_snapshots(&self, event: &mut NetworkEvent) -> anyhow::Result<()> {
+        if let NetworkEvent::PollLoaded {
+            request_id, result, ..
+        } = event
+        {
+            if let Some(started) = self.poll_revisions.get(request_id) {
+                if let Ok(poll) = result {
+                    super::polls::merge_cached(&self.connection, poll).await?;
+                    self.poll_updates.reconcile(poll, *started);
+                }
+            } else if result.is_ok() {
+                *result = Err("History changed during the poll lookup; reopen it".to_owned());
+            }
+            return Ok(());
+        }
         let (messages, started): (&mut [Message], Option<i64>) = match event {
             NetworkEvent::History {
                 chat_id,
@@ -136,14 +152,19 @@ impl Store {
                     .filter(|(id, chat, _)| *id == *request_id && *chat == *chat_id)
                     .map(|(_, _, revision)| revision),
             ),
-            _ => return,
+            _ => return Ok(()),
         };
         if let Some(started) = started {
             for message in messages {
+                if let Some(poll) = &mut message.poll {
+                    super::polls::merge_cached(&self.connection, poll).await?;
+                    self.poll_updates.reconcile(poll, started);
+                }
                 if let Cow::Owned(merged) = self.contents_read.reconcile(message, started) {
                     *message = merged;
                 }
             }
         }
+        Ok(())
     }
 }

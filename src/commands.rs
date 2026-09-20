@@ -104,6 +104,7 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!("poll", None, "", Kind::Action(Action::Poll), Message, ""),
     command!(
         "spoiler",
         None,

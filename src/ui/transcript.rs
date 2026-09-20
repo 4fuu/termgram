@@ -92,20 +92,18 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
             ]));
         }
     }
-    if !message.text.is_empty() || message.attachment.is_none() {
-        for mut row in super::entities::render(message, body_width, app) {
-            let action = row
-                .action
-                .and_then(|action| actions.iter().position(|candidate| *candidate == action));
-            if let Some(index) = action {
-                action_rows.push((lines.len(), index));
-            }
-            row.line.spans.insert(
-                0,
-                action_gutter(selected, selected && action == Some(app.selected_action)),
-            );
-            lines.push(row.line);
+    for mut row in body(message, body_width, app) {
+        let action = row
+            .action
+            .and_then(|action| actions.iter().position(|candidate| *candidate == action));
+        if let Some(index) = action {
+            action_rows.push((lines.len(), index));
         }
+        row.line.spans.insert(
+            0,
+            action_gutter(selected, selected && action == Some(app.selected_action)),
+        );
+        lines.push(row.line);
     }
     let body_height = lines.len();
     let body_action = actions
@@ -126,6 +124,28 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
         body_action,
         action_rows,
     }
+}
+
+fn body(message: &Message, width: usize, app: &AppState) -> Vec<super::entities::Row> {
+    let mut body =
+        if !message.text.is_empty() || (message.attachment.is_none() && message.poll.is_none()) {
+            super::entities::render(message, width, app)
+        } else {
+            Vec::new()
+        };
+    body.extend(
+        super::polls::transcript(message, width, app)
+            .into_iter()
+            .map(|row| super::entities::Row {
+                line: row.line,
+                action: Some(if row.spoiler {
+                    MessageAction::Spoilers
+                } else {
+                    MessageAction::Poll
+                }),
+            }),
+    );
+    body
 }
 
 fn action_gutter(selected: bool, current: bool) -> Span<'static> {

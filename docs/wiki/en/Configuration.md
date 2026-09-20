@@ -233,3 +233,5 @@ submit a newly opened forward preview.
 Desktop alert policy uses the Lua `notifications` table; see [Notifications](Notifications.md)
 for backends, previews, quiet delivery and grouping. This is separate from the
 `notifications` statusline item.
+
+Poll panel keys use the `poll` context; see [Polls](Polls.md).

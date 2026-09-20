@@ -1,5 +1,8 @@
 # 快捷键
 
+投票消息按 `v` 打开面板；Space/Enter 勾选，Ctrl-S 提交。`u` 准备撤回，
+Ctrl-R 刷新，Esc 关闭。详见[投票与测验](Polls.md)。
+
 [English](../en/Keybindings.md) · [指南首页](Home.md)
 
 下表是默认值，`?` 显示当前 Lua 配置实际生效的绑定。大写字母表示 Shift 加该字母。

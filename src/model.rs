@@ -112,6 +112,8 @@ pub struct Mention {
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
     #[serde(default)]
+    pub poll: Option<crate::polls::Poll>,
+    #[serde(default)]
     pub entities: Vec<crate::entities::Entity>,
     #[serde(skip)]
     pub notification: Option<crate::notifications::Metadata>,
@@ -208,7 +210,13 @@ impl Chat {
 impl Message {
     #[must_use]
     pub fn has_spoilers(&self) -> bool {
-        self.entities.iter().any(|entity| {
+        self.poll.as_ref().is_some_and(|poll| {
+            poll.texts().any(|text| {
+                text.entities.iter().any(|entity| {
+                    entity.kind == crate::entities::Kind::Spoiler && entity.valid_for(&text.text)
+                })
+            })
+        }) || self.entities.iter().any(|entity| {
             entity.kind == crate::entities::Kind::Spoiler && entity.valid_for(&self.text)
         })
     }
@@ -218,6 +226,13 @@ impl Message {
     #[must_use]
     pub fn preview_text(&self) -> String {
         if self.text.is_empty() {
+            if let Some(poll) = &self.poll {
+                return format!(
+                    "[{}] {}",
+                    if poll.definition.quiz { "quiz" } else { "poll" },
+                    poll.definition.question.preview()
+                );
+            }
             self.attachment
                 .as_ref()
                 .map_or("Message", Attachment::display_name)

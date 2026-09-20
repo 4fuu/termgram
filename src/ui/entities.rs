@@ -32,13 +32,27 @@ fn block_boundaries(length: usize, entities: &[&Entity]) -> Vec<usize> {
 }
 
 pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Vec<Row> {
-    let entities: Vec<_> = message
-        .entities
+    render_text(
+        &message.text,
+        &message.entities,
+        width,
+        app.spoilers_revealed(message),
+        app.quotes_expanded(message),
+    )
+}
+
+pub(super) fn render_text(
+    text: &str,
+    formatting: &[Entity],
+    width: usize,
+    revealed: bool,
+    expanded: bool,
+) -> Vec<Row> {
+    let entities: Vec<_> = formatting
         .iter()
-        .filter(|entity| entity.valid_for(&message.text))
+        .filter(|entity| entity.valid_for(text))
         .collect();
-    let boundaries = block_boundaries(message.text.len(), &entities);
-    let revealed = app.spoilers_revealed(message);
+    let boundaries = block_boundaries(text.len(), &entities);
     let mut result = Vec::new();
     for boundary in boundaries.windows(2) {
         let range = boundary[0]..boundary[1];
@@ -55,15 +69,15 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Vec<Row
             ""
         };
         let available = width.saturating_sub(indent.width()).max(1);
-        let source = &message.text[range.clone()];
+        let source = &text[range.clone()];
         // A newline adjoining a block is its row separator, not an extra
         // empty paragraph. Keep interior blank lines and a final hard break.
-        let source = if range.end < message.text.len() {
+        let source = if range.end < text.len() {
             source.strip_suffix('\n').unwrap_or(source)
         } else {
             source
         };
-        if source.is_empty() && range.end < message.text.len() {
+        if source.is_empty() && range.end < text.len() {
             continue;
         }
         if let Some(Entity {
@@ -85,7 +99,7 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Vec<Row
             });
         }
         let rows = wrapping::ranges(source, available, !code);
-        let folded = foldable && !app.quotes_expanded(message) && rows.len() > 3;
+        let folded = foldable && !expanded && rows.len() > 3;
         for row in rows.iter().take(if folded { 2 } else { rows.len() }) {
             let span_range = range.start + row.start..range.start + row.end;
             let spoiler = entities.iter().any(|entity| {
@@ -110,7 +124,7 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Vec<Row
                     Style::default().fg(if code { MUTED } else { ACCENT }),
                 ));
             }
-            spans.extend(styled(&message.text, span_range, &entities, base, revealed));
+            spans.extend(styled(text, span_range, &entities, base, revealed));
             result.push(Row {
                 line: Line::from(spans),
                 action,

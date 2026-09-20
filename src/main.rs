@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
         let mut outgoing = app.request_visible_media();
         outgoing.extend(app.request_visible_replies());
         outgoing.extend(app.request_visible_read());
+        outgoing.extend(app.request_visible_polls());
         outgoing.extend(app.request_alert_settings());
         notifications.flush(&mut app);
         let outgoing = clipboard.route(&mut app, outgoing);
@@ -210,7 +211,7 @@ async fn main() -> Result<()> {
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
-                activity = notifications.next_activity(app.next_alert_deadline()) => RuntimeEvent::Notification(activity),
+                activity = notifications.next_activity(app.next_alert_deadline().into_iter().chain(app.next_poll_deadline()).min()) => RuntimeEvent::Notification(activity),
                 event = network.recv() => RuntimeEvent::Network(Box::new(event)),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
@@ -222,7 +223,7 @@ async fn main() -> Result<()> {
                 result = preview.finished() => RuntimeEvent::Preview(result),
                 error = wait_for_draft_error(&mut draft_writer) => RuntimeEvent::DraftError(error),
                 activity = clipboard.next_activity() => RuntimeEvent::Clipboard(activity),
-                activity = notifications.next_activity(app.next_alert_deadline()) => RuntimeEvent::Notification(activity),
+                activity = notifications.next_activity(app.next_alert_deadline().into_iter().chain(app.next_poll_deadline()).min()) => RuntimeEvent::Notification(activity),
                 (channel, result) = wait_for_update_check(&mut update_check) => RuntimeEvent::UpdateCheck { channel, result },
                 result = &mut shutdown_signal => RuntimeEvent::ShutdownSignal(result),
                 () = animation_tick => RuntimeEvent::Tick,

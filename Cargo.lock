@@ -3750,6 +3750,7 @@ dependencies = [
  "directories",
  "dotenvy",
  "futures-util",
+ "getrandom 0.4.3",
  "grammers-client",
  "grammers-session",
  "image",

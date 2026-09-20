@@ -100,6 +100,23 @@ pub enum TelegramCommand {
         /// native Telegram reply.
         reply_to: Option<i32>,
     },
+    OpenSaved {
+        request_id: u64,
+    },
+    ReviewForward {
+        chat_id: ChatId,
+        message_id: i32,
+        destination: ChatId,
+        request_id: u64,
+    },
+    ForwardMessage {
+        chat_id: ChatId,
+        message_id: i32,
+        destination: ChatId,
+        revision: [u8; 32],
+        random_id: i64,
+        request_id: u64,
+    },
     CopyText(String),
     CopyMessage {
         chat_id: ChatId,
@@ -230,6 +247,19 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::OpenSaved { request_id } => NetworkEvent::SavedReady {
+                request_id,
+                result: Err(error),
+            },
+            Self::ReviewForward { request_id, .. } => NetworkEvent::ForwardReady {
+                request_id,
+                result: Err(error),
+            },
+            Self::ForwardMessage { request_id, .. } => NetworkEvent::ForwardFinished {
+                request_id,
+                error: Some(error),
+            },
+
             Self::CopyMessage { request_id, .. } => NetworkEvent::MessageCopyReady {
                 request_id,
                 result: Err(error),
@@ -489,6 +519,35 @@ impl fmt::Debug for TelegramCommand {
                 .debug_struct("EditMessage")
                 .field("chat_id", chat_id)
                 .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish_non_exhaustive(),
+            Self::OpenSaved { request_id } => formatter
+                .debug_struct("OpenSaved")
+                .field("request_id", request_id)
+                .finish(),
+            Self::ReviewForward {
+                chat_id,
+                message_id,
+                destination,
+                request_id,
+            } => formatter
+                .debug_struct("ReviewForward")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("destination", destination)
+                .field("request_id", request_id)
+                .finish(),
+            Self::ForwardMessage {
+                chat_id,
+                message_id,
+                destination,
+                request_id,
+                ..
+            } => formatter
+                .debug_struct("ForwardMessage")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("destination", destination)
                 .field("request_id", request_id)
                 .finish_non_exhaustive(),
             Self::CopyText(_) => formatter.write_str("CopyText(<redacted>)"),
@@ -903,6 +962,18 @@ pub enum NetworkEvent {
     NewMessage(Message),
     /// A replayed or edited message that must not change unread state.
     MessageUpdated(Message),
+    SavedReady {
+        request_id: u64,
+        result: Result<Chat, String>,
+    },
+    ForwardReady {
+        request_id: u64,
+        result: Result<crate::forwarding::Plan, String>,
+    },
+    ForwardFinished {
+        request_id: u64,
+        error: Option<String>,
+    },
     MessageCopyReady {
         request_id: u64,
         result: Result<String, String>,

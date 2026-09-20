@@ -191,3 +191,8 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 `conversation` 中的 `copy_text` 和 `copy_link` 操作明确选中的消息，默认键为 `y` 和 `Y`。
 `attachments.terminal_clipboard` 控制 OSC 5522 媒体粘贴，不影响用户主动触发的 OSC 52
 文字复制。本机文字复制复用已有原生剪贴板依赖。
+
+`forward_message`（`f`）打开目标聊天补全，`save_message`（`g S`）准备转发给自己，
+`saved_messages`（`g s`）打开 Saved Messages。转发预览使用 `forward` 上下文，
+动作是 `send`（Enter）和 `cancel`（Esc/Ctrl-C）；底栏显示 FORWARD 和实际绑定。
+长按按键产生的重复事件不会提交刚打开的转发预览。

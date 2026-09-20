@@ -7,6 +7,7 @@ mod composition;
 mod deletion;
 mod drafts;
 mod editing;
+mod forwarding;
 mod message_pins;
 mod pins;
 mod reads;
@@ -165,6 +166,7 @@ pub enum Mode {
     Compose,
     Edit,
     DeletePrompt,
+    ForwardPrompt,
     Command,
     Status,
     Attachments,
@@ -240,6 +242,7 @@ pub struct App {
     pub editing: editing::State,
     pub deletion: deletion::State,
     pub sharing: sharing::State,
+    pub forwarding: forwarding::State,
     pub narrow_conversation: bool,
     pub sidebar_hidden: bool,
     pub should_quit: bool,
@@ -355,6 +358,7 @@ impl Default for App {
             editing: editing::State::default(),
             deletion: deletion::State::default(),
             sharing: sharing::State::default(),
+            forwarding: forwarding::State::default(),
             narrow_conversation: false,
             sidebar_hidden: false,
             should_quit: false,
@@ -570,6 +574,7 @@ impl App {
             match self.mode {
                 Mode::Compose => Context::Compose,
                 Mode::Edit => Context::Edit,
+                Mode::ForwardPrompt => Context::Forward,
                 Mode::Command => Context::Command,
                 Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
@@ -589,7 +594,8 @@ impl App {
         };
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
-                if matches!(run, Action::Reveal | Action::ToggleSidebar)
+                if (matches!(run, Action::Reveal | Action::ToggleSidebar)
+                    || (self.mode == Mode::ForwardPrompt && run == Action::Send))
                     && key.kind == yazi_term::event::KeyEventKind::Repeat
                 {
                     return Vec::new();
@@ -632,6 +638,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.forwarding_binding(run) {
+            return commands;
+        }
         if let Some(commands) = self.deletion_binding(run, count) {
             return commands;
         }
@@ -990,6 +999,7 @@ impl App {
             Mode::Help
                 | Mode::Edit
                 | Mode::DeletePrompt
+                | Mode::ForwardPrompt
                 | Mode::Status
                 | Mode::Search
                 | Mode::Colors
@@ -1146,12 +1156,22 @@ impl App {
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
         self.observe_deletion(&event);
+        self.observe_forward(&event);
         self.update_reply_previews(&event);
         self.track_snapshot_changes(&event);
         if let NetworkEvent::MessageUpdated(message) = &event {
             self.update_pin_preview(message);
         }
         match event {
+            NetworkEvent::SavedReady { request_id, result } => self.saved_ready(request_id, result),
+            NetworkEvent::ForwardReady { request_id, result } => {
+                self.forward_ready(request_id, result);
+                Vec::new()
+            }
+            NetworkEvent::ForwardFinished { request_id, error } => {
+                self.forward_finished(request_id, error);
+                Vec::new()
+            }
             NetworkEvent::MessageCopyReady { request_id, result } => {
                 self.message_copy_ready(request_id, result)
             }
@@ -2167,9 +2187,11 @@ impl App {
             }
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
-            Mode::Attachments | Mode::PinnedMessages | Mode::PinPrompt | Mode::DeletePrompt => {
-                Vec::new()
-            }
+            Mode::Attachments
+            | Mode::PinnedMessages
+            | Mode::PinPrompt
+            | Mode::DeletePrompt
+            | Mode::ForwardPrompt => Vec::new(),
             Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
@@ -8067,6 +8089,203 @@ mod tests {
                 result: Ok("duplicate".to_owned()),
             })
             .is_empty()
+        );
+    }
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn forward_review_keeps_target_drafts_and_deduplication_id_on_retry() {
+        let mut app = ready_app();
+        app.account_user_id = Some(100);
+        open_first(&mut app);
+        app.selected_message = Some(20);
+        app.draft_data_mut(1).input.set_value("source draft");
+        app.draft_data_mut(2).input.set_value("destination draft");
+        app.run_binding("forward_message", 1);
+        assert_eq!(app.mode, Mode::Command);
+        app.update(AppEvent::Paste("Beta".to_owned()));
+        app.selected_message = Some(19);
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::ReviewForward {
+                chat_id: 1,
+                message_id: 20,
+                destination: 2,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("captured forward target")
+        };
+        assert!(app.run_binding("send", 1).is_empty(), "wait for review");
+        app.handle_network(NetworkEvent::ForwardReady {
+            request_id: *request_id,
+            result: Ok(crate::forwarding::Plan {
+                message: message(20, 1, "Forward me 界🙂", false),
+                destination: chat(2, "Beta 最新名字"),
+                revision: [4; 32],
+                random_id: 9876,
+            }),
+        });
+        for (width, height) in [(35, 12), (110, 22)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 1,
+                    row: 3,
+                    modifiers: Modifiers::empty()
+                })
+                .is_empty()
+            );
+            assert_eq!(app.mode, Mode::ForwardPrompt);
+            assert!(app.request_visible_read().is_empty());
+        }
+        let mut repeated = KeyEvent::new(yazi_term::event::KeyCode::Enter, Modifiers::empty());
+        repeated.kind = yazi_term::event::KeyEventKind::Repeat;
+        assert!(
+            app.handle_key(&repeated).is_empty(),
+            "held Enter cannot submit a new preview"
+        );
+        let commands = app.run_binding("send", 1);
+        let [
+            TelegramCommand::ForwardMessage {
+                chat_id: 1,
+                message_id: 20,
+                destination: 2,
+                random_id: 9876,
+                request_id,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("send reviewed forward")
+        };
+        assert!(
+            app.run_binding("send", 1).is_empty(),
+            "no duplicate submission"
+        );
+        app.handle_network(NetworkEvent::ForwardFinished {
+            request_id: *request_id,
+            error: Some("Network interrupted".to_owned()),
+        });
+        let commands = app.run_binding("send", 1);
+        let [
+            TelegramCommand::ForwardMessage {
+                random_id: 9876,
+                request_id,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("retry must reuse its ID")
+        };
+        app.run_binding("cancel", 1);
+        app.active_chat_id = Some(3);
+        app.handle_network(NetworkEvent::ForwardFinished {
+            request_id: *request_id,
+            error: None,
+        });
+        assert_eq!(app.mode, Mode::Navigate);
+        assert_eq!(app.active_chat_id, Some(3));
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "source draft");
+        assert_eq!(
+            app.draft_data(2).unwrap().input.value(),
+            "destination draft"
+        );
+        assert!(app.forwarding.review.is_none());
+    }
+
+    #[test]
+    fn cancelled_or_changed_forward_previews_never_send() {
+        let mut app = ready_app();
+        app.account_user_id = Some(100);
+        open_first(&mut app);
+        app.selected_message = Some(20);
+        let commands = app.run_binding("save_message", 1);
+        let [
+            TelegramCommand::ReviewForward {
+                destination: 100,
+                request_id,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("save to this account")
+        };
+        app.run_binding("cancel", 1);
+        let plan = crate::forwarding::Plan {
+            message: message(20, 1, "old", false),
+            destination: chat(100, "Saved Messages"),
+            revision: [1; 32],
+            random_id: 42,
+        };
+        app.handle_network(NetworkEvent::ForwardReady {
+            request_id: *request_id,
+            result: Ok(plan.clone()),
+        });
+        assert!(app.forwarding.review.is_none());
+        let commands = app.run_binding("save_message", 1);
+        let [TelegramCommand::ReviewForward { request_id, .. }] = commands.as_slice() else {
+            panic!("new review")
+        };
+        app.handle_network(NetworkEvent::ForwardReady {
+            request_id: *request_id,
+            result: Ok(plan),
+        });
+        app.handle_network(NetworkEvent::MessageUpdated(message(
+            20,
+            1,
+            "new content",
+            false,
+        )));
+        assert!(app.run_binding("send", 1).is_empty());
+        assert!(
+            app.forwarding
+                .review
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("changed")
+        );
+    }
+
+    #[test]
+    fn saved_messages_uses_account_identity_even_without_a_cached_dialog() {
+        let mut app = ready_app();
+        app.account_user_id = Some(100);
+        let commands = app.run_binding("saved_messages", 1);
+        let [TelegramCommand::OpenSaved { request_id }] = commands.as_slice() else {
+            panic!("resolve own peer")
+        };
+        assert!(
+            app.handle_network(NetworkEvent::SavedReady {
+                request_id: request_id + 1,
+                result: Ok(chat(101, "Other account"))
+            })
+            .is_empty()
+        );
+        let commands = app.handle_network(NetworkEvent::SavedReady {
+            request_id: *request_id,
+            result: Ok(chat(100, "Saved Messages")),
+        });
+        assert!(matches!(
+            commands.as_slice(),
+            [TelegramCommand::LoadHistory { chat_id: 100, .. }]
+        ));
+        assert_eq!(app.active_chat_id, Some(100));
+        app.connection = crate::event::ConnectionStatus::Offline;
+        let commands = app.run_binding("saved_messages", 1);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, TelegramCommand::OpenSaved { .. })),
+            "cached dialog opens offline"
         );
     }
 }

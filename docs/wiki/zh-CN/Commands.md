@@ -38,6 +38,9 @@
 | `edit-discard` | 丢弃当前聊天的本地编辑，保留普通草稿 |
 | `delete` | 检查所选消息，明确选择删除范围后确认 |
 | `copy [text, link]` | 复制所选消息正文/说明（默认），或 Telegram 消息链接 |
+| `forward <chat or saved>` | 用 Tab 选择目标，再预览所选消息并确认转发 |
+| `save` | 预览并将所选消息原生转发到当前账号的 Saved Messages |
+| `saved` | 打开 Saved Messages，即使它尚未出现在最近聊天中 |
 | `reply` | 回复明确选中的消息 |
 | `preview` | 放大选中的图片或贴纸 |
 | `reveal` | 必要时下载，并在 Finder、Explorer 或文件管理器中定位附件 |

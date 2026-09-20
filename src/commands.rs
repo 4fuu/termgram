@@ -20,6 +20,7 @@ pub enum Kind {
     Paste,
     Read(bool),
     Copy,
+    Forward,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +77,7 @@ impl Spec {
             Kind::Color => Some(Action::ChatColor),
             Kind::Attach => Some(Action::Attach),
             Kind::Paste => Some(Action::PasteClipboard),
+            Kind::Forward => Some(Action::ForwardMessage),
             Kind::Copy => Some(Action::CopyText),
             Kind::Read(true) => Some(Action::MarkUnread),
             Kind::Read(false) => Some(Action::MarkRead),
@@ -97,6 +99,30 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "forward",
+        None,
+        "<chat or saved>",
+        Kind::Forward,
+        Message,
+        "Review and forward the selected message to a chat"
+    ),
+    command!(
+        "save",
+        None,
+        "",
+        Kind::Action(Action::SaveMessage),
+        Message,
+        ""
+    ),
+    command!(
+        "saved",
+        None,
+        "",
+        Kind::Action(Action::SavedMessages),
+        None,
+        ""
+    ),
     command!(
         "copy",
         None,

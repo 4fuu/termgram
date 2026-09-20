@@ -920,6 +920,27 @@ impl Client {
         message_ids: &[i32],
         source: S,
     ) -> Result<Vec<Option<Message>>, InvocationError> {
+        self.forward_messages_with_random_ids(
+            destination,
+            message_ids,
+            source,
+            &generate_random_ids(message_ids.len()),
+        )
+        .await
+    }
+
+    /// Forward messages with caller-owned deduplication IDs, retaining them on retry.
+    ///
+    /// # Panics
+    /// Panics if the message and random-ID slices differ in length.
+    pub async fn forward_messages_with_random_ids<C: Into<PeerRef>, S: Into<PeerRef>>(
+        &self,
+        destination: C,
+        message_ids: &[i32],
+        source: S,
+        random_ids: &[i64],
+    ) -> Result<Vec<Option<Message>>, InvocationError> {
+        assert_eq!(message_ids.len(), random_ids.len(), "one random ID per message");
         // TODO let user customize more options
         let peer = destination.into();
         let request = tl::functions::messages::ForwardMessages {
@@ -930,7 +951,7 @@ impl Client {
             drop_media_captions: false,
             from_peer: source.into().into(),
             id: message_ids.to_vec(),
-            random_id: generate_random_ids(message_ids.len()),
+            random_id: random_ids.to_vec(),
             to_peer: peer.into(),
             top_msg_id: None,
             reply_to: None,

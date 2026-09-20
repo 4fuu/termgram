@@ -105,6 +105,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
             match app.mode {
                 Mode::Compose => " INSERT ",
                 Mode::Edit => " EDIT ",
+                Mode::ForwardPrompt => " FORWARD ",
                 Mode::DeletePrompt => " DELETE ",
                 Mode::Command => " COMMAND ",
                 Mode::Filter | Mode::Search => " SEARCH ",
@@ -225,6 +226,9 @@ fn selected_context(app: &AppState) -> Option<String> {
         if message.id > 0 && !message.text.is_empty() {
             hints.push(format!("{} copy", hint("copy_text")));
         }
+        if message.id > 0 {
+            hints.push(format!("{} forward", hint("forward_message")));
+        }
         if message.outgoing && message.id > 0 {
             hints.push(format!("{} edit", hint("edit_message")));
         }
@@ -237,6 +241,13 @@ fn selected_context(app: &AppState) -> Option<String> {
 }
 
 fn context(app: &AppState, narrow: bool) -> String {
+    if app.mode == Mode::ForwardPrompt {
+        return format!(
+            "{} forward · {} cancel",
+            app.keymap.hint(Context::Forward, "send"),
+            app.keymap.hint(Context::Forward, "cancel")
+        );
+    }
     if app.mode == Mode::DeletePrompt {
         let hint = |action| app.keymap.hint(Context::Overlay, action);
         return format!(

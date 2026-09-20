@@ -73,6 +73,9 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Conversation | e | Edit selected message or resume local edit |
 | Conversation | d | Review deletion for the selected delivered message |
 | Conversation | y / Y | Copy message text or caption / copy Telegram message link |
+| Conversation | f / g S | Choose a forward destination / prepare a forward to Saved Messages |
+| Navigation | g s | Open Saved Messages for the active account |
+| Forward preview | Enter / Esc or Ctrl-C | Forward / cancel; a submitted request continues in the background |
 | Deletion prompt | Up/Down or k/j, then Enter | Choose scope and confirm; initially selects Cancel |
 | Deletion prompt | Esc | Close; an already submitted request continues |
 | Message editor | Enter / Esc or Ctrl-C / Ctrl-D | Save / keep and close / discard edit |

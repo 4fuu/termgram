@@ -242,7 +242,7 @@ impl App {
         self.target_error(spec.target).or_else(|| {
             (matches!(
                 spec.kind,
-                Kind::Pin(_) | Kind::Archive(_) | Kind::Read(_) | Kind::Copy
+                Kind::Pin(_) | Kind::Archive(_) | Kind::Read(_) | Kind::Copy | Kind::Forward
             ) && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
@@ -312,6 +312,14 @@ impl App {
             }
         };
         match spec.kind {
+            Kind::Forward => {
+                add(
+                    "saved".to_owned(),
+                    "Saved Messages".to_owned(),
+                    "This account's personal storage".to_owned(),
+                );
+                self.add_command_chats(&mut add);
+            }
             Kind::Chat => self.add_command_chats(&mut add),
             Kind::Folder => {
                 for folder in &self.folders {
@@ -552,8 +560,14 @@ impl App {
             return Vec::new();
         }
         // Resolve and validate arguments before leaving COMMAND or changing focus.
-        let chat = if matches!(spec.kind, Kind::Chat) {
-            match self.resolve_command_chat(argument) {
+        let chat = if matches!(spec.kind, Kind::Chat | Kind::Forward) {
+            let target = if matches!(spec.kind, Kind::Forward) && argument == "saved" {
+                self.account_user_id
+                    .ok_or_else(|| "Account identity is not ready".to_owned())
+            } else {
+                self.resolve_command_chat(argument)
+            };
+            match target {
                 Ok(id) => Some(id),
                 Err(error) => return self.command_error(error),
             }
@@ -649,6 +663,7 @@ impl App {
         self.mode = Mode::Navigate;
         self.status_message = None;
         let outgoing = match &spec.kind {
+            Kind::Forward => self.review_forward(chat.expect("validated destination")),
             Kind::Copy => self.copy_message(argument == "link"),
             Kind::Read(unread) => {
                 self.set_chat_unread(origin.chat.expect("validated chat"), *unread)

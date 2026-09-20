@@ -9,6 +9,7 @@ pub mod drafts;
 pub mod editing;
 pub mod event;
 pub mod folders;
+pub mod forwarding;
 pub mod input;
 pub mod keymap;
 pub mod media;

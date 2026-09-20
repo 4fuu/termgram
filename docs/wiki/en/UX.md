@@ -147,6 +147,35 @@ has no acknowledgement: “Clipboard request sent” means the terminal still ne
 to accept it, and tmux/terminal clipboard settings can prevent it. Copy payloads
 are limited to 100,000 UTF-8 bytes and never written to logs or command arguments.
 
+## Forward and Saved Messages
+
+Select one delivered message and press `f`, or enter `:forward <chat>`. Tab uses
+the same cached chat names, IDs and Lua aliases as `:chat`; `saved` is the current
+account’s Saved Messages. Enter on an incomplete command chooses no destination.
+After choosing a destination, a preview shows its name/ID, account, source and
+latest message. Press Enter to forward, or Esc/Ctrl-C to cancel. These are the
+`send`/`cancel` actions in the configurable `forward` context.
+
+`g S` / `:save` prepares the same preview addressed to Saved Messages. `g s` /
+`:saved` opens that conversation without forwarding anything. It is identified
+by the authenticated account, so it works without a matching recent-chat title.
+An already cached Saved Messages dialog can be opened offline.
+
+Native forwarding keeps the original attribution and media and leaves existing
+source/destination drafts untouched. Current protection is checked before the
+preview and again before sending. Service messages, expiring media, protected
+content or server restrictions produce an error. Remote edits/deletions invalidate
+an open preview. The server remains authoritative about destination permissions;
+an edit between the final check and submission can still race.
+
+Errors keep the review and the same Telegram deduplication ID for retry. Esc
+before submission discards the review; after submission it closes the view while
+the request completes. If that background request fails, `f` resumes its review.
+Reviews and their retry IDs currently last for this process; cancelling a review
+and starting another creates a new forwarding intent. This entry point forwards
+one selected message, not a whole album or multiple selections. The destination
+picker selects chats; it does not select a specific forum topic.
+
 ## Files, links and mouse input
 
 Use `:attach <paths...>` to prepare files in the chat draft. Plain pasted paths

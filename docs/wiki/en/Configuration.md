@@ -220,3 +220,9 @@ DELETE and the effective scope/confirmation keys.
 `conversation` context (defaults `y` and `Y`). The `attachments.terminal_clipboard`
 switch controls OSC 5522 media paste; it does not disable user-requested OSC 52
 text copying. Native text copying uses the same installed clipboard backend.
+
+`forward_message` (`f`) starts chat completion, `save_message` (`g S`) prepares a
+forward to yourself, and `saved_messages` (`g s`) opens Saved Messages. The
+`forward` context uses `send` (Enter) and `cancel` (Esc/Ctrl-C). Its footer says
+FORWARD and displays the effective bindings. Repeated key-down events cannot
+submit a newly opened forward preview.

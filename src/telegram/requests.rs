@@ -90,6 +90,8 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Saved(super::forwarding::Destination),
+    ForwardReview(Box<super::forwarding::Review>),
     Copied(String),
     Deletion(Box<super::deletion::Review>),
     EditSource(crate::editing::Source),
@@ -117,7 +119,9 @@ pub(super) fn spawn(
     requests: &mut JoinSet<Completion>,
 ) {
     let chat_id = match &command {
-        TelegramCommand::CopyMessage { chat_id, .. }
+        TelegramCommand::ReviewForward { chat_id, .. }
+        | TelegramCommand::ForwardMessage { chat_id, .. }
+        | TelegramCommand::CopyMessage { chat_id, .. }
         | TelegramCommand::ReviewDeletion { chat_id, .. }
         | TelegramCommand::DeleteMessage { chat_id, .. }
         | TelegramCommand::LoadEdit { chat_id, .. }
@@ -152,10 +156,25 @@ pub(super) fn spawn(
         },
         _ => None,
     };
+    let other_peer = match &command {
+        TelegramCommand::ReviewForward { destination, .. }
+        | TelegramCommand::ForwardMessage { destination, .. } => {
+            cache.peers.get(destination).copied()
+        }
+        _ => None,
+    };
     let self_id = cache.self_id;
     let client = client.clone();
     requests.spawn(async move {
-        let result = Box::pin(execute(&command, &client, peer, private_link, self_id)).await;
+        let result = Box::pin(execute(
+            &command,
+            &client,
+            peer,
+            private_link,
+            self_id,
+            other_peer,
+        ))
+        .await;
         Completion { command, result }
     });
 }
@@ -167,9 +186,41 @@ async fn execute(
     peer: Option<PeerRef>,
     private_link: Option<(PeerRef, String)>,
     self_id: i64,
+    other_peer: Option<PeerRef>,
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::OpenSaved { .. } => Ok(Response::Saved(
+            super::forwarding::destination(client, self_id, None, self_id).await?,
+        )),
+        TelegramCommand::ReviewForward {
+            message_id,
+            destination,
+            ..
+        } => {
+            let destination =
+                super::forwarding::destination(client, *destination, other_peer, self_id).await?;
+            Ok(Response::ForwardReview(Box::new(
+                super::forwarding::review(client, peer()?, *message_id, destination).await?,
+            )))
+        }
+        TelegramCommand::ForwardMessage {
+            message_id,
+            revision,
+            random_id,
+            ..
+        } => {
+            super::forwarding::send(
+                client,
+                peer()?,
+                *message_id,
+                other_peer.context("Forward target is no longer available")?,
+                *revision,
+                *random_id,
+            )
+            .await?;
+            Ok(Response::Applied)
+        }
         TelegramCommand::CopyMessage {
             message_id, link, ..
         } => Ok(Response::Copied(
@@ -433,6 +484,39 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (TelegramCommand::OpenSaved { request_id }, Response::Saved(destination)) => {
+            cache.peers.insert(destination.chat.id, destination.peer);
+            cache.linked_peers.insert(destination.chat.id);
+            cache_sender_name(cache, destination.peer.id, destination.name);
+            NetworkEvent::SavedReady {
+                request_id,
+                result: Ok(destination.chat),
+            }
+        }
+        (TelegramCommand::ReviewForward { request_id, .. }, Response::ForwardReview(review)) => {
+            cache
+                .peers
+                .insert(review.destination.chat.id, review.destination.peer);
+            cache.linked_peers.insert(review.destination.chat.id);
+            cache_sender_name(cache, review.destination.peer.id, review.destination.name);
+            NetworkEvent::ForwardReady {
+                request_id,
+                result: Ok(crate::forwarding::Plan {
+                    message: map_message(&review.original, cache)?,
+                    destination: review.destination.chat,
+                    revision: review.revision,
+                    random_id: review.random_id,
+                }),
+            }
+        }
+        (TelegramCommand::ForwardMessage { request_id, .. }, Response::Applied) => {
+            cache.dialogs.dirty = true;
+            NetworkEvent::ForwardFinished {
+                request_id,
+                error: None,
+            }
+        }
+
         (TelegramCommand::CopyMessage { request_id, .. }, Response::Copied(text)) => {
             NetworkEvent::MessageCopyReady {
                 request_id,

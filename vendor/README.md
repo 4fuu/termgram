@@ -80,7 +80,7 @@ See https://core.telegram.org/api/updates#recovering-gaps.
 
 `grammers-client/` vendors crates.io 0.10.0 from the same Grammers revision
 (`grammers-client/`). Original source, examples, tests and both licenses are
-retained. Only `src/client/updates.rs` is adapted:
+retained. `src/client/updates.rs` is adapted:
 
 - `next_batch` drains a complete update batch and returns its covered cursor;
 - `restore_state` loads the application's durable cursor before polling;
@@ -178,3 +178,11 @@ PowerShell code. SSH writes only to the attached terminal. `src/terminal/clipboa
 formats OSC 52 with Yazi's existing `SetClipboard`, following `yazi-widgets/src/clipboard.rs`
 at the pinned revision, and flushes it through the same TTY on the main thread.
 No clipboard reader, escape encoder or Linux selection implementation is copied.
+
+`grammers-client/src/client/messages.rs` exposes
+`forward_messages_with_random_ids` while keeping `forward_messages` as the
+existing random-ID-generating wrapper. The request builder, attribution flags,
+RPC and result mapping are unchanged. Termgram supplies one OS-random ID for a
+reviewed message and retains it across retries. This avoids duplicating the SDK's
+forward request or generating a new delivery intent after a transient error.
+`getrandom` 0.4.3, already present transitively, is now a direct dependency.

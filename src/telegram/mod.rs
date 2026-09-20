@@ -1,6 +1,7 @@
 mod deletion;
 mod editing;
 mod folders;
+mod forwarding;
 mod local;
 mod media_cache;
 mod message_actions;
@@ -1295,7 +1296,11 @@ fn apply_dialogs(
             read_inbox_max_id: Some(raw.read_inbox_max_id.max(0)),
             membership: folders::membership(&dialog, defaults),
             id,
-            title: peer_display_name(dialog.peer()),
+            title: if id == cache.self_id {
+                "Saved Messages".to_owned()
+            } else {
+                peer_display_name(dialog.peer())
+            },
             kind: match dialog.peer() {
                 Peer::User(_) => ChatKind::Direct,
                 Peer::Group(_) => ChatKind::Group,
@@ -1368,7 +1373,10 @@ async fn handle_command(
         .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
         .clone();
     match command {
-        command @ (TelegramCommand::CopyMessage { .. }
+        command @ (TelegramCommand::ReviewForward { .. }
+        | TelegramCommand::ForwardMessage { .. }
+        | TelegramCommand::OpenSaved { .. }
+        | TelegramCommand::CopyMessage { .. }
         | TelegramCommand::ReviewDeletion { .. }
         | TelegramCommand::DeleteMessage { .. }
         | TelegramCommand::LoadEdit { .. }

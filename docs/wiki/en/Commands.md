@@ -42,6 +42,9 @@ to disk. Multiline paste cannot execute a series of commands.
 | `edit-discard` | Discard this chat’s local edit, preserving the ordinary draft |
 | `delete` | Review the selected message and explicitly choose its deletion scope |
 | `copy [text, link]` | Copy the selected message’s text/caption (default) or its Telegram message link |
+| `forward <chat or saved>` | Choose a destination using Tab, then review the selected message before forwarding |
+| `save` | Review a native forward of the selected message to this account’s Saved Messages |
+| `saved` | Open Saved Messages, including when absent from the recent chat list |
 | `reply` | Reply to an explicitly selected message |
 | `preview` | Expand a selected image or sticker |
 | `reveal` | Download if needed and reveal the selected attachment in Finder, Explorer or the file manager |

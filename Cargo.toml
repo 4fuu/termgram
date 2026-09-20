@@ -20,6 +20,7 @@ arboard = { version = "=3.6.1", default-features = false, features = ["image-dat
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 directories = "6.0"
 dotenvy = "0.15"
+getrandom = "=0.4.3"
 futures-util = { version = "0.3.32", default-features = false }
 grammers-client = { version = "=0.10.0", default-features = false, features = ["fs"] }
 grammers-session = { version = "=0.10.0", default-features = false, features = ["sqlite-storage"] }

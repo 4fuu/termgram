@@ -227,7 +227,13 @@ pub enum TelegramCommand {
     },
     RefreshFolders,
     SearchCached(crate::search::Request),
+    SearchCloud(crate::cloud_search::Request),
     CancelSearch,
+    LoadCloudContext {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
     LoadCachedContext {
         chat_id: ChatId,
         message_id: i32,
@@ -242,6 +248,14 @@ pub enum TelegramCommand {
 }
 
 impl TelegramCommand {
+    pub(crate) fn cloud_search_id(&self) -> Option<u64> {
+        match self {
+            Self::SearchCloud(request) => Some(request.id),
+            Self::LoadCloudContext { request_id, .. } => Some(*request_id),
+            _ => None,
+        }
+    }
+
     /// Return the matching failure event so pending UI operations always settle.
     #[must_use]
     #[allow(clippy::too_many_lines)]
@@ -454,7 +468,12 @@ impl TelegramCommand {
                 request_id: request.id,
                 error,
             },
-            TelegramCommand::LoadCachedContext { request_id, .. } => {
+            TelegramCommand::SearchCloud(request) => NetworkEvent::SearchFailed {
+                request_id: request.id,
+                error,
+            },
+            TelegramCommand::LoadCloudContext { request_id, .. }
+            | TelegramCommand::LoadCachedContext { request_id, .. } => {
                 NetworkEvent::SearchFailed { request_id, error }
             }
             Self::CopyText(_) | TelegramCommand::RefreshFolders | Self::RefreshDialogPins => {
@@ -706,6 +725,21 @@ impl fmt::Debug for TelegramCommand {
                 .debug_struct("SearchCached")
                 .field("request_id", &request.id)
                 .finish_non_exhaustive(),
+            Self::SearchCloud(request) => formatter
+                .debug_struct("SearchCloud")
+                .field("request_id", &request.id)
+                .field("chat_id", &request.chat_id)
+                .finish_non_exhaustive(),
+            Self::LoadCloudContext {
+                chat_id,
+                message_id,
+                request_id,
+            } => formatter
+                .debug_struct("LoadCloudContext")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish(),
             Self::LoadCachedContext {
                 chat_id,
                 message_id,
@@ -875,6 +909,24 @@ pub enum NetworkEvent {
     SearchResults {
         request_id: u64,
         page: crate::search::Page,
+    },
+    CloudSearchLoading {
+        chat_id: ChatId,
+        request_id: u64,
+    },
+    CloudSearchCancelled {
+        request_id: u64,
+    },
+    CloudSearchResults {
+        request_id: u64,
+        chat_id: ChatId,
+        page: crate::cloud_search::Page,
+    },
+    CloudSearchContext {
+        request_id: u64,
+        chat_id: ChatId,
+        message_id: i32,
+        messages: Vec<Message>,
     },
     SearchFailed {
         request_id: u64,

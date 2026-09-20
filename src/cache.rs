@@ -1,5 +1,6 @@
 //! Account-local, discardable message storage. Authentication stays in the
 //! Telegram session; user preferences do not belong in this database.
+mod search;
 
 use std::{collections::BTreeMap, path::Path, time::Duration};
 
@@ -33,6 +34,7 @@ pub struct Store {
     dialog_revision: i64,
     history_revisions: BTreeMap<(ChatId, u64), i64>,
     pin_revisions: BTreeMap<(ChatId, u64), i64>,
+    search_revision: Option<(u64, ChatId, i64)>,
     downloads: BTreeMap<(ChatId, i32), (u64, Option<i64>)>,
     owner: std::sync::Arc<std::fs::File>,
 }
@@ -108,6 +110,7 @@ impl Store {
             dialog_revision: revision,
             history_revisions: BTreeMap::new(),
             pin_revisions: BTreeMap::new(),
+            search_revision: None,
             downloads: BTreeMap::new(),
         })
     }
@@ -351,6 +354,46 @@ impl Store {
             self.revision += 1;
             let revision = self.revision;
             match event {
+                NetworkEvent::CloudSearchLoading {
+                    chat_id,
+                    request_id,
+                } => {
+                    self.search_revision = Some((*request_id, *chat_id, revision));
+                }
+                NetworkEvent::SearchFailed { request_id, .. }
+                | NetworkEvent::CloudSearchCancelled { request_id } => {
+                    if self
+                        .search_revision
+                        .is_some_and(|(id, _, _)| id == *request_id)
+                    {
+                        self.search_revision = None;
+                    }
+                }
+                NetworkEvent::CloudSearchResults {
+                    request_id,
+                    chat_id,
+                    page: crate::cloud_search::Page { messages, .. },
+                }
+                | NetworkEvent::CloudSearchContext {
+                    request_id,
+                    chat_id,
+                    messages,
+                    ..
+                } => {
+                    let Some((_, _, started)) = self
+                        .search_revision
+                        .filter(|(id, chat, _)| *id == *request_id && *chat == *chat_id)
+                    else {
+                        continue;
+                    };
+                    self.search_revision = None;
+                    for message in messages {
+                        if message.chat_id == *chat_id {
+                            write_message(&transaction, message, revision, started).await?;
+                        }
+                    }
+                    prune_chat_messages(&transaction, *chat_id).await?;
+                }
                 NetworkEvent::ReplyPreviews {
                     chat_id,
                     request_id,
@@ -440,6 +483,7 @@ impl Store {
                     }
                 }
                 NetworkEvent::CacheAccountReset { user_id } => {
+                    self.search_revision = None;
                     self.downloads.clear();
                     transaction.execute_batch("DELETE FROM chats; DELETE FROM messages; DELETE FROM metadata; DELETE FROM attachments; DELETE FROM global_deletions; DELETE FROM history_pages;").await?;
                     set_metadata(&transaction, "account_id", &user_id.to_string()).await?;
@@ -754,6 +798,12 @@ impl Store {
                         .await?;
                 }
                 NetworkEvent::CacheInvalidated { chat_id } => {
+                    if self
+                        .search_revision
+                        .is_some_and(|(_, id, _)| chat_id.is_none_or(|chat| chat == id))
+                    {
+                        self.search_revision = None;
+                    }
                     self.downloads
                         .retain(|(id, _), _| chat_id.is_some_and(|chat_id| *id != chat_id));
                     self.history_revisions
@@ -784,6 +834,7 @@ impl Store {
             .values()
             .chain(self.pin_revisions.values())
             .copied()
+            .chain(self.search_revision.map(|(_, _, revision)| revision))
             .min()
             .unwrap_or(self.revision);
         transaction.execute("DELETE FROM global_deletions WHERE revision<?1 AND id IN (SELECT id FROM global_deletions ORDER BY revision DESC LIMIT -1 OFFSET ?2)", params![oldest_in_flight, MAX_MESSAGES]).await?;
@@ -905,6 +956,80 @@ mod tests {
             links: Vec::new(),
             buttons: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn cloud_search_snapshot_keeps_live_edits_tombstones_and_invalidation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&directory.path().join("cache.db"))
+            .await
+            .unwrap();
+        store
+            .apply(&[
+                NetworkEvent::CloudSearchLoading {
+                    chat_id: 42,
+                    request_id: 1,
+                },
+                NetworkEvent::MessageUpdated(message(10, "live edit")),
+                NetworkEvent::MessagesDeleted {
+                    channel_id: None,
+                    message_ids: vec![11],
+                },
+            ])
+            .await
+            .unwrap();
+        let mut event = NetworkEvent::CloudSearchResults {
+            request_id: 1,
+            chat_id: 42,
+            page: crate::cloud_search::Page {
+                messages: vec![
+                    message(12, "new hit"),
+                    message(11, "deleted"),
+                    message(10, "old snapshot"),
+                ],
+                next: Some(10),
+                total: 3,
+                sender: None,
+            },
+        };
+        store.reconcile_cloud_search(&mut event).await.unwrap();
+        let NetworkEvent::CloudSearchResults { page, .. } = &event else {
+            panic!("merged results")
+        };
+        assert_eq!(
+            page.messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new hit", "live edit"]
+        );
+        assert_eq!(page.next, Some(10));
+        store.apply(&[event]).await.unwrap();
+        assert_eq!(store.history(42, None, 10).await.unwrap().len(), 2);
+        store
+            .apply(&[
+                NetworkEvent::CloudSearchLoading {
+                    chat_id: 42,
+                    request_id: 2,
+                },
+                NetworkEvent::CacheInvalidated { chat_id: Some(42) },
+            ])
+            .await
+            .unwrap();
+        let mut event = NetworkEvent::CloudSearchContext {
+            request_id: 2,
+            chat_id: 42,
+            message_id: 10,
+            messages: vec![message(10, "stale context")],
+        };
+        store.reconcile_cloud_search(&mut event).await.unwrap();
+        assert!(matches!(
+            event,
+            NetworkEvent::SearchFailed { request_id: 2, .. }
+        ));
+        store.apply(&[event]).await.unwrap();
+        assert!(store.history(42, None, 10).await.unwrap().is_empty());
+        assert!(store.search_revision.is_none());
     }
 
     #[tokio::test]

@@ -312,6 +312,7 @@ impl App {
             }
         };
         match spec.kind {
+            Kind::Search => Self::add_command_search(&mut add),
             Kind::Forward => {
                 add(
                     "saved".to_owned(),
@@ -387,6 +388,28 @@ impl App {
             _ => {}
         }
         candidates
+    }
+
+    fn add_command_search(add: &mut impl FnMut(String, String, String)) {
+        add(
+            "--cloud".to_owned(),
+            "Telegram search".to_owned(),
+            "Current chat · sender, UTC date and media filters · requires connection".to_owned(),
+        );
+        add(
+            "--cloud --from me".to_owned(),
+            "Messages from me".to_owned(),
+            "Search this chat for your messages".to_owned(),
+        );
+        for media in <crate::cloud_search::Media as clap::ValueEnum>::value_variants() {
+            let value = clap::ValueEnum::to_possible_value(media).expect("media value");
+            let name = value.get_name();
+            add(
+                format!("--cloud --media {name}"),
+                format!("Media: {name}"),
+                "Filter Telegram history; enter optional search text".to_owned(),
+            );
+        }
     }
 
     fn add_command_chats(&self, add: &mut impl FnMut(String, String, String)) {
@@ -560,6 +583,24 @@ impl App {
             return Vec::new();
         }
         // Resolve and validate arguments before leaving COMMAND or changing focus.
+        let cloud_search = if matches!(spec.kind, Kind::Search) {
+            if let Some(value) = argument
+                .strip_prefix("--cloud")
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            {
+                let Some(chat_id) = origin.conversation else {
+                    return self.command_error("Open a chat before using :search --cloud");
+                };
+                match crate::cloud_search::parse(value) {
+                    Ok((query, filters)) => Some((chat_id, query, filters)),
+                    Err(error) => return self.command_error(error.to_string()),
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let chat = if matches!(spec.kind, Kind::Chat | Kind::Forward) {
             let target = if matches!(spec.kind, Kind::Forward) && argument == "saved" {
                 self.account_user_id
@@ -701,16 +742,10 @@ impl App {
                 }
             }
             Kind::Search => {
-                self.open_search();
-                if raw_argument.is_some_and(|value| !value.is_empty()) {
-                    self.search
-                        .query
-                        .set_value(raw_argument.unwrap_or_default());
-                    self.search.editing = true;
-                    self.run_action(&Action::Open, 1)
+                if let Some((chat_id, query, filters)) = cloud_search {
+                    self.start_cloud_search(chat_id, query, filters)
                 } else {
-                    self.search.editing = true;
-                    Vec::new()
+                    self.start_local_search(raw_argument)
                 }
             }
             Kind::Pin(pinned) => {

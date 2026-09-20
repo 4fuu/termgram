@@ -8,6 +8,7 @@ mod message_actions;
 mod pins;
 mod reads;
 mod requests;
+mod search;
 mod sharing;
 mod telemetry;
 
@@ -70,6 +71,8 @@ struct MetadataRefresh {
 
 #[derive(Default)]
 struct WorkerCache {
+    cloud_search: Option<(u64, tokio::task::AbortHandle)>,
+    search_sender: Option<PeerRef>,
     transfer_slots: Option<Arc<tokio::sync::Semaphore>>,
     upload_order: HashMap<ChatId, tokio::sync::oneshot::Receiver<()>>,
     dialogs: MetadataRefresh,
@@ -353,6 +356,7 @@ async fn run(
                                 requests::complete(completion, &mut cache, &events).await?;
                                 signal_active_channel(&cache, *active_chat.borrow(), &active_channel);
                             }
+                            Some(Err(error)) if error.is_cancelled() => {}
                             Some(Err(error)) => bail!("Telegram request task failed: {error}"),
                             None => {}
                         }
@@ -1373,6 +1377,30 @@ async fn handle_command(
         .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
         .clone();
     match command {
+        command @ (TelegramCommand::SearchCloud(_)
+        | TelegramCommand::LoadCloudContext { .. }
+        | TelegramCommand::CancelSearch) => {
+            if let Some((request_id, handle)) = cache.cloud_search.take() {
+                handle.abort();
+                events
+                    .send(NetworkEvent::CloudSearchCancelled { request_id })
+                    .await?;
+            }
+            let chat_id = match &command {
+                TelegramCommand::SearchCloud(request) => Some(request.chat_id),
+                TelegramCommand::LoadCloudContext { chat_id, .. } => Some(*chat_id),
+                _ => None,
+            };
+            if let (Some(chat_id), Some(request_id)) = (chat_id, command.cloud_search_id()) {
+                events
+                    .send(NetworkEvent::CloudSearchLoading {
+                        chat_id,
+                        request_id,
+                    })
+                    .await?;
+                requests::spawn(command, client, cache, requests);
+            }
+        }
         command @ (TelegramCommand::ReviewForward { .. }
         | TelegramCommand::ForwardMessage { .. }
         | TelegramCommand::OpenSaved { .. }
@@ -1668,7 +1696,6 @@ async fn handle_command(
         TelegramCommand::PrepareAttachments(_)
         | TelegramCommand::CopyText(_)
         | TelegramCommand::SearchCached(_)
-        | TelegramCommand::CancelSearch
         | TelegramCommand::LoadCachedContext { .. } => {
             unreachable!("local searches never reach Telegram")
         }

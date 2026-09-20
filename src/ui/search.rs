@@ -1,8 +1,9 @@
 use super::{
     AppState, Clear, Constraint, DANGER, Frame, Layout, List, ListItem, ListState, Local, MUTED,
     Modifier, Paragraph, Position, Rect, Style, Wrap, centered, clamp_u16, pane_block, spinner,
-    truncate_cells,
+    truncate_cells, wrapped_height,
 };
+use crate::app::search::{Results, Source};
 use crate::keymap::Context;
 
 pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -12,12 +13,18 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         area.height.saturating_sub(2).max(8),
     );
     frame.render_widget(Clear, popup);
-    let block = pane_block(format!(" Local regex · {} ", app.search.scope_label), true);
+    let source = if app.search.is_cloud() {
+        "Telegram search"
+    } else {
+        "Local regex"
+    };
+    let block = pane_block(format!(" {source} · {} ", app.search.scope_label), true);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
+    let coverage = coverage_label(app);
     let rows = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(2),
+        Constraint::Length(wrapped_height(&coverage, inner.width).clamp(2, 4)),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
@@ -29,7 +36,15 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(
         Paragraph::new(input.value())
             .scroll((0, clamp_u16(scroll)))
-            .block(pane_block(" Pattern ".to_owned(), app.search.editing)),
+            .block(pane_block(
+                if app.search.is_cloud() {
+                    " Text "
+                } else {
+                    " Pattern "
+                }
+                .to_owned(),
+                app.search.editing,
+            )),
         rows[0],
     );
     if app.search.editing {
@@ -38,7 +53,6 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             rows[0].y + 1,
         ));
     }
-    let coverage = coverage_label(app);
     frame.render_widget(
         Paragraph::new(coverage)
             .wrap(Wrap { trim: true })
@@ -51,11 +65,7 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     );
     let height = usize::from(rows[2].height).max(1);
     let start = app.search.selected.saturating_add(1).saturating_sub(height);
-    let messages = app
-        .search
-        .page
-        .as_ref()
-        .map_or(&[][..], |page| page.messages.as_slice());
+    let messages = app.search.page.as_ref().map_or(&[][..], Results::messages);
     let items: Vec<_> = messages
         .iter()
         .skip(start)
@@ -63,7 +73,11 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .map(|message| result_row(message, app, usize::from(rows[2].width.saturating_sub(2))))
         .collect();
     let items = if items.is_empty() && app.search.page.is_some() && !app.search.loading {
-        vec![ListItem::new("No matches in the cached range")]
+        vec![ListItem::new(if app.search.is_cloud() {
+            "No Telegram matches"
+        } else {
+            "No matches in the cached range"
+        })]
     } else {
         items
     };
@@ -76,20 +90,28 @@ pub(super) fn render_search(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         rows[2],
         &mut state,
     );
+    render_hints(frame, rows[3], app);
+}
+
+fn render_hints(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let hint = |action| app.keymap.hint(Context::Search, action);
     frame.render_widget(
         Paragraph::new(format!(
-            "{} {} · {} close\n{} scope · {} edit\n{} previous · {} next",
+            "{} {} · {} close\n{} · {} edit\n{} previous · {} next",
             hint("open"),
             if app.search.editing { "search" } else { "open" },
             hint("cancel"),
-            hint("search_scope"),
+            if app.search.is_cloud() {
+                ":search --cloud to change filters".to_owned()
+            } else {
+                format!("{} scope", hint("search_scope"))
+            },
             hint("search_query"),
             hint("search_previous"),
             hint("search_more")
         ))
         .style(Style::default().fg(MUTED)),
-        rows[3],
+        area,
     );
 }
 
@@ -97,8 +119,16 @@ fn coverage_label(app: &AppState) -> String {
     if let Some(error) = &app.search.error {
         error.clone()
     } else if app.search.loading {
-        format!("{} Searching cached messages…", spinner(app.tick))
-    } else if let Some(page) = &app.search.page {
+        format!(
+            "{} {}…",
+            spinner(app.tick),
+            if app.search.is_cloud() {
+                "Loading from Telegram"
+            } else {
+                "Searching cached messages"
+            }
+        )
+    } else if let Some(Results::Local(page)) = &app.search.page {
         let date = |time: Option<i64>| {
             time.and_then(|time| chrono::DateTime::from_timestamp(time, 0))
                 .map_or_else(
@@ -119,6 +149,28 @@ fn coverage_label(app: &AppState) -> String {
                 ""
             }
         )
+    } else if let Source::Cloud { filters, .. } = &app.search.source {
+        let coverage = if let Some(Results::Cloud(page)) = &app.search.page {
+            format!(
+                "Telegram: {} matches · page {} · {} hits{}",
+                page.total,
+                app.search.page_number,
+                page.messages.len(),
+                if page.next.is_some() {
+                    " · more available"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            "Searches this chat on Telegram; text uses Telegram's search syntax.".to_owned()
+        };
+        let filters = filters.label();
+        if filters.is_empty() {
+            coverage
+        } else {
+            format!("{coverage}\n{filters}")
+        }
     } else {
         "Searches cached message text only; older uncached history is not included.".to_owned()
     }
@@ -132,13 +184,21 @@ fn result_row(message: &crate::model::Message, app: &AppState, width: usize) -> 
         .map_or("Unknown", |chat| chat.title.as_str());
     ListItem::new(truncate_cells(
         &format!(
-            "{} · {} · {}",
+            "{} · {} · {} · {}",
             title,
+            crate::model::sanitize_terminal_line(&message.sender),
             message
                 .timestamp
                 .with_timezone(&Local)
                 .format("%m-%d %H:%M"),
-            crate::model::sanitize_terminal_line(&message.text)
+            crate::model::sanitize_terminal_line(if message.text.is_empty() {
+                message
+                    .attachment
+                    .as_ref()
+                    .map_or("Message", |media| media.display_name())
+            } else {
+                &message.text
+            })
         ),
         width,
     ))

@@ -30,7 +30,8 @@ to disk. Multiline paste cannot execute a series of commands.
 | `chat <alias, ID or title>` | Open a cached chat in this account; Tab filters titles and configured aliases |
 | `folder <ID or name>` | Choose All chats, Archive, or an official Telegram folder |
 | `account [slot]` | Open the account picker or switch to an existing slot |
-| `search [regex]` | Open local search or submit a pattern in the current search scope |
+| `search [regex]` | Open local search or submit a verbatim pattern in the current local scope |
+| `search --cloud [filters] [text]` | Search the open chat on Telegram; filter by sender, UTC date or media ([syntax](Search.md)) |
 | `attach <paths...>` | Prepare local files in the captured chat draft; never sends automatically |
 | `paste` | Paste clipboard files, an image or text into the captured chat draft |
 | `attachments` | Review the open conversation’s staged files |
@@ -66,8 +67,8 @@ pin commands use the captured stable target even if incoming messages reorder
 the chat list. Already pinned/archived targets keep their requested state.
 
 The text after the first space in `search` is the regex as written, including
-backslashes and trailing spaces. This command does not use shell quoting or run
-shell commands. `status` uses existing observations: unavailable DC and stale
+backslashes and trailing spaces. Local regex does not use shell quoting. The explicit `--cloud` prefix selects
+Yazi platform argument quoting and typed filter flags; neither mode executes shell commands. `status` uses existing observations: unavailable DC and stale
 ping measurements are shown as unavailable, not as zero. It distinguishes
 messages in memory from the persisted cache's search coverage.
 

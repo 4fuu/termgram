@@ -90,6 +90,7 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Search(super::search::Page),
     Saved(super::forwarding::Destination),
     ForwardReview(Box<super::forwarding::Review>),
     Copied(String),
@@ -115,11 +116,14 @@ enum Response {
 pub(super) fn spawn(
     command: TelegramCommand,
     client: &Client,
-    cache: &WorkerCache,
+    cache: &mut WorkerCache,
     requests: &mut JoinSet<Completion>,
 ) {
+    let search_id = command.cloud_search_id();
     let chat_id = match &command {
-        TelegramCommand::ReviewForward { chat_id, .. }
+        TelegramCommand::SearchCloud(request) => Some(request.chat_id),
+        TelegramCommand::LoadCloudContext { chat_id, .. }
+        | TelegramCommand::ReviewForward { chat_id, .. }
         | TelegramCommand::ForwardMessage { chat_id, .. }
         | TelegramCommand::CopyMessage { chat_id, .. }
         | TelegramCommand::ReviewDeletion { chat_id, .. }
@@ -157,6 +161,16 @@ pub(super) fn spawn(
         _ => None,
     };
     let other_peer = match &command {
+        TelegramCommand::SearchCloud(request) => match &request.filters.sender {
+            Some(crate::cloud_search::Sender::Id(id)) => {
+                cache.peers.get(id).copied().or_else(|| {
+                    cache
+                        .search_sender
+                        .filter(|peer| peer.id.bot_api_dialog_id() == Some(*id))
+                })
+            }
+            _ => None,
+        },
         TelegramCommand::ReviewForward { destination, .. }
         | TelegramCommand::ForwardMessage { destination, .. } => {
             cache.peers.get(destination).copied()
@@ -165,7 +179,7 @@ pub(super) fn spawn(
     };
     let self_id = cache.self_id;
     let client = client.clone();
-    requests.spawn(async move {
+    let handle = requests.spawn(async move {
         let result = Box::pin(execute(
             &command,
             &client,
@@ -177,6 +191,9 @@ pub(super) fn spawn(
         .await;
         Completion { command, result }
     });
+    if let Some(id) = search_id {
+        cache.cloud_search = Some((id, handle));
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -190,6 +207,13 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::SearchCloud(request) => Ok(Response::Search(
+            super::search::search(client, peer()?, request, other_peer).await?,
+        )),
+        TelegramCommand::LoadCloudContext { message_id, .. }
+        | TelegramCommand::LoadPinnedContext { message_id, .. } => Ok(Response::History(
+            super::search::context(client, peer()?, *message_id).await?,
+        )),
         TelegramCommand::OpenSaved { .. } => Ok(Response::Saved(
             super::forwarding::destination(client, self_id, None, self_id).await?,
         )),
@@ -261,24 +285,6 @@ async fn execute(
                 messages.push(message);
             }
             Ok(Response::PinnedMessages(messages, iter.total().await?))
-        }
-        TelegramCommand::LoadPinnedContext { message_id, .. } => {
-            let target = client
-                .get_messages_by_id(peer()?, &[*message_id])
-                .await?
-                .pop()
-                .flatten()
-                .context("Pinned message is no longer available")?;
-            let mut iter = client
-                .iter_messages(peer()?)
-                .offset_id(*message_id)
-                .limit(HISTORY_LIMIT - 1);
-            let mut messages = vec![target];
-            while let Some(message) = iter.next().await? {
-                messages.push(message);
-            }
-            messages.reverse();
-            Ok(Response::History(messages))
         }
         TelegramCommand::ChangeMessagePin {
             message_id, action, ..
@@ -439,6 +445,16 @@ pub(super) async fn complete(
     events: &mpsc::Sender<NetworkEvent>,
 ) -> Result<()> {
     let Completion { command, result } = completion;
+    if let Some(id) = command.cloud_search_id() {
+        if cache
+            .cloud_search
+            .as_ref()
+            .is_none_or(|(current, _)| *current != id)
+        {
+            return Ok(());
+        }
+        cache.cloud_search = None;
+    }
     if matches!(command, TelegramCommand::SetChatUnread { .. }) {
         // A failed second RPC may follow a successful first RPC. Refresh even
         // on partial failure so the authoritative mark/count can settle.
@@ -484,6 +500,45 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (TelegramCommand::SearchCloud(request), Response::Search(page)) => {
+            let mut messages = page
+                .messages
+                .iter()
+                .map(|message| map_message(message, cache))
+                .collect::<Result<Vec<_>>>()?;
+            hydrate_reply_senders(&mut messages, cache);
+            cache.search_sender = page.sender;
+            NetworkEvent::CloudSearchResults {
+                request_id: request.id,
+                chat_id: request.chat_id,
+                page: crate::cloud_search::Page {
+                    messages,
+                    next: page.next,
+                    total: page.total,
+                    sender: page.sender.and_then(|peer| peer.id.bot_api_dialog_id()),
+                },
+            }
+        }
+        (
+            TelegramCommand::LoadCloudContext {
+                chat_id,
+                message_id,
+                request_id,
+            },
+            Response::History(raw),
+        ) => {
+            let mut messages = raw
+                .iter()
+                .map(|message| map_message(message, cache))
+                .collect::<Result<Vec<_>>>()?;
+            hydrate_reply_senders(&mut messages, cache);
+            NetworkEvent::CloudSearchContext {
+                chat_id,
+                message_id,
+                request_id,
+                messages,
+            }
+        }
         (TelegramCommand::OpenSaved { request_id }, Response::Saved(destination)) => {
             cache.peers.insert(destination.chat.id, destination.peer);
             cache.linked_peers.insert(destination.chat.id);

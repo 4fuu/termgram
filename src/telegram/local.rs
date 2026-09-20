@@ -95,6 +95,14 @@ pub(super) async fn serve(
                     if let Some(event) = preparation.start(request) { events.send(event).await?; }
                     continue;
                 }
+                if command.cloud_search_id().is_some() || matches!(command, TelegramCommand::CancelSearch | TelegramCommand::SearchCached(_)) {
+                    search.cancel();
+                    pending.retain(|queued: &TelegramCommand| queued.cloud_search_id().is_none() && !matches!(queued, TelegramCommand::CancelSearch));
+                    if matches!(command, TelegramCommand::SearchCached(_)) && ready {
+                        pending.push_back(TelegramCommand::CancelSearch);
+                    }
+                    if matches!(command, TelegramCommand::CancelSearch) && !ready { continue; }
+                }
                 if serve_cached(&command, &mut store, &mut changes, &events, &mut search).await? { continue; }
                 if authentication_command(&command) {
                     pending.push_front(command);
@@ -111,7 +119,7 @@ pub(super) async fn serve(
                 } else { break; }
             }
             event = network_rx.recv() => {
-                let Some(event) = event else {
+                let Some(mut event) = event else {
                     store.apply(&changes).await?;
                     return tasks.join_next().await.transpose()?.unwrap_or(Ok(()));
                 };
@@ -124,9 +132,15 @@ pub(super) async fn serve(
                     NetworkEvent::CacheAccountReset { .. } => { pending.clear(); search.cancel(); },
                     _ => {}
                 }
+                let cloud = matches!(event, NetworkEvent::CloudSearchResults { .. } | NetworkEvent::CloudSearchContext { .. });
+                if cloud {
+                    store.apply(&changes).await?;
+                    changes.clear();
+                    store.reconcile_cloud_search(&mut event).await?;
+                }
                 let checkpoint = matches!(&event, NetworkEvent::SyncCheckpoint(_));
                 changes.push(event.clone());
-                if checkpoint || changes.len() >= 256 {
+                if checkpoint || cloud || changes.len() >= 256 {
                     store.apply(&changes).await?;
                     changes.clear();
                 }
@@ -251,10 +265,7 @@ async fn serve_cached(
             search.queue(request.clone());
             return Ok(true);
         }
-        TelegramCommand::CancelSearch => {
-            search.cancel();
-            return Ok(true);
-        }
+        TelegramCommand::CancelSearch => search.cancel(),
         TelegramCommand::LoadCachedContext {
             chat_id,
             message_id,

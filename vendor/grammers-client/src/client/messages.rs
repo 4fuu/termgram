@@ -400,6 +400,12 @@ impl SearchIter {
         self
     }
 
+    /// Restricts results to messages sent by a specific peer.
+    pub fn sent_by(mut self, peer: impl Into<PeerRef>) -> Self {
+        self.request.from_id = Some(peer.into().into());
+        self
+    }
+
     /// Returns only messages with date bigger than date_time.
     ///
     /// ```

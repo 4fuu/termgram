@@ -12,7 +12,7 @@ mod message_pins;
 mod pins;
 mod reads;
 mod replies;
-mod search;
+pub(crate) mod search;
 mod sharing;
 mod staging;
 
@@ -1155,6 +1155,7 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        self.observe_search(&event);
         self.observe_deletion(&event);
         self.observe_forward(&event);
         self.update_reply_previews(&event);
@@ -1288,14 +1289,26 @@ impl App {
                 Vec::new()
             }
             NetworkEvent::SearchResults { request_id, page } => {
-                self.finish_search(request_id, Ok(page));
+                self.finish_search(request_id, Ok(search::Results::Local(page)));
+                Vec::new()
+            }
+            NetworkEvent::CloudSearchResults {
+                request_id, page, ..
+            } => {
+                self.finish_search(request_id, Ok(search::Results::Cloud(page)));
                 Vec::new()
             }
             NetworkEvent::SearchFailed { request_id, error } => {
                 self.finish_search(request_id, Err(error));
                 Vec::new()
             }
-            NetworkEvent::CachedContext {
+            NetworkEvent::CloudSearchContext {
+                request_id,
+                chat_id,
+                message_id,
+                messages,
+            }
+            | NetworkEvent::CachedContext {
                 request_id,
                 chat_id,
                 message_id,
@@ -1395,7 +1408,9 @@ impl App {
                 }
                 Vec::new()
             }
-            NetworkEvent::HistoryLoading { .. }
+            NetworkEvent::CloudSearchLoading { .. }
+            | NetworkEvent::CloudSearchCancelled { .. }
+            | NetworkEvent::HistoryLoading { .. }
             | NetworkEvent::ReplyPreviewsLoading { .. }
             | NetworkEvent::ReplyPreviews { .. }
             | NetworkEvent::ReplyPreviewsFailed { .. }
@@ -7564,6 +7579,229 @@ mod tests {
             assert!(!app.message_pins.loading);
             assert_eq!(app.active_draft().unwrap().value(), "unsent");
         }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cloud_search_pages_keep_target_sender_and_drafts_without_reading_history() {
+        let mut app = ready_app();
+        app.connection = crate::event::ConnectionStatus::Online;
+        app.active_chat_id = Some(1);
+        app.draft_data_mut(1).input = crate::input::TextInput::from_value("unsent");
+        app.run_binding("command", 1);
+        app.commands
+            .input
+            .set_value("search --cloud --media invalid text");
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.mode, Mode::Command);
+        app.commands
+            .input
+            .set_value("search --cloud --from @ada --media file release");
+        let commands = app.run_binding("open", 1);
+        let [TelegramCommand::SearchCloud(request)] = commands.as_slice() else {
+            panic!("cloud request")
+        };
+        assert_eq!(
+            (request.chat_id, request.query.as_str(), request.before_id),
+            (1, "release", 0)
+        );
+        let first_id = request.id;
+        let page = crate::cloud_search::Page {
+            messages: vec![
+                message(30, 1, "release 界🙂", false),
+                message(20, 1, "old release", false),
+            ],
+            next: Some(20),
+            total: 3,
+            sender: Some(99),
+        };
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: first_id,
+            chat_id: 1,
+            page: page.clone(),
+        });
+        for (width, height) in [(40, 12), (110, 24)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(text.contains("Telegram search"));
+            if width == 110 {
+                assert!(text.contains("from @ada · file"));
+            }
+            assert!(app.request_visible_read().is_empty());
+            assert!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 1,
+                    row: 3,
+                    modifiers: Modifiers::empty()
+                })
+                .is_empty()
+            );
+            assert_eq!(app.mode, Mode::Search);
+        }
+        app.handle_network(NetworkEvent::MessageUpdated(message(
+            30,
+            1,
+            "revised release",
+            false,
+        )));
+        assert_eq!(
+            app.search.page.as_ref().unwrap().messages()[0].text,
+            "revised release"
+        );
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![20],
+        });
+        assert_eq!(app.search.page.as_ref().unwrap().messages().len(), 1);
+        app.active_chat_id = Some(2);
+        let commands = app.run_binding("search_more", 1);
+        let [TelegramCommand::SearchCloud(request)] = commands.as_slice() else {
+            panic!("next page")
+        };
+        assert_eq!((request.chat_id, request.before_id), (1, 20));
+        assert_eq!(
+            request.filters.sender,
+            Some(crate::cloud_search::Sender::Id(99))
+        );
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: first_id,
+            chat_id: 1,
+            page: page.clone(),
+        });
+        assert!(
+            app.search.page.is_none(),
+            "a stale page must not replace an active query"
+        );
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: request.id,
+            chat_id: 1,
+            page: crate::cloud_search::Page {
+                messages: vec![message(10, 1, "earliest release", false)],
+                next: None,
+                total: 2,
+                sender: Some(99),
+            },
+        });
+        assert!(app.run_binding("search_more", 1).is_empty());
+        let commands = app.run_binding("search_previous", 1);
+        let [TelegramCommand::SearchCloud(request)] = commands.as_slice() else {
+            panic!("previous page")
+        };
+        assert_eq!(request.before_id, 0);
+        let current_id = request.id;
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: current_id,
+            chat_id: 1,
+            page: page.clone(),
+        });
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::LoadCloudContext {
+                request_id,
+                chat_id: 1,
+                message_id: 30,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("context")
+        };
+        assert!(
+            app.run_binding("open", 1).is_empty(),
+            "do not queue duplicate context reads"
+        );
+        app.handle_network(NetworkEvent::CloudSearchContext {
+            request_id: *request_id,
+            chat_id: 2,
+            message_id: 30,
+            messages: vec![message(30, 2, "wrong peer", false)],
+        });
+        assert_eq!(app.mode, Mode::Search);
+        assert!(
+            app.handle_network(NetworkEvent::CloudSearchContext {
+                request_id: *request_id,
+                chat_id: 1,
+                message_id: 30,
+                messages: vec![
+                    message(29, 1, "context", false),
+                    message(30, 1, "release", false)
+                ]
+            })
+            .is_empty()
+        );
+        assert_eq!(
+            (app.active_chat_id, app.selected_message),
+            (Some(1), Some(30))
+        );
+        assert!(app.browsing_older);
+        assert_eq!(app.draft_for(1).unwrap().value(), "unsent");
+        app.run_binding("search", 1);
+        assert!(app.search.is_cloud());
+        app.handle_network(NetworkEvent::CacheInvalidated { chat_id: Some(1) });
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: current_id,
+            chat_id: 1,
+            page,
+        });
+        assert!(app.search.page.is_none());
+        assert!(!app.search.loading);
+        app.run_binding("cancel", 1);
+        app.run_binding("command", 1);
+        app.commands.input.set_value(r"search \b中文\s+  ");
+        let commands = app.run_binding("open", 1);
+        assert!(
+            matches!(commands.as_slice(), [TelegramCommand::SearchCached(request)] if request.pattern == "\\b中文\\s+  ")
+        );
+    }
+
+    #[test]
+    fn cloud_search_cancel_offline_and_empty_filter_remain_editable() {
+        let mut app = ready_app();
+        app.connection = crate::event::ConnectionStatus::Offline;
+        app.active_chat_id = Some(1);
+        let filters = crate::cloud_search::Filters {
+            media: crate::cloud_search::Media::Photo,
+            ..Default::default()
+        };
+        app.start_cloud_search(1, String::new(), filters);
+        assert!(app.search.editing);
+        assert!(matches!(
+            app.run_binding("open", 1).as_slice(),
+            [TelegramCommand::CancelSearch]
+        ));
+        assert!(app.search.error.as_ref().unwrap().contains("Connect"));
+        app.connection = crate::event::ConnectionStatus::Online;
+        let commands = app.run_binding("open", 1);
+        let [TelegramCommand::SearchCloud(request)] = commands.as_slice() else {
+            panic!("filtered empty query")
+        };
+        assert!(request.query.is_empty());
+        assert_eq!(request.filters.media, crate::cloud_search::Media::Photo);
+        app.run_binding("cancel", 1);
+        app.handle_network(NetworkEvent::CloudSearchResults {
+            request_id: request.id,
+            chat_id: 1,
+            page: crate::cloud_search::Page {
+                messages: vec![],
+                next: None,
+                total: 0,
+                sender: None,
+            },
+        });
+        assert!(app.search.page.is_none());
+        app.run_binding("search", 1);
+        assert!(app.search.editing);
+        assert!(!app.search.loading);
     }
 
     #[test]

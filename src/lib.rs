@@ -2,6 +2,7 @@ pub mod actions;
 pub mod app;
 pub mod appearance;
 pub mod cache;
+pub mod cloud_search;
 pub mod commands;
 pub mod config;
 pub mod deletion;

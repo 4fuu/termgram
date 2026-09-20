@@ -238,10 +238,10 @@ pub static COMMANDS: &[Spec] = &[
     command!(
         "search",
         None,
-        "[regex]",
+        "[regex | --cloud [--from me|@name|ID] [--after DATE] [--before DATE] [--media TYPE] [text]]",
         Kind::Search,
         None,
-        "Search cached messages; keep the pattern verbatim"
+        "Offline regex, or Telegram text search with sender/date/media filters"
     ),
     command!(
         "latest",

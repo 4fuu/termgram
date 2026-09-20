@@ -186,3 +186,10 @@ RPC and result mapping are unchanged. Termgram supplies one OS-random ID for a
 reviewed message and retains it across retries. This avoids duplicating the SDK's
 forward request or generating a new delivery intent after a transient error.
 `getrandom` 0.4.3, already present transitively, is now a direct dependency.
+
+`grammers-client/src/client/messages.rs` also exposes `SearchIter::sent_by(PeerRef)`,
+a small setter for the existing `messages.search.from_id` field. Search query,
+media/date filters, bounded iteration and pagination remain the SDK implementation
+at the same pinned Grammers revision. Termgram's cloud command arguments reuse
+the pinned Yazi platform tokenizer and Clap 4.6.7 (already a transitive dependency);
+local regex queries never pass through either parser.

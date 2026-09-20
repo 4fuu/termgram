@@ -43,7 +43,7 @@ impl App {
         self.keymap = keymap;
         self.metrics.latency = None;
         self.metrics.reset_at = Instant::now();
-        self.help_scroll = 0;
+        self.help.scroll = 0;
         self.commands.invalidate_completion();
         self.clear_message_hit_regions();
         self.configuration.loading = false;
@@ -61,21 +61,5 @@ impl App {
         self.configuration.requested = false;
         self.configuration.error = Some(error.clone());
         self.status_message = Some(format!("Configuration unchanged: {error}"));
-    }
-
-    #[must_use]
-    pub fn help_lines(&self) -> Vec<String> {
-        let mut lines = vec!["Effective shortcuts (including Lua overrides)".to_owned()];
-        lines.extend(self.keymap.help());
-        lines.extend([
-            String::new(),
-            "Commands · type : to browse and complete".to_owned(),
-        ]);
-        lines.extend(
-            crate::commands::COMMANDS
-                .iter()
-                .map(|spec| format!(":{} — {}", spec.usage(), spec.description())),
-        );
-        lines
     }
 }

@@ -23,8 +23,8 @@ return {
 }
 ```
 
-上下文包括 `global`、`chats`、`conversation`、`compose`、`edit`、`forward`、`poll`、`reactions`、`attachments`、`command`、`input`（登录与聊天过滤）
-、`overlay`、`preview`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
+上下文包括 `global`、`chats`、`conversation`、`compose`、`edit`、`forward`、`poll`、`reactions`、`attachments`、`command`、`input`（登录、聊天过滤和帮助搜索）
+、`help`、`overlay`、`preview`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
 `run = "noop"` 删除绑定。组合键用独立按键列表表示，例如 `{ "g", "w" }`。
 配置会检查前缀冲突。组合键一秒后过期，Escape 可以取消尚未完成的组合键。
 按键表示法沿用 Yazi，例如 `<C-s>`、`<A-x>`、`<S-Enter>`、`<Tab>`、`<Esc>`。

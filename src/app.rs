@@ -12,6 +12,7 @@ mod drafts;
 mod editing;
 mod entities;
 mod forwarding;
+pub(crate) mod help;
 pub(crate) mod invites;
 mod message_pins;
 mod message_views;
@@ -315,7 +316,7 @@ pub struct App {
     force_redraw: bool,
     pub keymap: crate::keymap::Keymap,
     pub configuration: configuration::State,
-    pub help_scroll: usize,
+    pub help: help::State,
     next_pending_id: i32,
     next_history_request_id: u64,
     active_history_request: Option<(ChatId, u64)>,
@@ -430,7 +431,7 @@ impl Default for App {
             force_redraw: false,
             keymap: crate::keymap::Keymap::default(),
             configuration: configuration::State::default(),
-            help_scroll: 0,
+            help: help::State::default(),
             next_pending_id: -1,
             next_history_request_id: 1,
             active_history_request: None,
@@ -614,6 +615,8 @@ impl App {
                 Mode::Poll => Context::Poll,
                 Mode::Reactions => Context::Reactions,
                 Mode::Command => Context::Command,
+                Mode::Help if self.help.editing => Context::Input,
+                Mode::Help => Context::Help,
                 Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
                 Mode::Filter => Context::Input,
@@ -623,7 +626,6 @@ impl App {
                 | Mode::Invite
                 | Mode::DeletePrompt
                 | Mode::PinPrompt
-                | Mode::Help
                 | Mode::Settings
                 | Mode::Accounts
                 | Mode::Colors
@@ -682,6 +684,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.help_binding(run, count) {
+            return commands;
+        }
         if let Some(commands) = self.chat_info_binding(run, count) {
             return commands;
         }
@@ -1028,7 +1033,7 @@ impl App {
             let scroll = if self.mode == Mode::Status {
                 &mut self.configuration.status_scroll
             } else {
-                &mut self.help_scroll
+                &mut self.help.scroll
             };
             match mouse.kind {
                 MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
@@ -2270,6 +2275,11 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> Vec<TelegramCommand> {
+        if self.screen == Screen::Main && self.mode == Mode::Help && self.help.editing {
+            self.help.query.insert_str(&sanitize_terminal_line(text));
+            self.help.edited();
+            return Vec::new();
+        }
         if self.screen == Screen::Main && self.mode == Mode::Command {
             self.paste_command(text);
             return Vec::new();
@@ -2465,8 +2475,7 @@ impl App {
         match action {
             KeyAction::Character('q') => self.quit(),
             KeyAction::Character('?') => {
-                self.mode_before_help = self.mode;
-                self.mode = Mode::Help;
+                self.open_help();
                 Vec::new()
             }
             KeyAction::Character('s') => {
@@ -2662,32 +2671,6 @@ impl App {
             KeyAction::DeleteWord => {
                 _ = self.filter.delete_word_before();
                 self.clamp_chat_selection();
-                Vec::new()
-            }
-            KeyAction::Redraw => {
-                self.force_redraw = true;
-                Vec::new()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn handle_help(&mut self, action: KeyAction) -> Vec<TelegramCommand> {
-        match action {
-            KeyAction::Up => {
-                self.help_scroll = self.help_scroll.saturating_sub(1);
-                return Vec::new();
-            }
-            KeyAction::Down => {
-                self.help_scroll = self.help_scroll.saturating_add(1);
-                return Vec::new();
-            }
-            _ => {}
-        }
-        match action {
-            KeyAction::Character('q') => self.quit(),
-            KeyAction::Escape | KeyAction::Character('?') => {
-                self.mode = self.mode_before_help;
                 Vec::new()
             }
             KeyAction::Redraw => {
@@ -6625,8 +6608,59 @@ mod tests {
         app.handle_action(KeyAction::Escape);
         app.handle_action(KeyAction::Character('?'));
         assert_eq!(app.mode, Mode::Help);
-        app.handle_action(KeyAction::Character('?'));
+        app.run_binding("cancel", 1);
         assert_eq!(app.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn help_search_uses_effective_bindings_and_restores_the_draft() {
+        use yazi_term::event::KeyCode;
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.start_composing();
+        app.draft_data_mut(1).input.set_value("unsent draft");
+        app.keymap = crate::keymap::Keymap::parse(
+            r"return {keymap={{context='conversation',on={'Z'},run='latest',desc='查找[图片]'}}}",
+        )
+        .unwrap();
+        app.run_binding("help", 1);
+        app.handle_key(&KeyEvent::new(KeyCode::Char('/'), Modifiers::empty()));
+        for character in "q?".chars() {
+            app.handle_key(&KeyEvent::new(KeyCode::Char(character), Modifiers::empty()));
+        }
+        assert_eq!(app.help.query.value(), "q?");
+        assert_eq!(app.mode, Mode::Help);
+        app.handle_key(&KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL));
+        app.update(AppEvent::Paste("查找[图片]".to_owned()));
+        assert!(
+            app.help
+                .matcher
+                .as_ref()
+                .unwrap()
+                .is_match("Z — 查找[图片]")
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| { cell.symbol() == "图" && cell.fg == ratatui::style::Color::Black })
+        );
+        app.handle_key(&KeyEvent::new(KeyCode::Enter, Modifiers::empty()));
+        assert!(!app.help.editing);
+        assert!(!app.help.query.is_empty());
+        app.handle_key(&KeyEvent::new(KeyCode::Escape, Modifiers::empty()));
+        assert!(app.help.query.is_empty());
+        assert_eq!(app.mode, Mode::Help);
+        app.handle_key(&KeyEvent::new(KeyCode::Escape, Modifiers::empty()));
+        assert_eq!(app.mode, Mode::Compose);
+        assert_eq!(app.active_draft().unwrap().value(), "unsent draft");
     }
 
     #[test]
@@ -7129,7 +7163,7 @@ mod tests {
         );
         for mode in [Mode::Help, Mode::Status] {
             app.mode = mode;
-            app.help_scroll = usize::MAX;
+            app.help.scroll = usize::MAX;
             app.configuration.status_scroll = usize::MAX;
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();

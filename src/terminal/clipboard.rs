@@ -23,6 +23,7 @@ struct TextTarget {
     user: Option<i64>,
     chat: Option<i64>,
     edit_message: Option<i32>,
+    help_editing: bool,
     screen: Screen,
     mode: Mode,
     focus: Focus,
@@ -35,6 +36,7 @@ impl TextTarget {
             user: app.account_user_id,
             chat: app.active_chat_id,
             edit_message: app.message_edit().map(|edit| edit.source.message_id),
+            help_editing: app.mode == Mode::Help && app.help.editing,
             screen: app.screen.clone(),
             mode: app.mode,
             focus: app.focus,
@@ -240,10 +242,10 @@ impl Broker {
                     Destination::Draft(request)
                 } else if matches!(app.screen, Screen::Auth(_))
                     || (app.screen == Screen::Main
-                        && matches!(
+                        && (matches!(
                             app.mode,
                             Mode::Command | Mode::Search | Mode::Filter | Mode::Edit
-                        ))
+                        ) || (app.mode == Mode::Help && app.help.editing)))
                 {
                     Destination::Text(TextTarget::capture(app))
                 } else {

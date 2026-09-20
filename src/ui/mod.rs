@@ -6,6 +6,7 @@ mod deletion;
 mod editing;
 mod entities;
 mod forwarding;
+mod help;
 mod icons;
 mod invites;
 mod pins;
@@ -505,7 +506,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     } else if app.mode == Mode::Search {
         search::render_search(frame, area, app);
     } else if app.mode == Mode::Help {
-        render_help(frame, area, app);
+        help::render(frame, area, app);
     } else if app.mode == Mode::Settings {
         render_settings(frame, area, app);
     } else if app.mode == Mode::Accounts {
@@ -968,36 +969,6 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
             .min(inner.bottom().saturating_sub(1));
         frame.set_cursor_position(Position::new(x, y));
     }
-}
-
-fn render_help(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
-    let popup = centered(area, area.width.min(72), area.height.min(27));
-    frame.render_widget(Clear, popup);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
-        .title(format!(
-            " Shortcuts · {} close · {}/{} scroll ",
-            app.keymap.hint(Context::Overlay, "cancel"),
-            app.keymap.hint(Context::Overlay, "up"),
-            app.keymap.hint(Context::Overlay, "down")
-        ));
-    let inner = block.inner(popup);
-    let lines = app
-        .help_lines()
-        .iter()
-        .flat_map(|line| wrap_cells(line, usize::from(inner.width.max(1))))
-        .map(Line::from)
-        .collect::<Vec<_>>();
-    app.help_scroll = app
-        .help_scroll
-        .min(lines.len().saturating_sub(usize::from(inner.height)));
-    frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new(lines).scroll((clamp_u16(app.help_scroll), 0)),
-        inner,
-    );
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {

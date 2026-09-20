@@ -1,4 +1,5 @@
 mod appearance;
+mod chats;
 mod icons;
 mod pins;
 mod preview;
@@ -11,7 +12,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -417,36 +418,47 @@ const fn qr_pair_symbol(top: QrColor, bottom: QrColor) -> &'static str {
 }
 
 fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
-    let narrow = area.width < 96;
-    let show_conversation_only = narrow && app.narrow_conversation && app.active_chat_id.is_some();
-    let composer_height = composer_height(app, area.width);
+    let narrow = area.width < crate::sidebar::MIN_SPLIT_WIDTH;
+    let conversation_only =
+        app.active_chat_id.is_some() && (app.sidebar_hidden || (narrow && app.narrow_conversation));
+    let sidebar_width = app.keymap.sidebar.width_for(area.width);
+    let editor_width = if narrow || conversation_only {
+        area.width
+    } else {
+        area.width.saturating_sub(sidebar_width)
+    };
+    let composer_height = composer_height(app, editor_width);
     let notice_height = app.status_message.as_deref().map_or(0, |message| {
         wrapped_height(message, area.width)
             .min(area.height.saturating_sub(composer_height + 6).max(1))
     });
     let rows = Layout::vertical([
         Constraint::Min(5),
-        Constraint::Length(composer_height),
         Constraint::Length(notice_height),
         Constraint::Length(u16::from(app.keymap.statusline.enabled)),
     ])
     .split(area);
 
-    if show_conversation_only {
-        render_conversation(frame, rows[0], app);
-    } else if narrow {
-        render_chats(frame, rows[0], app);
-    } else {
-        let panes = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
+    let conversation_area = if !narrow && !conversation_only {
+        let panes = Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(48)])
             .split(rows[0]);
-        render_chats(frame, panes[0], app);
-        render_conversation(frame, panes[1], app);
+        chats::render(frame, panes[0], app);
+        panes[1]
+    } else {
+        rows[0]
+    };
+    let content = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_height)])
+        .split(conversation_area);
+    if narrow && !conversation_only {
+        chats::render(frame, content[0], app);
+    } else {
+        render_conversation(frame, content[0], app);
     }
-    render_composer(frame, rows[1], app, show_conversation_only || !narrow);
+    render_composer(frame, content[1], app, conversation_only || !narrow);
     if let Some(message) = &app.status_message {
-        render_notice(frame, rows[2], message, WARNING);
+        render_notice(frame, rows[1], message, WARNING);
     }
-    statusline::render(frame, rows[3], app);
+    statusline::render(frame, rows[2], app);
 
     if app.mode == Mode::Preview {
         preview::render(frame, area, app);
@@ -477,136 +489,6 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     ) {
         app.media_slots.clear();
     }
-}
-
-fn chat_list_title(app: &AppState) -> String {
-    let title = match app.mode {
-        Mode::Filter => format!(" Chats · /{} ", app.filter.value()),
-        _ if app.folders.len() > 1 => {
-            let index = app
-                .folders
-                .iter()
-                .position(|folder| folder.id == app.folder_id)
-                .unwrap_or(0);
-            format!(
-                " {} {}/{} · {} {} ",
-                app.folders[index].title,
-                index + 1,
-                app.folders.len(),
-                app.keymap
-                    .hint(crate::keymap::Context::Chats, "folder_previous"),
-                app.keymap
-                    .hint(crate::keymap::Context::Chats, "folder_next")
-            )
-        }
-        _ => " Chats ".to_owned(),
-    };
-    format!(
-        " {}{}",
-        icons::Icons(app.keymap.nerd_font).folder(app.folder_id),
-        title.trim_start()
-    )
-}
-
-fn render_chats(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
-    app.set_chat_pane_region((area.x, area.right(), area.y, area.bottom()));
-    let focused = app.focus == Focus::Chats && app.mode != Mode::Compose;
-    let title = chat_list_title(app);
-    let block = pane_block(title, focused).title_style(
-        Style::default().fg(app.color(crate::appearance::Target::Folder(app.folder_id))),
-    );
-    let visible = app.filtered_chat_indices();
-    let viewport_height = usize::from(area.height.saturating_sub(2)).max(1);
-    let selected = app.selected_chat.min(visible.len().saturating_sub(1));
-    let viewport_start = selected.saturating_add(1).saturating_sub(viewport_height);
-    let viewport_end = viewport_start
-        .saturating_add(viewport_height)
-        .min(visible.len());
-    let now = Local::now();
-    let items = visible[viewport_start..viewport_end]
-        .iter()
-        .enumerate()
-        .map(|(offset, &index)| {
-            let chat = &app.chats[index];
-            let selected = viewport_start.saturating_add(offset) == app.selected_chat;
-            let unread = if chat.unread > 0 {
-                format!(" {}", chat.unread)
-            } else {
-                String::new()
-            };
-            let time = if app.chat_pin_position(chat.id).is_some() {
-                format!(
-                    "{} {}",
-                    icons::Icons(app.keymap.nerd_font).pin(),
-                    chat.activity_label(now)
-                )
-            } else {
-                chat.activity_label(now)
-            };
-            let width = usize::from(area.width.saturating_sub(4));
-            let suffix_width =
-                UnicodeWidthStr::width(time.as_str()) + UnicodeWidthStr::width(unread.as_str());
-            let title = truncate_cells(
-                &format!(
-                    "{}{}",
-                    icons::Icons(app.keymap.nerd_font).chat(chat.kind),
-                    chat.title
-                ),
-                width.saturating_sub(suffix_width).saturating_sub(1),
-            );
-            let gap = width
-                .saturating_sub(UnicodeWidthStr::width(title.as_str()))
-                .saturating_sub(suffix_width)
-                .max(1);
-            let style = Style::default().fg(app.color(crate::appearance::Target::Chat(chat.id)));
-            let style = if selected {
-                style.add_modifier(Modifier::REVERSED).bold()
-            } else if chat.unread > 0 {
-                style.bold()
-            } else {
-                style
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(title, style),
-                Span::styled(" ".repeat(gap), style),
-                Span::styled(time, style),
-                Span::styled(unread, style),
-            ]))
-        });
-    let list = if visible.is_empty() {
-        List::new(vec![ListItem::new(Span::styled(
-            if app.mode == Mode::Filter {
-                "  No chats match"
-            } else {
-                "  No conversations"
-            },
-            Style::default().fg(MUTED),
-        ))])
-    } else {
-        List::new(items.collect::<Vec<_>>())
-    };
-    let mut state = ListState::default()
-        .with_selected((!visible.is_empty()).then_some(selected.saturating_sub(viewport_start)));
-    let hit_regions = (viewport_start..viewport_end)
-        .enumerate()
-        .map(|(offset, position)| {
-            (
-                area.x.saturating_add(1),
-                area.right().saturating_sub(1),
-                area.y.saturating_add(1).saturating_add(clamp_u16(offset)),
-                position,
-            )
-        })
-        .collect();
-    app.set_chat_hit_regions(hit_regions);
-    frame.render_stateful_widget(
-        list.block(block)
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED).bold()),
-        area,
-        &mut state,
-    );
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1751,6 +1633,80 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_toggle_keeps_drafts_and_clears_hidden_pointer_targets() {
+        use yazi_term::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
+        let key = KeyEvent::new(KeyCode::Fn(4), Modifiers::empty());
+        let mut app = populated_app();
+        render_text_mut(&mut app, 100, 24);
+        app.handle_action(KeyAction::Character('i'));
+        app.update(crate::event::AppEvent::Paste("draft 你好".to_owned()));
+        app.handle_key(&key);
+        assert!(app.sidebar_hidden);
+        assert_eq!(app.mode, Mode::Compose);
+        assert_eq!(app.chat_hit_region_count(), 0);
+        render_text_mut(&mut app, 100, 24);
+        assert_eq!(app.chat_hit_region_count(), 0);
+        let mut repeat = key.clone();
+        repeat.kind = KeyEventKind::Repeat;
+        app.handle_key(&repeat);
+        assert!(app.sidebar_hidden);
+        app.handle_key(&key);
+        render_text_mut(&mut app, 100, 24);
+        assert!(!app.sidebar_hidden);
+        assert_eq!(app.mode, Mode::Compose);
+        assert!(app.chat_hit_region_count() > 0);
+        render_text_mut(&mut app, 40, 10);
+        app.handle_key(&key);
+        assert_eq!(app.mode, Mode::Navigate);
+        assert_eq!(app.focus, Focus::Chats);
+        assert_eq!(app.active_draft().unwrap().value(), "draft 你好");
+        render_text_mut(&mut app, 40, 10);
+        assert!(app.chat_hit_region_count() > 0);
+        app.handle_key(&key);
+        assert!(app.sidebar_hidden);
+        app.handle_action(KeyAction::Tab);
+        assert!(!app.sidebar_hidden);
+    }
+
+    #[test]
+    fn chat_columns_keep_alignment_and_semantic_colors_with_unicode_and_icons() {
+        let mut app = populated_app();
+        let mut second = app.chats[0].clone();
+        second.id = 8;
+        second.title = "很长的群聊名称 with emoji 🙂".to_owned();
+        second.unread = 10_000;
+        app.chats.push(second);
+        app.keymap
+            .colors
+            .chats
+            .insert(7, crate::appearance::TerminalColor::Red);
+        for nerd_font in [false, true] {
+            app.keymap.nerd_font = nerd_font;
+            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let first_time = (19..24)
+                .map(|x| buffer[(x, 1)].symbol())
+                .collect::<String>();
+            let second_time = (19..24)
+                .map(|x| buffer[(x, 2)].symbol())
+                .collect::<String>();
+            assert_eq!(first_time, second_time);
+            assert!(first_time.contains(':'));
+            assert_eq!(buffer[(19, 1)].fg, Color::Cyan);
+            assert_eq!(buffer[(28, 1)].fg, Color::Yellow);
+            assert_eq!(buffer[(28, 1)].symbol(), "2");
+            assert_eq!(
+                (25..29)
+                    .map(|x| buffer[(x, 2)].symbol())
+                    .collect::<String>(),
+                "999+"
+            );
+            assert_eq!(buffer[(if nerd_font { 5 } else { 3 }, 1)].fg, Color::Red);
+        }
+    }
+
+    #[test]
     fn statusline_respects_lua_order_and_keeps_mode_and_selection_hints_when_narrow() {
         let mut app = populated_app();
         app.keymap = crate::keymap::Keymap::parse(
@@ -1907,7 +1863,7 @@ mod tests {
         render_text_mut(&mut app, 100, 24);
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
+            column: 70,
             row: 21,
             modifiers: Modifiers::empty(),
         });
@@ -1919,7 +1875,7 @@ mod tests {
         render_text_mut(&mut app, 30, 8);
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
+            column: 70,
             row: 21,
             modifiers: Modifiers::empty(),
         });

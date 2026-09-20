@@ -35,7 +35,14 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .iter()
         .map(|item| (*item, false))
         .chain(app.keymap.statusline.right.iter().map(|item| (*item, true)))
-        .filter_map(|(item, right)| segment(item, right, app, area.width < 96))
+        .filter_map(|(item, right)| {
+            segment(
+                item,
+                right,
+                app,
+                area.width < crate::sidebar::MIN_SPLIT_WIDTH,
+            )
+        })
         .collect::<Vec<_>>();
     let width = usize::from(area.width);
     while total_width(&segments) > width {
@@ -209,10 +216,21 @@ fn context(app: &AppState, narrow: bool) -> String {
     } else {
         Context::Conversation
     };
-    let back = if narrow && app.narrow_conversation {
+    let back = if app.sidebar_hidden {
+        format!(
+            "{} chats · ",
+            app.keymap.hint(Context::Conversation, "toggle_sidebar")
+        )
+    } else if narrow && app.narrow_conversation {
         format!(
             "{} chats · ",
             app.keymap.hint(Context::Conversation, "cancel")
+        )
+    } else if app.focus == Focus::Chats && app.folders.len() > 1 {
+        format!(
+            "{} {} folders · ",
+            app.keymap.hint(Context::Chats, "folder_previous"),
+            app.keymap.hint(Context::Chats, "folder_next")
         )
     } else {
         String::new()

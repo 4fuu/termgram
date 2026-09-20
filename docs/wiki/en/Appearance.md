@@ -58,3 +58,12 @@ pin marker. Turn the option off if glyphs appear as boxes or overlap adjacent te
 Configuration errors are reported through the existing Lua configuration loader.
 
 Font reference: [Nerd Fonts font variants](https://github.com/ryanoasis/nerd-fonts/wiki/FAQ-and-Troubleshooting).
+
+## Chat list columns
+
+Titles use the configured chat color. Time defaults to cyan and unread counts to
+yellow; both are right-aligned independently of title length. A marker and an
+underlined selected title identify focus without covering colors with a reversed
+row. Nerd Font chat/pin icons share the title column; CJK and emoji names truncate
+by terminal cells. The compact sidebar defaults to 30 columns and F4 toggles it.
+See [Lua configuration](Configuration.md) for width and semantic color options.

@@ -51,3 +51,10 @@ return {
 文字重叠，将此选项关闭即可恢复。配置错误通过现有 Lua 加载流程显示。
 
 字体参考：[Nerd Fonts 字体变体](https://github.com/ryanoasis/nerd-fonts/wiki/FAQ-and-Troubleshooting)。
+
+## 聊天列表列布局
+
+标题使用聊天配置的颜色；时间默认青色、未读数默认黄色，独立右对齐，不随标题长度改变。
+指示符和选中标题的下划线标明焦点，不用整行反色覆盖颜色。Nerd Font 聊天/置顶图标
+放在标题列，中文和 emoji 名称按终端列宽截断。紧凑侧栏默认 30 列，F4 切换显示。
+宽度和语义颜色选项见 [Lua 配置](Configuration.md)。

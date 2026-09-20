@@ -4,8 +4,9 @@
 
 ## Read and navigate
 
-The chat list and conversation share a wide window. Narrow windows show one
-pane at a time. A focus border and selection marker show where keys will act;
+The compact chat list and conversation share a wide window, with the composer
+aligned below the conversation. F4 toggles the sidebar. Narrow windows show one
+pane at a time; F4 or returning to Chats reveals the list and retains the draft. A focus border and selection marker show where keys will act;
 Tab switches focus. Esc clears an explicit message selection before returning
 from a conversation to the list.
 Use `j/k` to select messages, arrows to scroll their rendered rows, and `G` to

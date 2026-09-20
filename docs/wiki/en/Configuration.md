@@ -99,6 +99,32 @@ measurements, samples older than 90 seconds are not displayed, and account
 switches clear all observations. DC identifies the primary session, not every
 server used for media transfers. The bar does not infer DC from geography.
 
+## Sidebar
+
+```lua
+sidebar = { width = 30, time_color = "cyan", unread_color = "yellow" },
+```
+
+Width accepts 24–60 terminal columns and shrinks when necessary to leave at
+least 48 columns for the conversation. Below 80 columns, one pane is shown.
+Colors use the named [terminal palette](Appearance.md). Titles keep their
+per-chat color; time and unread counts have independent fixed columns. Counts
+over 999 display `999+` without widening the column.
+
+F4 toggles the sidebar in navigation and composition. In wide windows it keeps
+the composer active; in a narrow window it returns to the chat list and keeps
+the draft. Tab/Shift-Tab or returning to Chats reveals the sidebar. Holding F4
+does not repeatedly toggle where the terminal reports repeat events. This is
+a press-to-toggle action, so release-event support is unnecessary. Rebind it:
+
+```lua
+{ context = "global", on = { "<A-b>" }, run = "toggle_sidebar" },
+```
+
+The toggle leaves dialogs, selection and messages intact. An empty session keeps
+the list visible until a chat is opened. Sidebar visibility is local UI state;
+it is not a Telegram folder setting.
+
 ## File locations
 
 `config.lua`, `settings.conf`, `appearance.json` and `navigation.json` use the configuration directory.
@@ -146,6 +172,7 @@ binding can become visible again.
 | `quit`, `redraw`, `next_account`, `add_account` | Global lifecycle/account controls |
 | `help`, `settings`, `accounts` | Navigation; open or toggle the overlay |
 | `open`, `cancel`, `focus` | Contextual activation, dismissal, pane/QR switching |
+| `toggle_sidebar` | Show/hide the sidebar in navigation or composition |
 | `up`, `down`, `page_up`, `page_down` | List selection, rendered-row scrolling, or search selection; accept `count` |
 | `message_up`, `message_down` | Conversation message cursor; accept `count` |
 | `oldest`, `latest` | First/last chat, or loaded-history start/latest conversation |

@@ -11,6 +11,7 @@ pane or overlay, so ordinary letters in an editor remain text.
 | --- | --- | --- |
 | Global | Ctrl-C / Ctrl-L | Quit / redraw |
 | Global | F2 / F3 | Next account / add account |
+| Main view | F4 | Toggle sidebar; retain the draft |
 | Login | Enter / Esc | Submit / restart phone sign-in |
 | Login | Tab or Shift-Tab | Start QR login or change QR display |
 | Chats | j/k or Down/Up | Select next/previous chat |

@@ -223,6 +223,7 @@ pub struct App {
     pub filter: TextInput,
     pub search: search::State,
     pub narrow_conversation: bool,
+    pub sidebar_hidden: bool,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub media_previews: BTreeMap<(ChatId, i32), MediaPreview>,
@@ -328,6 +329,7 @@ impl Default for App {
             filter: TextInput::new(),
             search: search::State::default(),
             narrow_conversation: false,
+            sidebar_hidden: false,
             should_quit: false,
             status_message: None,
             media_previews: BTreeMap::new(),
@@ -546,7 +548,9 @@ impl App {
         };
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
-                if run == "reveal" && key.kind == yazi_term::event::KeyEventKind::Repeat {
+                if matches!(run.as_str(), "reveal" | "toggle_sidebar")
+                    && key.kind == yazi_term::event::KeyEventKind::Repeat
+                {
                     return Vec::new();
                 }
                 if self
@@ -608,6 +612,38 @@ impl App {
             return Vec::new();
         }
         match run {
+            "toggle_sidebar" => {
+                if self.screen != Screen::Main
+                    || !matches!(self.mode, Mode::Navigate | Mode::Compose)
+                {
+                    return Vec::new();
+                }
+                if self.active_chat_id.is_none() {
+                    self.status_message = Some("Open a chat before hiding the sidebar".to_owned());
+                    return Vec::new();
+                }
+                let narrow = self
+                    .conversation_pane_region
+                    .is_some_and(|(left, right, _, _)| {
+                        right.saturating_sub(left) < crate::sidebar::MIN_SPLIT_WIDTH
+                    });
+                self.sidebar_hidden = self.chat_pane_region.is_some();
+                if self.sidebar_hidden {
+                    self.focus = Focus::Conversation;
+                    self.narrow_conversation = true;
+                } else {
+                    if narrow {
+                        self.mode = Mode::Navigate;
+                    }
+                    if self.mode == Mode::Navigate {
+                        self.focus = Focus::Chats;
+                        self.narrow_conversation = false;
+                    }
+                }
+                self.clear_message_hit_regions();
+                self.force_redraw = true;
+                return Vec::new();
+            }
             "archive" => return self.toggle_archive(),
             "pin" if self.focus == Focus::Conversation => return self.begin_message_pin(false),
             "pin" | "pin_up" | "pin_down" => return self.change_chat_pin(run),
@@ -1945,6 +1981,7 @@ impl App {
                 Vec::new()
             }
             KeyAction::Escape | KeyAction::Left => {
+                self.sidebar_hidden = false;
                 self.narrow_conversation = false;
                 self.focus = Focus::Chats;
                 self.selected_message = None;
@@ -2293,11 +2330,13 @@ impl App {
         let qr_render_mode = self.qr_render_mode;
         let appearance = self.appearance.clone();
         let navigation = self.navigation.clone();
+        let sidebar_hidden = self.sidebar_hidden;
         let mut keymap = self.keymap.clone();
         keymap.reset();
         *self = Self {
             appearance,
             navigation,
+            sidebar_hidden,
             keymap,
             settings,
             settings_path,
@@ -2362,6 +2401,9 @@ impl App {
             Focus::Chats
         };
         self.narrow_conversation = self.focus == Focus::Conversation;
+        if self.focus == Focus::Chats {
+            self.sidebar_hidden = false;
+        }
     }
 
     fn start_plain_composing(&mut self) -> Vec<TelegramCommand> {

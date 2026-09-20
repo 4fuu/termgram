@@ -56,6 +56,7 @@ struct Configuration {
     nerd_font: bool,
     colors: crate::appearance::Colors,
     statusline: crate::statusline::Configuration,
+    sidebar: crate::sidebar::Configuration,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +76,7 @@ pub struct Keymap {
     pub nerd_font: bool,
     pub colors: crate::appearance::Colors,
     pub statusline: crate::statusline::Configuration,
+    pub sidebar: crate::sidebar::Configuration,
     pending: Vec<Key>,
     count: usize,
     context: Option<Context>,
@@ -146,6 +148,7 @@ const ACTIONS: &[&str] = &[
     "pins_more",
     "pins_previous",
     "unpin_all",
+    "toggle_sidebar",
 ];
 
 impl Default for Keymap {
@@ -156,6 +159,7 @@ impl Default for Keymap {
             chats: BTreeMap::new(),
             colors: crate::appearance::Colors::default(),
             statusline: crate::statusline::Configuration::default(),
+            sidebar: crate::sidebar::Configuration::default(),
             ghost_text: "{send} to send".to_owned(),
             nerd_font: false,
             pending: Vec::new(),
@@ -171,6 +175,7 @@ impl Default for Keymap {
                     ("<C-l>", "redraw"),
                     ("<F2>", "next_account"),
                     ("<F3>", "add_account"),
+                    ("<F4>", "toggle_sidebar"),
                 ][..],
             ),
             (
@@ -407,11 +412,13 @@ impl Keymap {
         let configuration: Configuration =
             lua.from_value(lua.load(source).set_name("config.lua").eval()?)?;
         configuration.statusline.validate()?;
+        configuration.sidebar.validate()?;
         let mut keymap = Self {
             chats: configuration.chats,
             colors: configuration.colors,
             nerd_font: configuration.nerd_font,
             statusline: configuration.statusline,
+            sidebar: configuration.sidebar,
             ..Self::default()
         };
         if let Some(text) = configuration.ghost_text {
@@ -684,6 +691,8 @@ mod tests {
 
     #[test]
     fn invalid_configuration_is_rejected_without_hanging() {
+        assert!(Keymap::parse("return {sidebar={width=0}}").is_err());
+        assert!(Keymap::parse("return {sidebar={time_color='invisible'}}").is_err());
         assert!(Keymap::parse("return {statusline={right={'mode','mode'}}}").is_err());
         assert!(Keymap::parse("return {statusline={right={'imaginary'}}}").is_err());
         assert!(

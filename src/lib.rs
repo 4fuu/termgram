@@ -10,6 +10,7 @@ pub mod media;
 pub mod model;
 pub mod pins;
 pub mod search;
+pub mod sidebar;
 pub mod statusline;
 pub mod telegram;
 pub mod terminal;

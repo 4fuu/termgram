@@ -85,6 +85,27 @@ statusline = {
 测量失效，超过 90 秒的样本不再显示，切换账号清空观测。DC 是会话的主数据中心，
 不代表全部媒体传输服务器，也不根据地理位置猜测。
 
+## 侧栏
+
+```lua
+sidebar = { width = 30, time_color = "cyan", unread_color = "yellow" },
+```
+
+宽度接受 24–60 个终端列，必要时收窄，给会话保留至少 48 列。低于 80 列时一次显示
+一个面板。颜色使用[终端命名调色板](Appearance.md)。标题保留聊天单独配置的颜色；
+时间与未读数各自占固定列，超过 999 显示 `999+`，不会撑宽列。
+
+F4 在导航和输入时切换侧栏。宽窗口保留输入状态；窄窗口返回聊天列表并保留草稿。
+Tab/Shift-Tab 或返回 Chats 也会展开侧栏。终端支持重复事件时，按住 F4 不会反复切换。
+这里采用单次按键切换，不依赖按键释放事件。可以重新绑定：
+
+```lua
+{ context = "global", on = { "<A-b>" }, run = "toggle_sidebar" },
+```
+
+切换不会丢失会话、选择和消息。尚未打开聊天时保留列表；可见性是本地 UI 状态，
+不会改变 Telegram 文件夹。
+
 ## 文件路径
 
 `config.lua`、`settings.conf`、`appearance.json`、`navigation.json` 位于配置目录；
@@ -125,6 +146,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `quit`、`redraw`、`next_account`、`add_account` | 全局退出、重绘、账号控制 |
 | `help`、`settings`、`accounts` | 导航；打开或切换浮层 |
 | `open`、`cancel`、`focus` | 按上下文激活、关闭、切换面板或二维码 |
+| `toggle_sidebar` | 在导航或输入时展开/收起侧栏 |
 | `up`、`down`、`page_up`、`page_down` | 列表选择、显示行滚动或搜索选择，支持 `count` |
 | `message_up`、`message_down` | 会话消息光标，支持 `count` |
 | `oldest`、`latest` | 首末聊天，或已加载历史起点/最新会话 |

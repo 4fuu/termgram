@@ -6,6 +6,7 @@ return {
   },
   ghost_text = "{send} to send",
   nerd_font = false, -- true when the terminal uses a Nerd Font Mono (v3+)
+  sidebar = { width = 30, time_color = "cyan", unread_color = "yellow" },
   statusline = {
     enabled = true,
     left = { "mode", "app", "account", "context" },

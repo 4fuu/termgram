@@ -52,6 +52,7 @@ actions! {
     Open => ("open", "Activate the selected item"),
     Preview => ("preview", "Expand the selected image or sticker"),
     Compose => ("compose", "Compose a message or reply to the selection"),
+    DeleteMessage => ("delete_message", "Review the selected message and confirm its deletion scope"),
     EditMessage => ("edit_message", "Edit a message or resume a saved edit"),
     DiscardEdit => ("discard_edit", "Discard this chat’s local message edit"),
     Send => ("send", "Send the current draft"),

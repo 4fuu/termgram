@@ -71,9 +71,10 @@ yazi-tty = { path = "vendor/yazi-tty" }
 
 [workspace]
 members = ["."]
-exclude = ["vendor/yazi-term", "vendor/yazi-tty", "vendor/grammers-session", "vendor/grammers-client", "vendor/libsql"]
+exclude = ["vendor/yazi-term", "vendor/yazi-tty", "vendor/grammers-session", "vendor/grammers-client", "vendor/grammers-mtsender", "vendor/libsql"]
 
 [patch.crates-io]
 grammers-session = { path = "vendor/grammers-session" }
 grammers-client = { path = "vendor/grammers-client" }
+grammers-mtsender = { path = "vendor/grammers-mtsender" }
 libsql = { path = "vendor/libsql" }

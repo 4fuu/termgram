@@ -1,6 +1,7 @@
 mod appearance;
 mod chats;
 mod commands;
+mod deletion;
 mod editing;
 mod icons;
 mod pins;
@@ -461,7 +462,9 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     statusline::render(frame, rows[2], app);
 
-    if app.mode == Mode::Edit {
+    if app.mode == Mode::DeletePrompt {
+        deletion::render(frame, area, app);
+    } else if app.mode == Mode::Edit {
         editing::render(frame, area, app);
     } else if app.mode == Mode::Command {
         commands::render(frame, area, app);
@@ -490,6 +493,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         app.mode,
         Mode::Search
             | Mode::Edit
+            | Mode::DeletePrompt
             | Mode::Command
             | Mode::Status
             | Mode::Colors

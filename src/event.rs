@@ -100,6 +100,18 @@ pub enum TelegramCommand {
         /// native Telegram reply.
         reply_to: Option<i32>,
     },
+    ReviewDeletion {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
+    DeleteMessage {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        revision: [u8; 32],
+        scope: crate::deletion::Scope,
+    },
     LoadEdit {
         chat_id: ChatId,
         message_id: i32,
@@ -211,6 +223,27 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::ReviewDeletion {
+                chat_id,
+                message_id,
+                request_id,
+            } => NetworkEvent::DeletionReady {
+                chat_id,
+                message_id,
+                request_id,
+                result: Err(error),
+            },
+            Self::DeleteMessage {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => NetworkEvent::DeleteFinished {
+                chat_id,
+                message_id,
+                request_id,
+                error: Some(error),
+            },
             Self::LoadEdit {
                 chat_id,
                 request_id,
@@ -444,6 +477,29 @@ impl fmt::Debug for TelegramCommand {
                 .field("chat_id", chat_id)
                 .field("message_id", message_id)
                 .field("request_id", request_id)
+                .finish_non_exhaustive(),
+            Self::ReviewDeletion {
+                chat_id,
+                message_id,
+                request_id,
+            } => formatter
+                .debug_struct("ReviewDeletion")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish(),
+            Self::DeleteMessage {
+                chat_id,
+                message_id,
+                request_id,
+                scope,
+                ..
+            } => formatter
+                .debug_struct("DeleteMessage")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .field("scope", scope)
                 .finish_non_exhaustive(),
             Self::StartQrAuth => formatter.write_str("StartQrAuth"),
             Self::SubmitPhone(_) => formatter
@@ -821,6 +877,18 @@ pub enum NetworkEvent {
     NewMessage(Message),
     /// A replayed or edited message that must not change unread state.
     MessageUpdated(Message),
+    DeletionReady {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        result: Result<crate::deletion::Plan, String>,
+    },
+    DeleteFinished {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        error: Option<String>,
+    },
     EditLoaded {
         chat_id: ChatId,
         request_id: u64,

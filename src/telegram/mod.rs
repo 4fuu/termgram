@@ -1,7 +1,9 @@
+mod deletion;
 mod editing;
 mod folders;
 mod local;
 mod media_cache;
+mod message_actions;
 mod pins;
 mod reads;
 mod requests;
@@ -1365,7 +1367,9 @@ async fn handle_command(
         .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
         .clone();
     match command {
-        command @ (TelegramCommand::LoadEdit { .. }
+        command @ (TelegramCommand::ReviewDeletion { .. }
+        | TelegramCommand::DeleteMessage { .. }
+        | TelegramCommand::LoadEdit { .. }
         | TelegramCommand::EditMessage { .. }
         | TelegramCommand::LoadOlder { .. }
         | TelegramCommand::ChangeDialogPin { .. }

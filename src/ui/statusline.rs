@@ -105,6 +105,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
             match app.mode {
                 Mode::Compose => " INSERT ",
                 Mode::Edit => " EDIT ",
+                Mode::DeletePrompt => " DELETE ",
                 Mode::Command => " COMMAND ",
                 Mode::Filter | Mode::Search => " SEARCH ",
                 Mode::Navigate if app.focus == Focus::Chats => " CHATS ",
@@ -233,6 +234,16 @@ fn selected_context(app: &AppState) -> Option<String> {
 }
 
 fn context(app: &AppState, narrow: bool) -> String {
+    if app.mode == Mode::DeletePrompt {
+        let hint = |action| app.keymap.hint(Context::Overlay, action);
+        return format!(
+            "{}/{} scope · {} confirm · {} close",
+            hint("up"),
+            hint("down"),
+            hint("open"),
+            hint("cancel")
+        );
+    }
     if app.mode == Mode::Edit {
         let hint = |action| app.keymap.hint(Context::Edit, action);
         return format!(

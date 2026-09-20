@@ -40,6 +40,7 @@ to disk. Multiline paste cannot execute a series of commands.
 | `mark-unread` | Set Telegram's unread reminder without rewinding message receipts |
 | `edit` | Edit the selected delivered message or resume this chat’s saved edit |
 | `edit-discard` | Discard this chat’s local edit, preserving the ordinary draft |
+| `delete` | Review the selected message and explicitly choose its deletion scope |
 | `reply` | Reply to an explicitly selected message |
 | `preview` | Expand a selected image or sticker |
 | `reveal` | Download if needed and reveal the selected attachment in Finder, Explorer or the file manager |

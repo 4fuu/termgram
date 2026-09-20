@@ -170,6 +170,7 @@ impl Default for Keymap {
                 &[
                     (":", "command"),
                     ("e", "edit_message"),
+                    ("d", "delete_message"),
                     ("p", "pin"),
                     ("P", "pins"),
                     ("c", "chat_color"),

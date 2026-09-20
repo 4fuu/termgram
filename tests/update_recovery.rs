@@ -75,6 +75,30 @@ async fn sdk_delivers_the_whole_batch_before_its_checkpoint() {
     assert_eq!(updates.len(), 2);
     assert_eq!(cursor.seq, 1);
     assert_eq!(cursor.date, 123);
+
+    // Own delete RPCs use UpdateShort with NO_DATE and must carry their IDs in
+    // the very batch that advances the durable cursor, just like server pushes.
+    sender
+        .send(UpdatesLike::Updates(
+            tl::types::UpdateShort {
+                update: tl::types::UpdateDeleteMessages {
+                    messages: vec![41, 42],
+                    pts: 2,
+                    pts_count: 2,
+                }
+                .into(),
+                date: 0,
+            }
+            .into(),
+        ))
+        .unwrap();
+    let (updates, cursor) = Box::pin(stream.next_batch()).await.unwrap();
+    let [grammers_client::update::Update::MessageDeleted(deleted)] = updates.as_slice() else {
+        panic!("deletion IDs must arrive with their checkpoint")
+    };
+    assert_eq!(deleted.messages(), [41, 42]);
+    assert_eq!(cursor.pts, 2);
+    assert_eq!(cursor.date, 123, "NO_DATE retains the previous date");
 }
 
 #[test]

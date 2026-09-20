@@ -1,6 +1,7 @@
 //! Existing Grammers edit RPC, with fresh permissions and a captured revision.
+use super::message_actions::{fetch, revision};
 use crate::{editing::Source, model::sanitize_terminal_text};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use grammers_client::{
     Client,
     message::{InputMessage, Message},
@@ -8,36 +9,9 @@ use grammers_client::{
     tl,
 };
 use grammers_session::types::{PeerId, PeerRef};
-use sha2::{Digest, Sha256};
-use tl::Serializable;
-
-fn revision(message: &Message) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(message.text().as_bytes());
-    hash.update(
-        message
-            .edit_date()
-            .map_or(0, |date| date.timestamp())
-            .to_le_bytes(),
-    );
-    for entity in message.fmt_entities().into_iter().flatten() {
-        hash.update(entity.to_bytes());
-    }
-    hash.finalize().into()
-}
 
 async fn original(client: &Client, peer: PeerRef, id: i32, self_id: i64) -> Result<Message> {
-    ensure!(id > 0, "Only delivered messages can be edited");
-    let message = client
-        .get_messages_by_id(peer, &[id])
-        .await?
-        .pop()
-        .flatten()
-        .context("Message is no longer available")?;
-    ensure!(
-        message.peer_id() == peer.id,
-        "Message does not belong to the selected chat"
-    );
+    let message = fetch(client, peer, id).await?;
     let tl::enums::Message::Message(raw) = &message.raw else {
         anyhow::bail!("Service messages cannot be edited")
     };

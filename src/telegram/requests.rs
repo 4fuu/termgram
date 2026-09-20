@@ -90,6 +90,7 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Deletion(Box<super::deletion::Review>),
     EditSource(crate::editing::Source),
     Edited(Option<Box<TelegramMessage>>),
     PinnedMessages(Vec<TelegramMessage>, usize),
@@ -115,7 +116,9 @@ pub(super) fn spawn(
     requests: &mut JoinSet<Completion>,
 ) {
     let chat_id = match &command {
-        TelegramCommand::LoadEdit { chat_id, .. }
+        TelegramCommand::ReviewDeletion { chat_id, .. }
+        | TelegramCommand::DeleteMessage { chat_id, .. }
+        | TelegramCommand::LoadEdit { chat_id, .. }
         | TelegramCommand::EditMessage { chat_id, .. }
         | TelegramCommand::LoadHistory { chat_id, .. }
         | TelegramCommand::ChangeDialogPin { chat_id, .. }
@@ -165,6 +168,19 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::ReviewDeletion { message_id, .. } => Ok(Response::Deletion(Box::new(
+            super::deletion::review(client, peer()?, *message_id, self_id).await?,
+        ))),
+        TelegramCommand::DeleteMessage {
+            message_id,
+            revision,
+            scope,
+            ..
+        } => {
+            super::deletion::delete(client, peer()?, *message_id, self_id, *revision, *scope)
+                .await?;
+            Ok(Response::Applied)
+        }
         TelegramCommand::LoadEdit { message_id, .. } => Ok(Response::EditSource(
             super::editing::load(client, peer()?, *message_id, self_id).await?,
         )),
@@ -410,6 +426,43 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::ReviewDeletion {
+                chat_id,
+                message_id,
+                request_id,
+            },
+            Response::Deletion(review),
+        ) => NetworkEvent::DeletionReady {
+            chat_id,
+            message_id,
+            request_id,
+            result: Ok(crate::deletion::Plan {
+                message: map_message(&review.message, cache)?,
+                revision: review.revision,
+                scopes: review.scopes,
+            }),
+        },
+        (
+            TelegramCommand::DeleteMessage {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            },
+            Response::Applied,
+        ) => {
+            cache.dialogs.dirty = true;
+            cache.message_pins.dirty = true;
+            // The SDK delivers deletion IDs through the ordered update stream,
+            // which persists the tombstone before the covered checkpoint.
+            NetworkEvent::DeleteFinished {
+                chat_id,
+                message_id,
+                request_id,
+                error: None,
+            }
+        }
         (
             TelegramCommand::LoadEdit {
                 chat_id,

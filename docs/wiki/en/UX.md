@@ -106,6 +106,24 @@ between the first and last change. Server edit updates follow the existing order
 synchronization stream and update cached replies. The selected message's edit
 time appears in the bottom bar.
 
+## Delete a message
+
+Select a delivered message, then `d` or `:delete`. A fresh server snapshot shows
+the chat, message preview and available scopes. Cancel is initially selected;
+choose a scope with Up/Down or k/j and press Enter to submit. Ordinary chats may
+offer only-for-me and, when permitted, for-everyone deletion. Supergroups use
+Telegram's for-everyone deletion; Saved Messages offers only-for-me. Service
+messages are not supported by this action. The server enforces final permissions.
+
+Termgram checks the exact peer, message revision and permissions again before
+submitting. A changed message invalidates the review; close and reopen it. Telegram
+does not offer an atomic revision-checked delete, so a remote change between the
+last check and the RPC can still race. Errors keep the message and reset the
+prompt to Cancel. Esc closes the prompt; if already submitted, the request keeps
+running and reports its outcome in the footer. Confirmed deletion passes through
+the ordered sync stream and removes cached content, search results and reply
+previews before the corresponding sync checkpoint is stored.
+
 ## Files, links and mouse input
 
 Use `:attach <paths...>` to prepare files in the chat draft. Plain pasted paths

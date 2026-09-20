@@ -152,3 +152,19 @@ need no second fetch/reader or SDK patch. Eligibility follows Desktop
 `4d4da471fbee771c10e173a83c003ba1728989f1`; no Desktop source is copied.
 The UTF-16 range adapter retains untouched entities and enclosing styles while
 dropping partially replaced or changed semantic targets.
+
+`grammers-mtsender/` retains the complete published 0.10.0 crate and both licenses
+from the same Grammers revision (`grammers-mtsender/`). An empty workspace table
+keeps upstream regression tests independently runnable. The single source patch
+in `src/sender.rs` retains the requested IDs for `messages.deleteMessages` when
+routing its `AffectedMessages` RPC result. It emits the existing `UpdateShort`
+/ `UpdateDeleteMessages` representation with the session adaptor's NO_DATE
+sentinel, so application tombstones are committed before their covered PTS.
+Request decoding now validates and consumes the TL constructor before reading
+bare function fields, correcting the existing channel-delete/short-send decoder
+as well. Other affected-message RPCs retain their original path. Its focused
+unit test checks both revoke scopes, channel PTS ownership and a non-deleting RPC;
+`tests/update_recovery.rs` verifies delivery together with the durable cursor.
+Reapply this narrow patch until an upstream release retains common deletion IDs.
+Deletion eligibility in `src/telegram/deletion.rs` follows Desktop's `canDelete`
+and `canDeleteForEveryone` at the revision recorded above; no source is copied.

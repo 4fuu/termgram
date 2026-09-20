@@ -66,6 +66,9 @@
 | 搜索 | Ctrl-N / Ctrl-P | 下一页 / 上一页结果 |
 | 搜索 | Up/Down、PageUp/PageDown | 选择结果 / 移动十个结果 |
 | 会话 | e | 编辑所选消息或继续本地编辑 |
+| 会话 | d | 检查所选已送达消息的删除范围 |
+| 删除确认框 | Up/Down 或 k/j，然后 Enter | 选择范围并确认；默认选中取消 |
+| 删除确认框 | Esc | 关闭；已经提交的请求继续执行 |
 | 消息编辑 | Enter / Esc 或 Ctrl-C / Ctrl-D | 保存 / 保留并关闭 / 丢弃编辑 |
 | 消息编辑 | Shift-Enter 或 Ctrl-J | 换行 |
 

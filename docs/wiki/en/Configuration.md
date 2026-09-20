@@ -210,3 +210,8 @@ Ctrl-C cancels command entry by default; it still quits in other contexts.
 `attachments.terminal_clipboard = true` uses detected OSC 5522 MIME paste before native clipboard reads. Set `false` to disable this terminal mode. See [Terminal](Terminal.md).
 
 Message editing uses the `edit` context. `edit_message` opens/resumes a saved edit in the conversation; `discard_edit` discards it. `send`, `cancel`, `newline` and the usual input actions work in `edit`. The statusline displays EDIT and the selected message’s edit time.
+
+The conversation action `delete_message` opens deletion review. It is separate
+from the editor action `delete`, which deletes the next character. The review
+uses `overlay` bindings: `up`, `down`, `open` and `cancel`. The footer displays
+DELETE and the effective scope/confirmation keys.

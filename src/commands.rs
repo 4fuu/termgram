@@ -96,6 +96,14 @@ macro_rules! command {
 
 pub static COMMANDS: &[Spec] = &[
     command!(
+        "delete",
+        None,
+        "",
+        Kind::Action(Action::DeleteMessage),
+        Message,
+        ""
+    ),
+    command!(
         "edit",
         None,
         "",

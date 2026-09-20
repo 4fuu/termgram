@@ -4,6 +4,7 @@ mod appearance;
 mod attachments;
 mod commands;
 mod composition;
+mod deletion;
 mod drafts;
 mod editing;
 mod message_pins;
@@ -162,6 +163,7 @@ pub enum Mode {
     Navigate,
     Compose,
     Edit,
+    DeletePrompt,
     Command,
     Status,
     Attachments,
@@ -235,6 +237,7 @@ pub struct App {
     pub commands: commands::State,
     pub attachment_draft: staging::State,
     pub editing: editing::State,
+    pub deletion: deletion::State,
     pub narrow_conversation: bool,
     pub sidebar_hidden: bool,
     pub should_quit: bool,
@@ -348,6 +351,7 @@ impl Default for App {
             commands: commands::State::default(),
             attachment_draft: staging::State::default(),
             editing: editing::State::default(),
+            deletion: deletion::State::default(),
             narrow_conversation: false,
             sidebar_hidden: false,
             should_quit: false,
@@ -569,7 +573,8 @@ impl App {
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
                 Mode::PinnedMessages => Context::Pins,
-                Mode::PinPrompt
+                Mode::DeletePrompt
+                | Mode::PinPrompt
                 | Mode::Help
                 | Mode::Settings
                 | Mode::Accounts
@@ -624,6 +629,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.deletion_binding(run, count) {
+            return commands;
+        }
         if let Some(commands) = self.editing_binding(run) {
             return commands;
         }
@@ -976,6 +984,7 @@ impl App {
             self.mode,
             Mode::Help
                 | Mode::Edit
+                | Mode::DeletePrompt
                 | Mode::Status
                 | Mode::Search
                 | Mode::Colors
@@ -1131,12 +1140,31 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        self.observe_deletion(&event);
         self.update_reply_previews(&event);
         self.track_snapshot_changes(&event);
         if let NetworkEvent::MessageUpdated(message) = &event {
             self.update_pin_preview(message);
         }
         match event {
+            NetworkEvent::DeletionReady {
+                chat_id,
+                message_id,
+                request_id,
+                result,
+            } => {
+                self.deletion_ready(chat_id, message_id, request_id, result);
+                Vec::new()
+            }
+            NetworkEvent::DeleteFinished {
+                chat_id,
+                message_id,
+                request_id,
+                error,
+            } => {
+                self.deletion_finished(chat_id, message_id, request_id, error);
+                Vec::new()
+            }
             NetworkEvent::EditLoaded {
                 chat_id,
                 request_id,
@@ -2131,7 +2159,9 @@ impl App {
             }
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
-            Mode::Attachments | Mode::PinnedMessages | Mode::PinPrompt => Vec::new(),
+            Mode::Attachments | Mode::PinnedMessages | Mode::PinPrompt | Mode::DeletePrompt => {
+                Vec::new()
+            }
             Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
@@ -7812,5 +7842,149 @@ mod tests {
         });
         assert_eq!(app.mode, Mode::Navigate);
         assert!(app.message_edit().is_none());
+    }
+    #[test]
+    fn deletion_requires_explicit_scope_and_preserves_messages_until_synced() {
+        use crate::deletion::{Plan, Scope};
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.selected_message = Some(20);
+        let load = |app: &mut App| {
+            let commands = app.run_binding("delete_message", 1);
+            let [TelegramCommand::ReviewDeletion { request_id, .. }] = commands.as_slice() else {
+                panic!("review deletion")
+            };
+            app.handle_network(NetworkEvent::DeletionReady {
+                chat_id: 1,
+                message_id: 20,
+                request_id: *request_id,
+                result: Ok(Plan {
+                    message: message(20, 1, "target 界🙂", false),
+                    revision: [2; 32],
+                    scopes: vec![Scope::OnlyMe, Scope::Everyone],
+                }),
+            });
+        };
+        load(&mut app);
+        assert!(
+            app.run_binding("open", 1).is_empty(),
+            "Enter defaults to cancel"
+        );
+        assert_eq!(app.mode, Mode::Navigate);
+        load(&mut app);
+        for (width, height) in [(35, 12), (110, 22)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 1,
+                    row: 3,
+                    modifiers: Modifiers::empty(),
+                })
+                .is_empty()
+            );
+            assert_eq!(app.selected_message, Some(20));
+            assert_eq!(app.mode, Mode::DeletePrompt);
+            assert!(app.request_visible_read().is_empty());
+        }
+        app.run_binding("down", 2);
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::DeleteMessage {
+                chat_id: 1,
+                message_id: 20,
+                scope: Scope::Everyone,
+                request_id,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("explicit scope only")
+        };
+        assert!(app.active_messages().iter().any(|message| message.id == 20));
+        app.handle_network(NetworkEvent::DeleteFinished {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            error: Some("MESSAGE_DELETE_FORBIDDEN".to_owned()),
+        });
+        assert_eq!(app.deletion.prompt.as_ref().unwrap().selected, 0);
+        assert!(app.active_messages().iter().any(|message| message.id == 20));
+        app.run_binding("down", 1);
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::DeleteMessage {
+                scope: Scope::OnlyMe,
+                request_id,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("retry scope")
+        };
+        app.run_binding("cancel", 1);
+        app.active_chat_id = Some(2);
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![20],
+        });
+        app.handle_network(NetworkEvent::DeleteFinished {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            error: None,
+        });
+        assert_eq!(app.active_chat_id, Some(2));
+        assert!(app.deletion.prompt.is_none());
+        assert!(!app.messages[&1].iter().any(|message| message.id == 20));
+    }
+
+    #[test]
+    fn cancelled_or_changed_deletion_review_cannot_delete_a_stale_target() {
+        use crate::deletion::{Plan, Scope};
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.selected_message = Some(20);
+        let commands = app.run_binding("delete_message", 1);
+        let [TelegramCommand::ReviewDeletion { request_id, .. }] = commands.as_slice() else {
+            panic!("review")
+        };
+        let ready = NetworkEvent::DeletionReady {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(Plan {
+                message: message(20, 1, "original", false),
+                revision: [2; 32],
+                scopes: vec![Scope::Everyone],
+            }),
+        };
+        app.run_binding("cancel", 1);
+        app.handle_network(ready.clone());
+        assert!(app.deletion.prompt.is_none());
+        let commands = app.run_binding("delete_message", 1);
+        let [TelegramCommand::ReviewDeletion { request_id, .. }] = commands.as_slice() else {
+            panic!("new review")
+        };
+        app.handle_network(NetworkEvent::MessageUpdated(message(
+            20, 1, "changed", false,
+        )));
+        let NetworkEvent::DeletionReady { result, .. } = ready else {
+            unreachable!()
+        };
+        app.handle_network(NetworkEvent::DeletionReady {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result,
+        });
+        app.run_binding("down", 1);
+        assert_eq!(app.deletion.prompt.as_ref().unwrap().selected, 0);
+        assert!(app.run_binding("open", 1).is_empty());
+        assert_eq!(app.mode, Mode::Navigate);
     }
 }

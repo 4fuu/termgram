@@ -36,6 +36,7 @@
 | `mark-unread` | 设置 Telegram 的未读提醒，不倒退消息回执 |
 | `edit` | 编辑所选已送达消息，或继续当前聊天保存的编辑 |
 | `edit-discard` | 丢弃当前聊天的本地编辑，保留普通草稿 |
+| `delete` | 检查所选消息，明确选择删除范围后确认 |
 | `reply` | 回复明确选中的消息 |
 | `preview` | 放大选中的图片或贴纸 |
 | `reveal` | 必要时下载，并在 Finder、Explorer 或文件管理器中定位附件 |

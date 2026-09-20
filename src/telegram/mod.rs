@@ -9,6 +9,7 @@ mod message_actions;
 mod notifications;
 mod pins;
 mod polls;
+mod reactions;
 mod reads;
 mod requests;
 mod search;
@@ -538,6 +539,17 @@ async fn process_update(
         Ok(Update::Raw(update)) => {
             restore_online_status(events, recovering).await;
             match &update.raw {
+                tl::enums::Update::MessageReactions(update) => {
+                    if let Some(chat) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::ReactionsChanged(crate::reactions::Update {
+                                chat,
+                                message: update.msg_id,
+                                summary: reactions::summary(&update.reactions),
+                            }))
+                            .await?;
+                    }
+                }
                 tl::enums::Update::MessagePoll(update) => {
                     events
                         .send(NetworkEvent::PollChanged(polls::update(update)))
@@ -1466,7 +1478,10 @@ async fn handle_command(
                 requests::spawn(command, client, cache, requests);
             }
         }
-        command @ (TelegramCommand::LoadPoll { .. }
+        command @ (TelegramCommand::LoadReactions { .. }
+        | TelegramCommand::ChangeReaction { .. }
+        | TelegramCommand::RefreshReactions { .. }
+        | TelegramCommand::LoadPoll { .. }
         | TelegramCommand::VotePoll { .. }
         | TelegramCommand::RefreshPoll { .. }
         | TelegramCommand::ResolveAlertSettings { .. }
@@ -1544,6 +1559,13 @@ async fn handle_command(
                 events
                     .send(NetworkEvent::ReplyPreviewsLoading {
                         chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadReactions { request_id, .. } = &command {
+                events
+                    .send(NetworkEvent::ReactionsLoading {
                         request_id: *request_id,
                     })
                     .await?;
@@ -2425,6 +2447,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        reactions: reactions::map(message),
         poll: polls::map(message),
         entities,
         notification: Some(crate::notifications::Metadata {
@@ -3113,6 +3136,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,
@@ -3178,6 +3202,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,

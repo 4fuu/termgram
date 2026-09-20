@@ -1,7 +1,9 @@
 //! Account-local, discardable message storage. Authentication stays in the
 //! Telegram session; user preferences do not belong in this database.
 mod contents;
+mod journal;
 mod polls;
+mod reactions;
 mod search;
 
 use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -39,7 +41,9 @@ pub struct Store {
     search_revision: Option<(u64, ChatId, i64)>,
     contents_read: contents::Receipts,
     poll_updates: polls::Journal,
+    reaction_updates: reactions::Journal,
     poll_revisions: BTreeMap<u64, i64>,
+    reaction_revisions: BTreeMap<u64, i64>,
     downloads: BTreeMap<(ChatId, i32), (u64, Option<i64>)>,
     owner: std::sync::Arc<std::fs::File>,
 }
@@ -121,7 +125,9 @@ impl Store {
             search_revision: None,
             contents_read: contents::Receipts::default(),
             poll_updates: polls::Journal::default(),
+            reaction_updates: reactions::Journal::default(),
             poll_revisions: BTreeMap::new(),
+            reaction_revisions: BTreeMap::new(),
             downloads: BTreeMap::new(),
         })
     }
@@ -365,6 +371,41 @@ impl Store {
             self.revision += 1;
             let revision = self.revision;
             match event {
+                NetworkEvent::ReactionsLoading { request_id } => {
+                    self.reaction_revisions.insert(*request_id, revision);
+                }
+                NetworkEvent::ReactionsLoaded {
+                    chat_id,
+                    message_id,
+                    request_id,
+                    result,
+                } => {
+                    if let Some(started) = self.reaction_revisions.remove(request_id)
+                        && let Ok(review) = result
+                    {
+                        let mut summary = review.summary.clone();
+                        reactions::merge_summary(&transaction, *chat_id, *message_id, &mut summary)
+                            .await?;
+                        reactions::reconcile_summary(
+                            &self.reaction_updates,
+                            *chat_id,
+                            *message_id,
+                            &mut summary,
+                            started,
+                        );
+                        let update = crate::reactions::Update {
+                            chat: *chat_id,
+                            message: *message_id,
+                            summary,
+                        };
+                        reactions::apply(&transaction, &update, revision).await?;
+                        self.reaction_updates.record(revision, update);
+                    }
+                }
+                NetworkEvent::ReactionsChanged(update) => {
+                    reactions::apply(&transaction, update, revision).await?;
+                    self.reaction_updates.record(revision, update.clone());
+                }
                 NetworkEvent::PollLoading { request_id } => {
                     self.poll_revisions.insert(*request_id, revision);
                 }
@@ -440,6 +481,7 @@ impl Store {
                                 started,
                                 &self.contents_read,
                                 &self.poll_updates,
+                                &self.reaction_updates,
                             )
                             .await?;
                         }
@@ -465,6 +507,7 @@ impl Store {
                             started,
                             &self.contents_read,
                             &self.poll_updates,
+                            &self.reaction_updates,
                         )
                         .await?;
                     }
@@ -492,6 +535,7 @@ impl Store {
                             started,
                             &self.contents_read,
                             &self.poll_updates,
+                            &self.reaction_updates,
                         )
                         .await?;
                     }
@@ -543,6 +587,7 @@ impl Store {
                             started,
                             &self.contents_read,
                             &self.poll_updates,
+                            &self.reaction_updates,
                         )
                         .await?;
                     }
@@ -559,6 +604,12 @@ impl Store {
                     }
                 }
                 NetworkEvent::CacheAccountReset { user_id } => {
+                    self.history_revisions.clear();
+                    self.pin_revisions.clear();
+                    self.poll_revisions.clear();
+                    self.reaction_revisions.clear();
+                    self.poll_updates = polls::Journal::default();
+                    self.reaction_updates = reactions::Journal::default();
                     self.search_revision = None;
                     self.contents_read = contents::Receipts::default();
                     self.downloads.clear();
@@ -657,6 +708,7 @@ impl Store {
                             started,
                             &self.contents_read,
                             &self.poll_updates,
+                            &self.reaction_updates,
                         )
                         .await?;
                     }
@@ -740,6 +792,7 @@ impl Store {
                         started,
                         &self.contents_read,
                         &self.poll_updates,
+                        &self.reaction_updates,
                     )
                     .await?;
                     if let Some((mut chat, _)) = load_chat(&transaction, message.chat_id).await? {
@@ -840,6 +893,7 @@ impl Store {
                                 revision,
                                 &self.contents_read,
                                 &self.poll_updates,
+                                &self.reaction_updates,
                             )
                             .await?;
                         }
@@ -932,6 +986,7 @@ impl Store {
                 }
                 NetworkEvent::CacheInvalidated { chat_id } => {
                     self.poll_revisions.clear();
+                    self.reaction_revisions.clear();
                     if self
                         .search_revision
                         .is_some_and(|(_, id, _)| chat_id.is_none_or(|chat| chat == id))
@@ -968,6 +1023,7 @@ impl Store {
             .values()
             .chain(self.pin_revisions.values())
             .chain(self.poll_revisions.values())
+            .chain(self.reaction_revisions.values())
             .copied()
             .chain(self.search_revision.map(|(_, _, revision)| revision))
             .min()
@@ -977,6 +1033,7 @@ impl Store {
         transaction.commit().await?;
         self.contents_read.prune(oldest_in_flight);
         self.poll_updates.prune(oldest_in_flight);
+        self.reaction_updates.prune(oldest_in_flight);
         Ok(())
     }
 }
@@ -999,12 +1056,23 @@ async fn write_message(
     started: i64,
     receipts: &contents::Receipts,
     polls: &polls::Journal,
+    reactions: &reactions::Journal,
 ) -> Result<()> {
     let mut message = receipts.reconcile(message, started);
     if message.poll.is_some() {
         let poll = message.to_mut().poll.as_mut().expect("poll present");
         polls::merge_cached(connection, poll).await?;
         polls.reconcile(poll, started);
+    }
+    if message
+        .reactions
+        .as_ref()
+        .is_some_and(|summary| !summary.choices_known)
+    {
+        reactions::merge_cached(connection, message.to_mut()).await?;
+    }
+    if reactions.stale(started) || reactions.since(started).next().is_some() {
+        reactions::reconcile(reactions, message.to_mut(), started);
     }
     if message.id <= 0 {
         return Ok(());
@@ -1087,6 +1155,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,
@@ -1105,6 +1174,109 @@ mod tests {
             links: Vec::new(),
             buttons: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn reactions_reconcile_late_and_minimal_messages_without_crossing_accounts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.db");
+        let mut store = Store::open(&path).await.unwrap();
+        let mut original = message(10, "reaction target");
+        original.reactions = Some(crate::reactions::example().summary);
+        let mut latest = original.reactions.clone().unwrap();
+        latest.counts[0].count = 5;
+        store
+            .apply(&[
+                NetworkEvent::HistoryLoading {
+                    chat_id: 42,
+                    request_id: 1,
+                },
+                NetworkEvent::ReactionsLoading { request_id: 2 },
+                NetworkEvent::ReactionsChanged(crate::reactions::Update {
+                    chat: 42,
+                    message: 10,
+                    summary: latest.clone(),
+                }),
+            ])
+            .await
+            .unwrap();
+        let mut page = NetworkEvent::History {
+            chat_id: 42,
+            request_id: 1,
+            messages: vec![original.clone()],
+        };
+        store.reconcile_snapshots(&mut page).await.unwrap();
+        let NetworkEvent::History { messages, .. } = &page else {
+            unreachable!()
+        };
+        assert_eq!(messages[0].reactions.as_ref(), Some(&latest));
+        store.apply(&[page]).await.unwrap();
+        let mut loaded = NetworkEvent::ReactionsLoaded {
+            chat_id: 42,
+            message_id: 10,
+            request_id: 2,
+            result: Ok(crate::reactions::example()),
+        };
+        store.reconcile_snapshots(&mut loaded).await.unwrap();
+        let NetworkEvent::ReactionsLoaded {
+            result: Ok(review), ..
+        } = &loaded
+        else {
+            unreachable!()
+        };
+        assert_eq!(review.summary, latest);
+        store.apply(&[loaded]).await.unwrap();
+        // A minimal live edit preserves private choices in both the event
+        // shown by the application and the persisted cache.
+        let minimal = original.reactions.as_mut().unwrap();
+        minimal.choices_known = false;
+        for count in &mut minimal.counts {
+            count.chosen = None;
+        }
+        minimal.counts[0].count = 6;
+        let mut edited = NetworkEvent::MessageUpdated(original);
+        assert!(Store::has_message_snapshot(&edited));
+        store.reconcile_snapshots(&mut edited).await.unwrap();
+        let NetworkEvent::MessageUpdated(message) = &edited else {
+            unreachable!()
+        };
+        assert_eq!(
+            message.reactions.as_ref().unwrap().chosen(),
+            latest.chosen()
+        );
+        store.apply(&[edited]).await.unwrap();
+        drop(store);
+        let mut store = Store::open(&path).await.unwrap();
+        let messages = store.history(42, None, 10).await.unwrap();
+        let summary = messages[0].reactions.as_ref().unwrap();
+        assert_eq!(summary.counts[0].count, 6);
+        assert_eq!(summary.chosen(), latest.chosen());
+        store
+            .apply(&[
+                NetworkEvent::ReactionsLoading { request_id: 3 },
+                NetworkEvent::ReactionsChanged(crate::reactions::Update {
+                    chat: 42,
+                    message: 10,
+                    summary: latest,
+                }),
+                NetworkEvent::CacheAccountReset { user_id: 99 },
+            ])
+            .await
+            .unwrap();
+        let mut late = NetworkEvent::ReactionsLoaded {
+            chat_id: 42,
+            message_id: 10,
+            request_id: 3,
+            result: Ok(crate::reactions::example()),
+        };
+        store.reconcile_snapshots(&mut late).await.unwrap();
+        assert!(matches!(
+            late,
+            NetworkEvent::ReactionsLoaded { result: Err(_), .. }
+        ));
+        assert_eq!(store.reaction_updates.since(0).count(), 0);
+        assert!(store.history(42, None, 10).await.unwrap().is_empty());
     }
 
     #[tokio::test]

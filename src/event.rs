@@ -60,6 +60,23 @@ pub enum ConnectionStatus {
 /// Commands sent from the application to the Telegram worker.
 #[derive(Clone, Eq, PartialEq)]
 pub enum TelegramCommand {
+    LoadReactions {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
+    ChangeReaction {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        expected: Vec<crate::reactions::Kind>,
+        emoji: Option<String>,
+    },
+    RefreshReactions {
+        chat_id: ChatId,
+        message_ids: Vec<i32>,
+        request_id: u64,
+    },
     LoadPoll {
         chat_id: ChatId,
         message_id: i32,
@@ -300,6 +317,37 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::LoadReactions {
+                chat_id,
+                message_id,
+                request_id,
+            } => NetworkEvent::ReactionsLoaded {
+                chat_id,
+                message_id,
+                request_id,
+                result: Err(error),
+            },
+            Self::ChangeReaction {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => NetworkEvent::ReactionsFinished {
+                chat_id,
+                message_id: Some(message_id),
+                request_id,
+                error: Some(error),
+            },
+            Self::RefreshReactions {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::ReactionsFinished {
+                chat_id,
+                message_id: None,
+                request_id,
+                error: Some(error),
+            },
             Self::LoadPoll {
                 chat_id,
                 message_id,
@@ -593,6 +641,29 @@ impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LoadReactions {
+                chat_id,
+                request_id,
+                ..
+            }
+            | Self::ChangeReaction {
+                chat_id,
+                request_id,
+                ..
+            }
+            | Self::RefreshReactions {
+                chat_id,
+                request_id,
+                ..
+            } => formatter
+                .debug_struct(match self {
+                    Self::LoadReactions { .. } => "LoadReactions",
+                    Self::ChangeReaction { .. } => "ChangeReaction",
+                    _ => "RefreshReactions",
+                })
+                .field("chat_id", chat_id)
+                .field("request_id", request_id)
+                .finish_non_exhaustive(),
             Self::LoadPoll {
                 chat_id,
                 message_id,
@@ -975,6 +1046,22 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    ReactionsChanged(crate::reactions::Update),
+    ReactionsLoading {
+        request_id: u64,
+    },
+    ReactionsLoaded {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        result: Result<crate::reactions::Review, String>,
+    },
+    ReactionsFinished {
+        chat_id: ChatId,
+        message_id: Option<i32>,
+        request_id: u64,
+        error: Option<String>,
+    },
     PollChanged(crate::polls::Update),
     PollLoading {
         request_id: u64,

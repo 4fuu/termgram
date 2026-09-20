@@ -235,3 +235,5 @@ for backends, previews, quiet delivery and grouping. This is separate from the
 `notifications` statusline item.
 
 Poll panel keys use the `poll` context; see [Polls](Polls.md).
+
+Reaction picker keys use the `reactions` context; see [Reactions](Reactions.md).

@@ -9,6 +9,7 @@ mod icons;
 mod pins;
 mod polls;
 mod preview;
+mod reactions;
 mod search;
 mod staging;
 mod statusline;
@@ -46,6 +47,8 @@ const QR_QUIET_ZONE: usize = 2;
 
 pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     app.set_visible_polls(Vec::new());
+    app.set_visible_reactions(Vec::new());
+    app.reactions.hit_rows.clear();
     app.polls.hit_rows.clear();
     let area = frame.area();
     app.clear_message_hit_regions();
@@ -473,6 +476,8 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         forwarding::render(frame, area, app);
     } else if app.mode == Mode::DeletePrompt {
         deletion::render(frame, area, app);
+    } else if app.mode == Mode::Reactions {
+        reactions::render(frame, area, app);
     } else if app.mode == Mode::Poll {
         polls::render(frame, area, app);
     } else if app.mode == Mode::Edit {
@@ -504,6 +509,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         app.mode,
         Mode::Search
             | Mode::Poll
+            | Mode::Reactions
             | Mode::Edit
             | Mode::DeletePrompt
             | Mode::ForwardPrompt
@@ -806,6 +812,22 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         .map(|message| (message.chat_id, message.id))
         .take(32)
         .collect();
+    let visible_reactions = layouts
+        .iter()
+        .filter(|layout| {
+            layout.start < read_bottom && layout.start.saturating_add(layout.height) > scroll
+        })
+        .filter_map(|layout| {
+            messages.iter().find(|message| {
+                message.id == layout.id
+                    && message.id > 0
+                    && !message.outgoing
+                    && message.reactions.is_some()
+            })
+        })
+        .map(|message| (message.chat_id, message.id))
+        .take(100)
+        .collect();
     let visible_read = visible.iter().map(|message| message.id).max();
     let mentions = visible
         .iter()
@@ -819,6 +841,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         .take(100)
         .collect();
     app.set_visible_polls(visible_polls);
+    app.set_visible_reactions(visible_reactions);
     app.set_visible_mentions(mentions);
     app.set_visible_read_boundary(chat_id, visible_read.or((available > 0).then_some(0)));
     app.set_message_hit_regions(hit_regions);
@@ -2005,6 +2028,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,
@@ -2372,6 +2396,7 @@ mod tests {
         let mut app = populated_app();
         app.messages.get_mut(&7).unwrap().extend([
             Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,
@@ -2398,6 +2423,7 @@ mod tests {
                 buttons: Vec::new(),
             },
             Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,
@@ -2645,6 +2671,7 @@ mod tests {
         let mut app = populated_app();
         let messages = (0_i32..30)
             .map(|id| Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,
@@ -2678,6 +2705,7 @@ mod tests {
             .get_mut(&7)
             .expect("active history")
             .push(Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,
@@ -2719,6 +2747,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,

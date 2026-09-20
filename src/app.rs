@@ -15,6 +15,7 @@ mod message_views;
 mod notifications;
 mod pins;
 pub(crate) mod polls;
+pub(crate) mod reactions;
 mod reads;
 mod replies;
 pub(crate) mod search;
@@ -72,6 +73,7 @@ pub enum MessageAction {
     Spoilers,
     ExpandQuote,
     Poll,
+    Reactions,
     Link(usize),
     Button(usize),
 }
@@ -176,6 +178,7 @@ pub enum Mode {
     DeletePrompt,
     ForwardPrompt,
     Poll,
+    Reactions,
     Command,
     Status,
     Attachments,
@@ -237,6 +240,7 @@ pub struct App {
     pub pins: pins::State,
     pub message_pins: message_pins::State,
     pub polls: polls::State,
+    pub reactions: reactions::State,
     replies: replies::State,
     /// Position in the filtered chat list, never a persistent model identity.
     pub selected_chat: usize,
@@ -361,6 +365,7 @@ impl Default for App {
             pins: pins::State::default(),
             message_pins: message_pins::State::default(),
             polls: polls::State::default(),
+            reactions: reactions::State::default(),
             replies: replies::State::default(),
             selected_chat: 0,
             active_chat_id: None,
@@ -594,6 +599,7 @@ impl App {
                 Mode::Edit => Context::Edit,
                 Mode::ForwardPrompt => Context::Forward,
                 Mode::Poll => Context::Poll,
+                Mode::Reactions => Context::Reactions,
                 Mode::Command => Context::Command,
                 Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
@@ -613,7 +619,9 @@ impl App {
         };
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
-                if (matches!(run, Action::Reveal | Action::ToggleSidebar)
+                if ((self.mode == Mode::Reactions
+                    && matches!(run, Action::Open | Action::Send | Action::ClearReactions))
+                    || matches!(run, Action::Reveal | Action::ToggleSidebar)
                     || (matches!(self.mode, Mode::ForwardPrompt | Mode::Poll)
                         && run == Action::Send))
                     && key.kind == yazi_term::event::KeyEventKind::Repeat
@@ -658,6 +666,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.reaction_binding(run, count) {
+            return commands;
+        }
         if let Some(commands) = self.poll_binding(run, count) {
             return commands;
         }
@@ -996,6 +1007,28 @@ impl App {
         if !matches!(self.screen, Screen::Main) {
             return Vec::new();
         }
+        if self.mode == Mode::Reactions {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) =
+                        pointer_row_hit(&self.reactions.hit_rows, mouse.column, mouse.row)
+                        && let Some(panel) = &mut self.reactions.panel
+                    {
+                        panel.selected = index;
+                    }
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    let action = if mouse.kind == MouseEventKind::ScrollUp {
+                        Action::Up
+                    } else {
+                        Action::Down
+                    };
+                    return self.reaction_binding(&action, 3).unwrap_or_default();
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.mode == Mode::Poll {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1217,6 +1250,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.observe_reactions(&event) {
+            return commands;
+        }
         if let Some(commands) = self.observe_polls(&event) {
             return commands;
         }
@@ -1486,7 +1522,11 @@ impl App {
                 }
                 Vec::new()
             }
-            NetworkEvent::PollChanged(_)
+            NetworkEvent::ReactionsChanged(_)
+            | NetworkEvent::ReactionsLoading { .. }
+            | NetworkEvent::ReactionsLoaded { .. }
+            | NetworkEvent::ReactionsFinished { .. }
+            | NetworkEvent::PollChanged(_)
             | NetworkEvent::PollLoading { .. }
             | NetworkEvent::PollLoaded { .. }
             | NetworkEvent::PollFinished { .. }
@@ -2078,6 +2118,14 @@ impl App {
                 .filter(|(_, button)| button.kind.is_supported())
                 .map(|(index, _)| MessageAction::Button(index)),
         );
+        if message.id > 0
+            && message
+                .reactions
+                .as_ref()
+                .is_some_and(|summary| !summary.counts.is_empty())
+        {
+            actions.push(MessageAction::Reactions);
+        }
         actions
     }
 
@@ -2322,7 +2370,8 @@ impl App {
             | Mode::PinPrompt
             | Mode::DeletePrompt
             | Mode::ForwardPrompt
-            | Mode::Poll => Vec::new(),
+            | Mode::Poll
+            | Mode::Reactions => Vec::new(),
             Mode::Colors => self.handle_colors(action),
             Mode::Help => self.handle_help(action),
             Mode::Settings => self.handle_settings(action),
@@ -2857,6 +2906,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,
@@ -2912,6 +2962,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                reactions: None,
                 poll: None,
                 entities: Vec::new(),
                 notification: None,
@@ -3097,6 +3148,9 @@ impl App {
 
         if action == MessageAction::Attachment {
             return self.activate_attachment(chat_id, message_id, &message);
+        }
+        if action == MessageAction::Reactions {
+            return self.begin_reactions();
         }
         if action == MessageAction::Poll {
             return self.begin_poll();
@@ -4811,6 +4865,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,
@@ -4860,6 +4915,172 @@ mod tests {
                 .map(|id| message(id, 1, &format!("message {id}"), false))
                 .collect(),
         });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn reactions_use_reviewed_identity_explicit_keys_and_bounded_refresh() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.connection = crate::event::ConnectionStatus::Online;
+        app.selected_message = Some(20);
+        let review = crate::reactions::example();
+        app.messages
+            .get_mut(&1)
+            .unwrap()
+            .last_mut()
+            .unwrap()
+            .reactions = Some(review.summary.clone());
+        let commands = app.run_binding("reactions", 1);
+        let [TelegramCommand::LoadReactions { request_id, .. }] = commands.as_slice() else {
+            panic!("load choices")
+        };
+        assert_eq!(app.mode, Mode::Reactions);
+        assert!(app.run_binding("open", 1).is_empty());
+        app.handle_network(NetworkEvent::ReactionsLoaded {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(review.clone()),
+        });
+        for width in [40, 110] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(text.contains("Reactions"));
+            assert!(text.contains("Love"));
+            assert!(text.contains('●'));
+        }
+        let (x, _, y, _) = app.reactions.hit_rows[1];
+        assert!(
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: Modifiers::empty()
+            })
+            .is_empty(),
+            "click only selects"
+        );
+        let commands = app.run_binding("open", 1);
+        let [
+            TelegramCommand::ChangeReaction {
+                request_id,
+                expected,
+                emoji,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("explicit toggle")
+        };
+        assert_eq!(emoji.as_deref(), Some("❤"));
+        assert_eq!(*expected, review.summary.chosen());
+        assert!(app.run_binding("open", 1).is_empty());
+        app.handle_network(NetworkEvent::ReactionsFinished {
+            chat_id: 1,
+            message_id: Some(20),
+            request_id: *request_id,
+            error: Some("Timeout".to_owned()),
+        });
+        assert!(
+            app.run_binding("open", 1).is_empty(),
+            "refresh before uncertain retry"
+        );
+        let commands = app.run_binding("refresh", 1);
+        let [TelegramCommand::LoadReactions { request_id, .. }] = commands.as_slice() else {
+            panic!("refresh")
+        };
+        app.handle_network(NetworkEvent::ReactionsLoaded {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(review),
+        });
+        let commands = app.run_binding("clear_reactions", 1);
+        let [
+            TelegramCommand::ChangeReaction {
+                request_id,
+                emoji: None,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("remove mine")
+        };
+        app.run_binding("cancel", 1);
+        assert!(
+            app.run_binding("reactions", 1).is_empty(),
+            "retain pending write after close"
+        );
+        app.handle_network(NetworkEvent::ReactionsFinished {
+            chat_id: 1,
+            message_id: Some(20),
+            request_id: *request_id,
+            error: Some("not applied".to_owned()),
+        });
+        assert!(app.status_message.as_ref().unwrap().contains("not applied"));
+        let commands = app.request_visible_reactions();
+        let [
+            TelegramCommand::RefreshReactions {
+                chat_id,
+                request_id,
+                message_ids,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("batch visible reactions")
+        };
+        assert_eq!(message_ids, &[20]);
+        assert!(app.request_visible_reactions().is_empty());
+        app.handle_network(NetworkEvent::ReactionsFinished {
+            chat_id: *chat_id,
+            message_id: None,
+            request_id: *request_id,
+            error: None,
+        });
+        app.set_visible_reactions(Vec::new());
+        app.set_visible_reactions(vec![(1, 20)]);
+        assert!(
+            app.request_visible_reactions().is_empty(),
+            "redrawing does not bypass the refresh interval"
+        );
+        app.terminal_focused = false;
+        assert!(app.next_reaction_deadline().is_none());
+        let commands = app.run_binding("reactions", 1);
+        let [TelegramCommand::LoadReactions { request_id, .. }] = commands.as_slice() else {
+            panic!("new review")
+        };
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![20],
+        });
+        app.handle_network(NetworkEvent::ReactionsLoaded {
+            chat_id: 1,
+            message_id: 20,
+            request_id: *request_id,
+            result: Ok(crate::reactions::example()),
+        });
+        assert!(!app.reactions.panel.as_ref().unwrap().ready);
+        assert!(
+            app.reactions
+                .panel
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("deleted")
+        );
     }
 
     #[test]
@@ -7304,6 +7525,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,
@@ -7330,6 +7552,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,
@@ -7345,6 +7568,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            reactions: None,
             poll: None,
             entities: Vec::new(),
             notification: None,

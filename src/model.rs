@@ -112,6 +112,8 @@ pub struct Mention {
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
     #[serde(default)]
+    pub reactions: Option<crate::reactions::Summary>,
+    #[serde(default)]
     pub poll: Option<crate::polls::Poll>,
     #[serde(default)]
     pub entities: Vec<crate::entities::Entity>,

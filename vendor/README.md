@@ -264,3 +264,12 @@ follow `Telegram/SourceFiles/data/data_poll.cpp` and
 The application preserves choices omitted by minimal updates and validates
 stable answer bytes against a freshly fetched poll. The existing Ratatui entity
 renderer, Yazi key resolver and single event loop own display and input.
+
+Ordinary reactions call Grammers `Client::send_reactions` with `InputReactions`
+from a vector, preserving the identity and chosen order of existing reactions.
+Available emoji, chat permissions and limits use typed TL requests at the same
+SDK revision. Partial-result merging, oldest-choice replacement and batched
+visible refresh follow Desktop `data/data_message_reactions.cpp` at
+`4d4da471fbee771c10e173a83c003ba1728989f1`; no source is copied. Polls and reactions
+share the bounded cache journal and the existing message-view visitor. Neither
+adds a terminal reader or an independent Telegram update consumer.

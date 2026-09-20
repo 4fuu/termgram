@@ -82,3 +82,5 @@ context has `complete_next`, `complete_previous`, `history_previous` and
 `history_next` actions, in addition to normal editor actions. See
 [Lua configuration](Configuration.md). Keyboard bindings and command actions
 share the same application dispatch and descriptions.
+
+`:react` opens the selected message’s [emoji reaction picker](Reactions.md).

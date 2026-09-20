@@ -16,6 +16,7 @@ time. Cached messages are available while it reconnects.
 | Navigate Telegram folders | [Folders](Folders.md) |
 | Pin chats or messages, browse pins | [Pins](Pins.md) |
 | Read polls and quizzes, vote or retract a vote | [Polls](Polls.md) |
+| Add, remove and read message reactions | [Reactions](Reactions.md) |
 | Search local or cloud history with filters | [Message search](Search.md) |
 | Desktop alerts, chat mute and unread mentions | [Notification settings](Notifications.md) |
 | Color a chat or folder | [Appearance](Appearance.md) |
@@ -30,7 +31,7 @@ with `tg --version`. The app's `?` help reflects your actual Lua bindings.
 Documentation is available in English and Simplified Chinese; the interface
 currently uses English text, with configurable composer ghost text.
 
-Broadcast channels, secret chats, calls, stories, reactions, sticker/GIF pickers,
+Broadcast channels, secret chats, calls, stories, sticker/GIF pickers,
 server-wide message search, contact management, chat creation, group
 administration are outside this revision’s scope.
 Message editing, deletion, copying, forwarding and Saved Messages are supported;

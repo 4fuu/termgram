@@ -48,23 +48,68 @@ impl Receipts {
 
 impl Store {
     pub(crate) fn has_message_snapshot(event: &NetworkEvent) -> bool {
-        matches!(
-            event,
-            NetworkEvent::PollLoaded { .. }
-                | NetworkEvent::History { .. }
-                | NetworkEvent::OlderHistory { .. }
-                | NetworkEvent::ReplyPreviews { complete: true, .. }
-                | NetworkEvent::PinnedMessages { .. }
-                | NetworkEvent::PinnedContext { .. }
-                | NetworkEvent::MessageLoaded { .. }
-                | NetworkEvent::CloudSearchResults { .. }
-                | NetworkEvent::CloudSearchContext { .. }
-        )
+        matches!(event, NetworkEvent::NewMessage(message) | NetworkEvent::MessageUpdated(message) | NetworkEvent::CacheMessage(message) | NetworkEvent::MessageSent { message, .. }
+            if message.poll.is_some() || message.reactions.is_some())
+            || matches!(
+                event,
+                NetworkEvent::ReactionsLoaded { .. }
+                    | NetworkEvent::PollLoaded { .. }
+                    | NetworkEvent::History { .. }
+                    | NetworkEvent::OlderHistory { .. }
+                    | NetworkEvent::ReplyPreviews { complete: true, .. }
+                    | NetworkEvent::PinnedMessages { .. }
+                    | NetworkEvent::PinnedContext { .. }
+                    | NetworkEvent::MessageLoaded { .. }
+                    | NetworkEvent::CloudSearchResults { .. }
+                    | NetworkEvent::CloudSearchContext { .. }
+            )
     }
 
     /// Called before the snapshot is applied and its generation is retired.
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn reconcile_snapshots(&self, event: &mut NetworkEvent) -> anyhow::Result<()> {
+        if let NetworkEvent::NewMessage(message)
+        | NetworkEvent::MessageUpdated(message)
+        | NetworkEvent::CacheMessage(message)
+        | NetworkEvent::MessageSent { message, .. } = event
+        {
+            // Live message edits can also contain minimal media/reaction data.
+            // They supersede old snapshots but preserve omitted private choices.
+            super::reactions::merge_cached(&self.connection, message).await?;
+            if let Some(poll) = &mut message.poll {
+                super::polls::merge_cached(&self.connection, poll).await?;
+            }
+            return Ok(());
+        }
+        if let NetworkEvent::ReactionsLoaded {
+            chat_id,
+            message_id,
+            request_id,
+            result,
+        } = event
+        {
+            if let Some(started) = self.reaction_revisions.get(request_id) {
+                if let Ok(review) = result {
+                    super::reactions::merge_summary(
+                        &self.connection,
+                        *chat_id,
+                        *message_id,
+                        &mut review.summary,
+                    )
+                    .await?;
+                    super::reactions::reconcile_summary(
+                        &self.reaction_updates,
+                        *chat_id,
+                        *message_id,
+                        &mut review.summary,
+                        *started,
+                    );
+                }
+            } else if result.is_ok() {
+                *result = Err("History changed during reaction lookup; reopen it".to_owned());
+            }
+            return Ok(());
+        }
         if let NetworkEvent::PollLoaded {
             request_id, result, ..
         } = event
@@ -156,6 +201,8 @@ impl Store {
         };
         if let Some(started) = started {
             for message in messages {
+                super::reactions::merge_cached(&self.connection, message).await?;
+                super::reactions::reconcile(&self.reaction_updates, message, started);
                 if let Some(poll) = &mut message.poll {
                     super::polls::merge_cached(&self.connection, poll).await?;
                     self.poll_updates.reconcile(poll, started);

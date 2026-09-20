@@ -371,6 +371,9 @@ impl App {
                     if let Some(error) = error {
                         review.ready = false;
                         review.fail(format!("{error} · refresh before retrying"));
+                        if self.mode != Mode::Poll {
+                            self.status_message.clone_from(&review.error);
+                        }
                     } else {
                         review.dirty = false;
                         self.status_message = Some("Vote saved".to_owned());

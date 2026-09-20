@@ -204,3 +204,5 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 [通知设置](Notifications.md)。它与底栏名为 `notifications` 的组件分别配置。
 
 投票面板快捷键使用 `poll` 上下文，见[投票与测验](Polls.md)。
+
+回应选择器使用 `reactions` 上下文，见[消息回应](Reactions.md)。

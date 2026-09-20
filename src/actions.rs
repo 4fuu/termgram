@@ -85,6 +85,8 @@ actions! {
     OpenLink => ("open_link", "Open the selected link"),
     NextAction => ("next_action", "Select the next message action"),
     PreviousAction => ("previous_action", "Select the previous message action"),
+    Reactions => ("reactions", "Choose an emoji reaction"),
+    ClearReactions => ("clear_reactions", "Remove your emoji reactions from this message"),
     Poll => ("poll", "Read a poll and review your vote"),
     TogglePollAnswer => ("toggle_poll_answer", "Select or deselect this poll answer"),
     RetractVote => ("retract_vote", "Prepare to retract your poll vote"),

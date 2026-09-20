@@ -91,6 +91,7 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Reactions(crate::reactions::Review),
     Poll(crate::polls::Poll),
     Search(super::search::Page),
     Muted(i64),
@@ -127,7 +128,10 @@ pub(super) fn spawn(
     let chat_id = match &command {
         TelegramCommand::ResolveAlertSettings { key, .. } => Some(key.chat),
         TelegramCommand::SearchCloud(request) => Some(request.chat_id),
-        TelegramCommand::LoadPoll { chat_id, .. }
+        TelegramCommand::LoadReactions { chat_id, .. }
+        | TelegramCommand::ChangeReaction { chat_id, .. }
+        | TelegramCommand::RefreshReactions { chat_id, .. }
+        | TelegramCommand::LoadPoll { chat_id, .. }
         | TelegramCommand::VotePoll { chat_id, .. }
         | TelegramCommand::RefreshPoll { chat_id, .. }
         | TelegramCommand::SearchMentions { chat_id, .. }
@@ -302,6 +306,44 @@ async fn execute(
         } => {
             super::deletion::delete(client, peer()?, *message_id, self_id, *revision, *scope)
                 .await?;
+            Ok(Response::Applied)
+        }
+        TelegramCommand::LoadReactions { message_id, .. } => Ok(Response::Reactions(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                super::reactions::review(client, peer()?, *message_id, self_id),
+            )
+            .await
+            .context("Reaction lookup timed out")??,
+        )),
+        TelegramCommand::ChangeReaction {
+            message_id,
+            expected,
+            emoji,
+            ..
+        } => {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                super::reactions::change(
+                    client,
+                    peer()?,
+                    *message_id,
+                    self_id,
+                    expected,
+                    emoji.as_deref(),
+                ),
+            )
+            .await
+            .context("Reaction status is uncertain; refresh before retrying")??;
+            Ok(Response::Applied)
+        }
+        TelegramCommand::RefreshReactions { message_ids, .. } => {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                super::reactions::refresh(client, peer()?, message_ids.clone()),
+            )
+            .await
+            .context("Reaction refresh timed out")??;
             Ok(Response::Applied)
         }
         TelegramCommand::LoadPoll { message_id, .. } => Ok(Response::Poll(
@@ -758,6 +800,46 @@ pub(super) async fn complete(
                 error: None,
             }
         }
+        (
+            TelegramCommand::LoadReactions {
+                chat_id,
+                message_id,
+                request_id,
+            },
+            Response::Reactions(review),
+        ) => NetworkEvent::ReactionsLoaded {
+            chat_id,
+            message_id,
+            request_id,
+            result: Ok(review),
+        },
+        (
+            TelegramCommand::ChangeReaction {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            },
+            Response::Applied,
+        ) => NetworkEvent::ReactionsFinished {
+            chat_id,
+            message_id: Some(message_id),
+            request_id,
+            error: None,
+        },
+        (
+            TelegramCommand::RefreshReactions {
+                chat_id,
+                request_id,
+                ..
+            },
+            Response::Applied,
+        ) => NetworkEvent::ReactionsFinished {
+            chat_id,
+            message_id: None,
+            request_id,
+            error: None,
+        },
         (
             TelegramCommand::LoadPoll {
                 chat_id,

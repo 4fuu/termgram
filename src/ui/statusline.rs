@@ -107,6 +107,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
                 Mode::Edit => " EDIT ",
                 Mode::ForwardPrompt => " FORWARD ",
                 Mode::Poll => " POLL ",
+                Mode::Reactions => " REACT ",
                 Mode::DeletePrompt => " DELETE ",
                 Mode::Command => " COMMAND ",
                 Mode::Filter | Mode::Search => " SEARCH ",
@@ -212,6 +213,7 @@ fn selected_context(app: &AppState) -> Option<String> {
             hints.push(format!("{} original", hint("open")));
         }
         match app.message_actions(message).get(app.selected_action) {
+            Some(MessageAction::Reactions) => hints.push(format!("{} react", hint("open"))),
             Some(MessageAction::Poll) => hints.push(format!("{} poll", hint("open"))),
             Some(MessageAction::Spoilers) => hints.push(format!(
                 "{} {} spoiler",
@@ -266,6 +268,20 @@ fn selected_context(app: &AppState) -> Option<String> {
 
 #[allow(clippy::too_many_lines)]
 fn context(app: &AppState, narrow: bool) -> String {
+    if app.mode == Mode::Reactions {
+        let hint = |action| app.keymap.hint(Context::Reactions, action);
+        if narrow {
+            return format!("{} toggle · {} close", hint("open"), hint("cancel"));
+        }
+        return format!(
+            "{} toggle · {} remove mine · {} refresh · {} close",
+            hint("open"),
+            hint("clear_reactions"),
+            hint("refresh"),
+            hint("cancel")
+        );
+    }
+
     if app.mode == Mode::Poll {
         let hint = |action| app.keymap.hint(Context::Poll, action);
         if narrow {
@@ -389,6 +405,9 @@ fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {
             })
             .to_string(),
     );
+    if let Some(summary) = &message.reactions {
+        parts.push(super::reactions::status(summary));
+    }
     if let Some(poll) = &message.poll {
         parts.push(super::polls::status(poll));
     }

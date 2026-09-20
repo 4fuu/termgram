@@ -145,6 +145,7 @@ fn body(message: &Message, width: usize, app: &AppState) -> Vec<super::entities:
                 }),
             }),
     );
+    body.extend(super::reactions::transcript(message, width));
     body
 }
 

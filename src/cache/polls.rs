@@ -5,41 +5,16 @@ use crate::{
     polls::{Poll, ResultsPatch, Update},
 };
 use libsql::{Connection, params};
-use std::collections::VecDeque;
-
-#[derive(Default)]
-pub(super) struct Journal {
-    updates: VecDeque<(i64, Update)>,
-    overflow: i64,
-}
+pub(super) type Journal = super::journal::Journal<Update>;
 
 impl Journal {
-    pub fn record(&mut self, revision: i64, update: Update) {
-        self.updates.push_back((revision, update));
-        if self.updates.len() > 512 {
-            self.overflow = self.updates.pop_front().expect("over limit").0;
-        }
-    }
-
     pub fn reconcile(&self, poll: &mut Poll, started: i64) {
-        for (_, update) in self
-            .updates
-            .iter()
-            .filter(|(revision, _)| *revision > started)
-        {
+        for update in self.since(started) {
             poll.apply(update);
         }
-        // A long-stalled RPC must not advertise a possibly older choice after
-        // the bounded journal overflows. A fresh lookup clears this marker.
-        if started < self.overflow {
+        // Dropped patches require a fresh lookup before choices can be trusted.
+        if self.stale(started) {
             poll.stale = true;
-        }
-    }
-
-    pub fn prune(&mut self, oldest: i64) {
-        self.updates.retain(|(revision, _)| *revision > oldest);
-        if oldest >= self.overflow {
-            self.overflow = 0;
         }
     }
 }
@@ -127,6 +102,6 @@ mod tests {
         assert!(!fresh.stale);
         assert_eq!(fresh.results.total, Some(514));
         journal.prune(514);
-        assert!(journal.updates.is_empty());
+        assert_eq!(journal.since(0).count(), 0);
     }
 }

@@ -73,3 +73,5 @@
 可在 `chats` 和 `conversation` 上下文重绑入口动作 `command`。`command` 上下文提供
 `complete_next`、`complete_previous`、`history_previous`、`history_next`，以及普通编辑动作。
 参见 [Lua 配置](Configuration.md)。快捷键和命令共用业务动作与说明。
+
+`:react` 打开选中消息的 [emoji 回应选择器](Reactions.md)。

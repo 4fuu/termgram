@@ -138,6 +138,7 @@ pub enum TelegramCommand {
     },
     MarkRead {
         chat_id: ChatId,
+        max_id: i32,
     },
     RefreshDialogs,
     RefreshDialogPins,
@@ -310,9 +311,11 @@ impl TelegramCommand {
                 request_id,
                 error,
             },
-            TelegramCommand::MarkRead { chat_id } => {
-                NetworkEvent::ReadMarkFailed { chat_id, error }
-            }
+            TelegramCommand::MarkRead { chat_id, max_id } => NetworkEvent::ReadMarkFailed {
+                chat_id,
+                max_id,
+                error,
+            },
             TelegramCommand::LoadReplyPreviews {
                 chat_id,
                 request_id,
@@ -467,9 +470,10 @@ impl fmt::Debug for TelegramCommand {
                 .field("message_id", message_id)
                 .field("button_index", button_index)
                 .finish(),
-            Self::MarkRead { chat_id } => formatter
+            Self::MarkRead { chat_id, max_id } => formatter
                 .debug_struct("MarkRead")
                 .field("chat_id", chat_id)
+                .field("max_id", max_id)
                 .finish(),
             Self::SearchCached(request) => formatter
                 .debug_struct("SearchCached")
@@ -641,6 +645,7 @@ pub enum NetworkEvent {
     Folders(Vec<crate::folders::Folder>),
     UnreadChanged {
         chat_id: ChatId,
+        max_id: i32,
         unread: u32,
     },
     OlderHistory {
@@ -731,9 +736,12 @@ pub enum NetworkEvent {
     },
     ReadMarked {
         chat_id: ChatId,
+        max_id: i32,
+        snapshot: Option<crate::read_state::Snapshot>,
     },
     ReadMarkFailed {
         chat_id: ChatId,
+        max_id: i32,
         error: String,
     },
     MessagesRead {

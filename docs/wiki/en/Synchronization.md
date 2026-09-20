@@ -12,6 +12,21 @@ The currently viewed group also receives periodic difference checks using
 Telegram's requested interval. Leaving the conversation or unfocusing the
 terminal stops active polling. Ordinary push updates and gap recovery continue.
 
+Automatic read receipts follow the displayed conversation. A focused terminal
+acknowledges only through the highest incoming message whose bottom is visible,
+after a successful frame. Opening a chat, loading history, or receiving a message
+does not itself mark it read. Overlays, hidden conversation panes, and background
+windows do not generate receipts. Visiting an older reply does not mark the
+entire conversation read.
+
+The server's incoming read boundary is cached with each chat. Receipts are
+coalesced per chat and retried after failures; a late acknowledgement cannot
+clear messages newer than its boundary. Remaining unread counts come from a
+bounded request for that chat. If the count refresh fails or a newer message
+arrives first, the displayed count may temporarily remain high until the next
+server update or successful receipt. Older caches acquire the boundary from
+Telegram before generating automatic receipts.
+
 Each session has a separate `*.cache.sqlite3` database beside its session file.
 The cache contains message text, chat metadata and downloaded attachment paths.
 It does not contain authentication keys or user preferences. On Unix the file is

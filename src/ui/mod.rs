@@ -748,6 +748,25 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             })
         })
         .collect();
+    // The new-message badge covers the last physical row. It cannot count as
+    // displaying the end of a message underneath it.
+    let read_bottom = scroll
+        .saturating_add(available.saturating_sub(usize::from(app.new_messages_while_scrolled > 0)));
+    let visible_read = layouts
+        .iter()
+        .filter(|layout| {
+            layout.start < read_bottom
+                && layout.start.saturating_add(layout.height) > scroll
+                && layout.start.saturating_add(layout.height) <= read_bottom
+        })
+        .filter_map(|layout| {
+            messages
+                .iter()
+                .find(|message| message.id == layout.id && message.id > 0 && !message.outgoing)
+                .map(|message| message.id)
+        })
+        .max();
+    app.set_visible_read_boundary(chat_id, visible_read);
     app.set_message_hit_regions(hit_regions);
     render_new_message_badge(frame, inner, app.new_messages_while_scrolled);
 }
@@ -1366,6 +1385,49 @@ mod tests {
     }
 
     #[test]
+    fn receipts_follow_visible_rows_and_require_an_unobscured_focused_frame() {
+        use crate::event::{NetworkEvent, TelegramCommand};
+        let mut app = populated_app();
+        app.sidebar_hidden = true;
+        app.focus = Focus::Conversation;
+        let first = app.active_messages()[0].clone();
+        let mut later = first.clone();
+        later.id = 12;
+        later.text = "Long incoming message\n".repeat(40);
+        app.messages.insert(7, vec![first, later]);
+        app.viewport_anchor_message = Some(11);
+        assert!(app.request_visible_read().is_empty());
+
+        app.mode = Mode::Help;
+        render_text_mut(&mut app, 80, 18);
+        assert!(app.request_visible_read().is_empty());
+        app.mode = Mode::Navigate;
+        app.terminal_focused = false;
+        render_text_mut(&mut app, 80, 18);
+        assert!(app.request_visible_read().is_empty());
+        app.terminal_focused = true;
+        render_text_mut(&mut app, 80, 18);
+        assert_eq!(
+            app.request_visible_read(),
+            vec![TelegramCommand::MarkRead {
+                chat_id: 7,
+                max_id: 11,
+            }]
+        );
+        assert!(app.request_visible_read().is_empty());
+        app.handle_network(NetworkEvent::ReadMarked {
+            chat_id: 7,
+            max_id: 11,
+            snapshot: None,
+        });
+        assert!(app.request_visible_read().is_empty());
+
+        // A smaller terminal replaces the transcript. Old frame evidence dies.
+        render_text_mut(&mut app, 10, 3);
+        assert!(app.request_visible_read().is_empty());
+    }
+
+    #[test]
     fn command_popup_adapts_and_pointer_completion_does_not_execute() {
         use yazi_term::event::{
             KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -1744,6 +1806,7 @@ mod tests {
         app.connection = ConnectionStatus::Online;
         app.user_name = Some("Me".to_owned());
         app.chats.push(Chat {
+            read_inbox_max_id: Some(0),
             membership: crate::folders::ChatMembership::default(),
             id: 7,
             title: "Alice 東京".to_owned(),
@@ -2360,6 +2423,7 @@ mod tests {
         let mut app = populated_app();
         for index in 0_i64..30 {
             app.chats.push(Chat {
+                read_inbox_max_id: Some(0),
                 membership: crate::folders::ChatMembership::default(),
                 id: 100 + index,
                 title: format!("Overflow chat {index:02}"),

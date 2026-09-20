@@ -177,6 +177,7 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>();
         let mut outgoing = app.request_visible_media();
         outgoing.extend(app.request_visible_replies());
+        outgoing.extend(app.request_visible_read());
         dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
         if missing_previews
             .iter()

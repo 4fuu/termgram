@@ -427,9 +427,13 @@ impl Store {
                 NetworkEvent::Folders(folders) => {
                     set_metadata(&transaction, "folders", &serde_json::to_string(folders)?).await?;
                 }
-                NetworkEvent::UnreadChanged { chat_id, unread } => {
+                NetworkEvent::UnreadChanged {
+                    chat_id,
+                    max_id,
+                    unread,
+                } => {
                     if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
-                        chat.unread = (*unread).max(u32::from(chat.membership.unread_mark));
+                        crate::read_state::inbox_update(&mut chat, *max_id, *unread);
                         write_chat(&transaction, &chat, revision).await?;
                     }
                 }
@@ -464,6 +468,8 @@ impl Store {
                             chat.last_activity = current.last_activity;
                             chat.last_message_id = current.last_message_id;
                             chat.unread = current.unread;
+                            chat.read_inbox_max_id =
+                                chat.read_inbox_max_id.max(current.read_inbox_max_id);
                         }
                         write_chat(&transaction, &chat, revision).await?;
                     }
@@ -572,6 +578,7 @@ impl Store {
                             && !message.outgoing
                             && !existed
                             && latest
+                            && chat.read_inbox_max_id.is_none_or(|seen| message.id > seen)
                         {
                             chat.unread = chat.unread.saturating_add(1);
                         }
@@ -640,9 +647,13 @@ impl Store {
                         }
                     }
                 }
-                NetworkEvent::ReadMarked { chat_id } => {
+                NetworkEvent::ReadMarked {
+                    chat_id,
+                    max_id,
+                    snapshot,
+                } => {
                     if let Some((mut chat, _)) = load_chat(&transaction, *chat_id).await? {
-                        chat.unread = 0;
+                        crate::read_state::acknowledge(&mut chat, *max_id, snapshot.as_ref());
                         write_chat(&transaction, &chat, revision).await?;
                     }
                 }
@@ -908,6 +919,7 @@ mod tests {
         let path = directory.join("one.sqlite3");
         let mut store = Store::open(&path).await.unwrap();
         let chat = Chat {
+            read_inbox_max_id: Some(0),
             membership: crate::folders::ChatMembership::default(),
             id: 42,
             title: "Group".to_owned(),
@@ -1313,6 +1325,7 @@ mod tests {
             title: "Group".to_owned(),
             kind: ChatKind::Group,
             unread: 0,
+            read_inbox_max_id: Some(0),
             membership: crate::folders::ChatMembership::default(),
             last_message: "first".to_owned(),
             last_message_id: Some(1),
@@ -1333,6 +1346,21 @@ mod tests {
         assert_eq!(chats[0].last_message_id, Some(2));
         assert_eq!(chats[0].last_message, "second");
         store
+            .apply(&[NetworkEvent::ReadMarked {
+                chat_id: 42,
+                max_id: 1,
+                snapshot: Some(crate::read_state::Snapshot {
+                    max_id: 1,
+                    unread: 0,
+                    top_message: 1,
+                }),
+            }])
+            .await
+            .unwrap();
+        let chats = store.snapshot().await.unwrap().1;
+        assert_eq!(chats[0].unread, 1);
+        assert_eq!(chats[0].read_inbox_max_id, Some(1));
+        store
             .apply(&[
                 NetworkEvent::MessagesDeleted {
                     channel_id: None,
@@ -1340,6 +1368,7 @@ mod tests {
                 },
                 NetworkEvent::UnreadChanged {
                     chat_id: 42,
+                    max_id: 2,
                     unread: 0,
                 },
             ])
@@ -1351,5 +1380,6 @@ mod tests {
         assert!(chats[0].last_message.is_empty());
         assert_eq!(chats[0].unread, 0);
         assert_eq!(chats[0].last_message_id, None);
+        assert_eq!(chats[0].read_inbox_max_id, Some(2));
     }
 }

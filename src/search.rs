@@ -199,6 +199,7 @@ mod tests {
             last_message_id: None,
             last_message: String::new(),
             last_activity: None,
+            read_inbox_max_id: Some(0),
             membership: crate::folders::ChatMembership::default(),
         };
         let mut events = vec![NetworkEvent::Dialogs(vec![chat(42), chat(43)])];

@@ -13,6 +13,9 @@ pub struct Chat {
     #[serde(default)]
     pub membership: crate::folders::ChatMembership,
     pub unread: u32,
+    /// None means an older cache without a server read boundary.
+    #[serde(default)]
+    pub read_inbox_max_id: Option<i32>,
     pub last_message: String,
     #[serde(default)]
     pub last_message_id: Option<i32>,

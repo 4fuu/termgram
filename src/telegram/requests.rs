@@ -99,7 +99,8 @@ enum Response {
     Message(Box<TelegramMessage>),
     Link(Chat, PeerRef, Option<Box<TelegramMessage>>),
     Button(Option<String>, Option<String>),
-    Read,
+    Applied,
+    Read(Option<crate::read_state::Snapshot>),
 }
 
 /// Capture only the peer needed by this request. The complete cache stays with
@@ -122,7 +123,7 @@ pub(super) fn spawn(
         | TelegramCommand::LoadReplyPreviews { chat_id, .. }
         | TelegramCommand::SendMessage { chat_id, .. }
         | TelegramCommand::ActivateButton { chat_id, .. }
-        | TelegramCommand::MarkRead { chat_id } => Some(*chat_id),
+        | TelegramCommand::MarkRead { chat_id, .. } => Some(*chat_id),
         _ => None,
     };
     let peer = chat_id.and_then(|id| cache.peers.get(&id).copied());
@@ -192,7 +193,7 @@ async fn execute(
             message_id, action, ..
         } => {
             super::pins::change_message(client, peer()?, *message_id, *action).await?;
-            Ok(Response::Read)
+            Ok(Response::Applied)
         }
         TelegramCommand::SetArchived { archived, .. } => {
             client
@@ -319,10 +320,9 @@ async fn execute(
                 activate_inline_button(client, peer()?, *message_id, *button_index).await?;
             Ok(Response::Button(message, url))
         }
-        TelegramCommand::MarkRead { .. } => {
-            client.mark_as_read(peer()?).await?;
-            Ok(Response::Read)
-        }
+        TelegramCommand::MarkRead { max_id, .. } => Ok(Response::Read(
+            super::reads::mark(client, peer()?, *max_id).await?,
+        )),
         _ => unreachable!("only RPC commands are submitted to request tasks"),
     }
 }
@@ -402,7 +402,7 @@ pub(super) async fn complete(
                 action,
                 request_id,
             },
-            Response::Read,
+            Response::Applied,
         ) => {
             cache.message_pins.dirty |= cache.active_chat == Some(chat_id);
             let event = match action {
@@ -606,8 +606,12 @@ pub(super) async fn complete(
             message,
             url,
         },
-        (TelegramCommand::MarkRead { chat_id }, Response::Read) => {
-            NetworkEvent::ReadMarked { chat_id }
+        (TelegramCommand::MarkRead { chat_id, max_id }, Response::Read(snapshot)) => {
+            NetworkEvent::ReadMarked {
+                chat_id,
+                max_id,
+                snapshot,
+            }
         }
         _ => unreachable!("request and completion kinds always match"),
     };

@@ -88,3 +88,5 @@ mod tests {
 }
 
 mod clipboard;
+
+pub mod read_state;

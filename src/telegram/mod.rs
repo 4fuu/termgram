@@ -2,6 +2,7 @@ mod folders;
 mod local;
 mod media_cache;
 mod pins;
+mod reads;
 mod requests;
 mod telemetry;
 
@@ -567,6 +568,7 @@ async fn process_update(
                         events
                             .send(NetworkEvent::UnreadChanged {
                                 chat_id,
+                                max_id: read.max_id,
                                 unread: u32::try_from(read.still_unread_count.max(0))
                                     .unwrap_or_default(),
                             })
@@ -576,6 +578,7 @@ async fn process_update(
                 tl::enums::Update::ReadChannelInbox(read) => {
                     events
                         .send(NetworkEvent::UnreadChanged {
+                            max_id: read.max_id,
                             chat_id: PeerId::channel_unchecked(read.channel_id)
                                 .bot_api_dialog_id_unchecked(),
                             unread: u32::try_from(read.still_unread_count.max(0))
@@ -1273,6 +1276,7 @@ fn apply_dialogs(
             .or_insert(read_outbox);
         let last_message = dialog.last_message.as_ref();
         chats.push(Chat {
+            read_inbox_max_id: Some(raw.read_inbox_max_id.max(0)),
             membership: folders::membership(&dialog, defaults),
             id,
             title: peer_display_name(dialog.peer()),
@@ -2087,6 +2091,7 @@ async fn resolve_telegram_link(
                 .map_err(anyhow::Error::from_boxed)?
                 .context("Telegram did not provide an addressable peer reference")?;
             let chat = Chat {
+                read_inbox_max_id: None,
                 membership: crate::folders::ChatMembership::default(),
                 id,
                 title: peer_display_name(&resolved),
@@ -2110,6 +2115,7 @@ async fn resolve_telegram_link(
                 "private message links can only open groups already present in your conversations",
             )?;
             let chat = Chat {
+                read_inbox_max_id: None,
                 membership: crate::folders::ChatMembership::default(),
                 id: chat_id,
                 title,

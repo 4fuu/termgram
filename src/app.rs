@@ -7,6 +7,7 @@ mod composition;
 mod drafts;
 mod message_pins;
 mod pins;
+mod reads;
 mod replies;
 mod search;
 mod staging;
@@ -289,7 +290,7 @@ pub struct App {
     changed_dialogs: BTreeSet<ChatId>,
     active_reply_request: Option<ReplyRequest>,
     history_target_message: Option<i32>,
-    read_ack_pending: BTreeSet<ChatId>,
+    reads: reads::State,
     refresh_dialogs_pending: bool,
     downloading_attachments: BTreeMap<(ChatId, i32), u64>,
     next_download_request_id: u64,
@@ -391,7 +392,7 @@ impl Default for App {
             changed_dialogs: BTreeSet::new(),
             active_reply_request: None,
             history_target_message: None,
-            read_ack_pending: BTreeSet::new(),
+            reads: reads::State::default(),
             refresh_dialogs_pending: false,
             downloading_attachments: BTreeMap::new(),
             next_download_request_id: 1,
@@ -528,6 +529,7 @@ impl App {
     /// render them (for example a terminal-too-small warning).
     pub fn clear_message_hit_regions(&mut self) {
         self.media_slots.clear();
+        self.reads.visible = None;
         self.message_hit_regions.clear();
         self.chat_hit_regions.clear();
         self.settings_hit_regions.clear();
@@ -1242,9 +1244,13 @@ impl App {
                 self.preserve_chat_selection(selected_id);
                 Vec::new()
             }
-            NetworkEvent::UnreadChanged { chat_id, unread } => {
+            NetworkEvent::UnreadChanged {
+                chat_id,
+                max_id,
+                unread,
+            } => {
                 if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
-                    chat.unread = unread.max(u32::from(chat.membership.unread_mark));
+                    crate::read_state::inbox_update(chat, max_id, unread);
                 }
                 self.clamp_chat_selection();
                 Vec::new()
@@ -1388,12 +1394,23 @@ impl App {
                 self.accept_message(chat_id, local_id);
                 Vec::new()
             }
-            NetworkEvent::ReadMarked { chat_id } => {
-                self.read_ack_pending.remove(&chat_id);
+            NetworkEvent::ReadMarked {
+                chat_id,
+                max_id,
+                snapshot,
+            } => {
+                self.read_finished(chat_id, max_id, false);
+                if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
+                    crate::read_state::acknowledge(chat, max_id, snapshot.as_ref());
+                }
                 Vec::new()
             }
-            NetworkEvent::ReadMarkFailed { chat_id, error } => {
-                self.read_ack_pending.remove(&chat_id);
+            NetworkEvent::ReadMarkFailed {
+                chat_id,
+                max_id,
+                error,
+            } => {
+                self.read_finished(chat_id, max_id, true);
                 self.status_message = Some(sanitize_terminal_line(&error));
                 Vec::new()
             }
@@ -3207,6 +3224,7 @@ impl App {
         chat.last_message = sanitize_terminal_text(&chat.last_message);
         if let Some(index) = known_chat {
             chat.membership.clone_from(&self.chats[index].membership);
+            chat.read_inbox_max_id = self.chats[index].read_inbox_max_id;
             self.chats[index] = chat;
         } else {
             self.chats.push(chat);
@@ -3246,17 +3264,12 @@ impl App {
         self.history_changes.clear();
         self.history_read_max = 0;
         self.history_target_message = selected_message;
-        if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
-            chat.unread = 0;
-        }
         self.status_message = None;
         self.remember_chat(chat_id);
-        let mut commands = vec![TelegramCommand::LoadHistory {
+        vec![TelegramCommand::LoadHistory {
             chat_id,
             request_id,
-        }];
-        commands.extend(self.request_mark_read(chat_id));
-        commands
+        }]
     }
 
     fn open_selected_chat(&mut self) -> Vec<TelegramCommand> {
@@ -3281,15 +3294,10 @@ impl App {
         self.history_changes.clear();
         self.history_read_max = 0;
         self.history_target_message = None;
-        if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
-            chat.unread = 0;
-        }
-        let mut commands = vec![TelegramCommand::LoadHistory {
+        vec![TelegramCommand::LoadHistory {
             chat_id,
             request_id,
-        }];
-        commands.extend(self.request_mark_read(chat_id));
-        commands
+        }]
     }
 
     fn move_up(&mut self, amount: usize) -> Vec<TelegramCommand> {
@@ -3355,26 +3363,10 @@ impl App {
     }
 
     fn reach_bottom(&mut self) -> Vec<TelegramCommand> {
-        let Some(chat_id) = self.active_chat_id else {
-            return Vec::new();
-        };
-        let had_unread = self.new_messages_while_scrolled > 0
-            || self
-                .chats
-                .iter()
-                .find(|chat| chat.id == chat_id)
-                .is_some_and(|chat| chat.unread > 0);
         self.new_messages_while_scrolled = 0;
         self.new_messages_to_anchor = 0;
         self.clear_viewport_anchor();
-        if let Some(chat) = self.chats.iter_mut().find(|chat| chat.id == chat_id) {
-            chat.unread = 0;
-        }
-        if had_unread {
-            self.request_mark_read(chat_id)
-        } else {
-            Vec::new()
-        }
+        Vec::new()
     }
 
     fn clamp_chat_selection(&mut self) {
@@ -3417,7 +3409,8 @@ impl App {
             NetworkEvent::MessagesRead { chat_id, max_id } if history_chat == Some(*chat_id) => {
                 self.history_read_max = self.history_read_max.max(*max_id);
             }
-            NetworkEvent::ReadMarked { chat_id } | NetworkEvent::UnreadChanged { chat_id, .. }
+            NetworkEvent::ReadMarked { chat_id, .. }
+            | NetworkEvent::UnreadChanged { chat_id, .. }
                 if self.refresh_dialogs_pending =>
             {
                 self.changed_dialogs.insert(*chat_id);
@@ -3445,6 +3438,7 @@ impl App {
                     chat.last_activity = current.last_activity;
                     chat.last_message_id = current.last_message_id;
                     chat.unread = current.unread;
+                    chat.read_inbox_max_id = chat.read_inbox_max_id.max(current.read_inbox_max_id);
                 } else if let Some(message) = self
                     .messages
                     .get(&chat.id)
@@ -3520,7 +3514,6 @@ impl App {
         let reply_to = message.reply_to.as_ref().map(|reply| reply.message_id);
         let timestamp = message.timestamp;
         let active = self.active_chat_id == Some(chat_id);
-        let viewing = active && self.focus == Focus::Conversation;
         let detached = active && self.message_scroll > 0;
         let message_id = message.id;
         let was_new = self
@@ -3567,11 +3560,9 @@ impl App {
             if genuinely_new
                 && count_as_new
                 && !outgoing
-                && (!viewing || detached || !self.terminal_focused)
+                && chat.read_inbox_max_id.is_none_or(|seen| message_id > seen)
             {
                 chat.unread = chat.unread.saturating_add(1);
-            } else if viewing && !detached && self.terminal_focused {
-                chat.unread = 0;
             }
         }
         let chat = self.chats.remove(chat_index);
@@ -3585,17 +3576,7 @@ impl App {
             .unwrap_or(0);
         self.clamp_chat_selection();
 
-        if genuinely_new
-            && count_as_new
-            && !outgoing
-            && viewing
-            && !detached
-            && self.terminal_focused
-        {
-            self.request_mark_read(chat_id)
-        } else {
-            Vec::new()
-        }
+        Vec::new()
     }
 
     fn confirm_message(&mut self, local_id: i32, message: Message) -> Vec<TelegramCommand> {
@@ -4014,14 +3995,6 @@ impl App {
                 self.status_message = None;
             }
         }
-    }
-
-    fn request_mark_read(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
-        self.read_ack_pending
-            .insert(chat_id)
-            .then_some(TelegramCommand::MarkRead { chat_id })
-            .into_iter()
-            .collect()
     }
 
     fn request_dialog_refresh(&mut self) -> Vec<TelegramCommand> {
@@ -4451,6 +4424,7 @@ mod tests {
 
     fn chat(id: i64, title: &str) -> Chat {
         Chat {
+            read_inbox_max_id: Some(0),
             membership: crate::folders::ChatMembership::default(),
             id,
             title: title.to_owned(),
@@ -5337,7 +5311,11 @@ mod tests {
     fn detached_history_never_jumps_and_defers_read_ack() {
         let mut app = ready_app();
         open_first(&mut app);
-        app.handle_network(NetworkEvent::ReadMarked { chat_id: 1 });
+        app.handle_network(NetworkEvent::ReadMarked {
+            chat_id: 1,
+            max_id: 20,
+            snapshot: None,
+        });
         app.handle_action(KeyAction::PageUp);
         assert_eq!(app.message_scroll, 10);
         assert!(
@@ -5348,9 +5326,14 @@ mod tests {
         assert_eq!(app.new_messages_while_scrolled, 1);
         assert_eq!(app.new_messages_to_anchor, 1);
         assert!(app.active_chat().unwrap().unread > 0);
+        assert!(app.handle_action(KeyAction::End).is_empty());
+        app.set_visible_read_boundary(1, Some(21));
         assert_eq!(
-            app.handle_action(KeyAction::End),
-            vec![TelegramCommand::MarkRead { chat_id: 1 }]
+            app.request_visible_read(),
+            vec![TelegramCommand::MarkRead {
+                chat_id: 1,
+                max_id: 21
+            }]
         );
         assert_eq!(app.new_messages_while_scrolled, 0);
         assert_eq!(app.new_messages_to_anchor, 0);
@@ -5414,6 +5397,54 @@ mod tests {
                 .is_empty()
         );
         assert!(app.active_chat().unwrap().unread > 0);
+    }
+
+    #[test]
+    fn older_read_confirmation_preserves_arrivals_and_coalesces_the_next_receipt() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.set_visible_read_boundary(1, Some(20));
+        assert_eq!(
+            app.request_visible_read(),
+            vec![TelegramCommand::MarkRead {
+                chat_id: 1,
+                max_id: 20,
+            }]
+        );
+        app.handle_network(NetworkEvent::NewMessage(message(21, 1, "unseen", false)));
+        let unread = app.active_chat().unwrap().unread;
+        app.set_visible_read_boundary(1, Some(21));
+        assert!(app.request_visible_read().is_empty());
+        app.handle_network(NetworkEvent::ReadMarked {
+            chat_id: 1,
+            max_id: 20,
+            snapshot: Some(crate::read_state::Snapshot {
+                max_id: 20,
+                unread: 0,
+                top_message: 20,
+            }),
+        });
+        assert_eq!(app.active_chat().unwrap().unread, unread);
+        assert_eq!(app.active_chat().unwrap().read_inbox_max_id, Some(20));
+        assert_eq!(
+            app.request_visible_read(),
+            vec![TelegramCommand::MarkRead {
+                chat_id: 1,
+                max_id: 21,
+            }]
+        );
+        app.handle_network(NetworkEvent::ReadMarked {
+            chat_id: 1,
+            max_id: 21,
+            snapshot: None,
+        });
+        app.handle_network(NetworkEvent::UnreadChanged {
+            chat_id: 1,
+            max_id: 20,
+            unread: 8,
+        });
+        assert_eq!(app.active_chat().unwrap().unread, 0);
+        assert_eq!(app.active_chat().unwrap().read_inbox_max_id, Some(21));
     }
 
     #[test]
@@ -5663,13 +5694,10 @@ mod tests {
         app.handle_action(KeyAction::Down);
         assert_eq!(
             app.handle_action(KeyAction::Enter),
-            vec![
-                TelegramCommand::LoadHistory {
-                    chat_id: 2,
-                    request_id: 1,
-                },
-                TelegramCommand::MarkRead { chat_id: 2 }
-            ]
+            vec![TelegramCommand::LoadHistory {
+                chat_id: 2,
+                request_id: 1,
+            },]
         );
         assert_eq!(app.focus, Focus::Conversation);
         assert!(app.narrow_conversation);
@@ -5910,6 +5938,7 @@ mod tests {
         open_first(&mut app);
         let linked = message(5, 99, "linked target", false);
         let linked_chat = Chat {
+            read_inbox_max_id: Some(0),
             membership: crate::folders::ChatMembership::default(),
             id: 99,
             title: "Linked group".to_owned(),

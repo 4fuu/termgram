@@ -98,6 +98,7 @@ mod tests {
             last_message_id: None,
             last_message: String::new(),
             last_activity: None,
+            read_inbox_max_id: Some(0),
             membership: ChatMembership {
                 mute_until: 500,
                 ..ChatMembership::default()

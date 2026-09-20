@@ -3978,10 +3978,11 @@ impl App {
         text: &str,
         reply_to: Option<i32>,
     ) {
-        let attachment_retry = self
-            .retry_attachments
-            .remove(&(chat_id, local_id))
-            .is_some();
+        let attachment_retry = self.retry_attachments.remove(&(chat_id, local_id));
+        if let Some(retry) = &attachment_retry {
+            retry.attachment.discard_owned();
+        }
+        let attachment_retry = attachment_retry.is_some();
         if self.selected_message == Some(local_id) {
             self.selected_message = None;
         }

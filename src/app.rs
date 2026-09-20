@@ -200,6 +200,7 @@ pub struct App {
     pub mode: Mode,
     pub focus: Focus,
     pub connection: ConnectionStatus,
+    pub metrics: crate::statusline::Metrics,
     pub user_name: Option<String>,
     pub account_user_id: Option<i64>,
     pub appearance: crate::appearance::Preferences,
@@ -308,6 +309,7 @@ impl Default for App {
             mode: Mode::Navigate,
             focus: Focus::Chats,
             connection: ConnectionStatus::Connecting,
+            metrics: crate::statusline::Metrics::default(),
             user_name: None,
             account_user_id: None,
             appearance: crate::appearance::Preferences::default(),
@@ -480,6 +482,13 @@ impl App {
                 }
             }
             AppEvent::Tick => {
+                if self
+                    .metrics
+                    .latency
+                    .is_some_and(crate::statusline::Latency::expired)
+                {
+                    self.metrics.latency = None;
+                }
                 if self.keymap.expire()
                     && self
                         .status_message
@@ -984,6 +993,15 @@ impl App {
             self.update_pin_preview(message);
         }
         match event {
+            NetworkEvent::Telemetry { dc_id, latency } => {
+                self.metrics.dc_id = dc_id;
+                self.metrics.latency = latency.filter(|sample| {
+                    self.connection == ConnectionStatus::Online
+                        && sample.started >= self.metrics.reset_at
+                        && !sample.expired()
+                });
+                Vec::new()
+            }
             NetworkEvent::PinnedMessages {
                 chat_id,
                 request_id,
@@ -1448,6 +1466,9 @@ impl App {
             }
             NetworkEvent::Status(status) => {
                 self.connection = status;
+                if status != ConnectionStatus::Online {
+                    self.metrics = crate::statusline::Metrics::default();
+                }
                 if status == ConnectionStatus::Online {
                     self.status_message = None;
                 }
@@ -1686,6 +1707,13 @@ impl App {
 
     #[must_use]
     pub fn needs_animation(&self) -> bool {
+        if self
+            .metrics
+            .latency
+            .is_some_and(crate::statusline::Latency::expired)
+        {
+            return true;
+        }
         if self.keymap.pending() {
             return true;
         }
@@ -6282,6 +6310,49 @@ mod tests {
         assert_eq!(app.mode, Mode::Navigate);
         assert_eq!(app.active_chat_id, Some(2));
         assert_eq!(app.drafts[&1].value(), "x");
+    }
+
+    #[test]
+    fn telemetry_rejects_observations_from_before_disconnect_or_account_switch() {
+        use crate::event::ConnectionStatus;
+        use crate::statusline::Latency;
+        use std::time::{Duration, Instant};
+        let mut app = ready_app();
+        let sample = Latency {
+            started: Instant::now(),
+            elapsed: Duration::from_millis(42),
+        };
+        app.handle_network(NetworkEvent::Telemetry {
+            dc_id: Some(2),
+            latency: Some(sample),
+        });
+        assert_eq!(app.metrics.latency, Some(sample));
+        app.handle_network(NetworkEvent::Status(ConnectionStatus::Reconnecting));
+        assert!(app.metrics.latency.is_none());
+        app.handle_network(NetworkEvent::Status(ConnectionStatus::Online));
+        app.handle_network(NetworkEvent::Telemetry {
+            dc_id: Some(2),
+            latency: Some(sample),
+        });
+        assert!(app.metrics.latency.is_none());
+        let fresh = Latency {
+            started: Instant::now(),
+            ..sample
+        };
+        app.handle_network(NetworkEvent::Telemetry {
+            dc_id: Some(4),
+            latency: Some(fresh),
+        });
+        assert_eq!(app.metrics.latency, Some(fresh));
+        app.reset_for_account_switch(2);
+        assert!(app.metrics.dc_id.is_none());
+        assert!(app.metrics.latency.is_none());
+        app.connection = ConnectionStatus::Online;
+        app.handle_network(NetworkEvent::Telemetry {
+            dc_id: Some(4),
+            latency: Some(fresh),
+        });
+        assert!(app.metrics.latency.is_none());
     }
 
     #[test]

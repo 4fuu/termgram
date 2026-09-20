@@ -21,6 +21,13 @@ background reconciliation. Cached search and local preferences work without a
 connection; sending and server operations need an authenticated connection.
 The outgoing queue is bounded, and a failed send stays visible for retry.
 
+
+The bottom statusline shows keyboard mode, account and connection information.
+Selection changes its contextual hints; INSERT identifies the live composer.
+Optional Ping/DC diagnostics and reading position are configured in
+[Lua](Configuration.md). Long errors expand above the bar so their cause remains
+readable without replacing the current mode.
+
 ## Compose and reply
 
 Click the composer or press `i` to write. From the chat list, `i` continues the

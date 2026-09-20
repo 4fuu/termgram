@@ -3,6 +3,7 @@ mod local;
 mod media_cache;
 mod pins;
 mod requests;
+mod telemetry;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -220,6 +221,7 @@ async fn run(
     // JoinSet aborts the sender on account switches and initialization failures,
     // including when the owner itself is aborted during shutdown.
     let mut pool_tasks = JoinSet::new();
+    let mut observations = JoinSet::new();
     pool_tasks.spawn(runner.run());
 
     let result: Result<()> = Box::pin(async {
@@ -264,6 +266,7 @@ async fn run(
         events.send(NetworkEvent::AccountIdentity { user_id }).await?;
         let user_name = safe_name(me.first_name(), "You");
         events.send(NetworkEvent::Ready { user_name }).await.ok();
+        observations.spawn(telemetry::observe(client.clone(), session.clone(), events.clone(), config.measure_latency));
 
         let mut media_root = config.session_path.as_os_str().to_os_string();
         media_root.push(".media");
@@ -384,6 +387,7 @@ async fn run(
         Ok(())
     })
     .await;
+    observations.shutdown().await;
     handle.quit();
     let _ = pool_tasks.join_next().await;
     result

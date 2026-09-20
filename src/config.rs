@@ -418,6 +418,8 @@ pub struct Config {
     pub api_id: i32,
     pub api_hash: String,
     pub session_path: PathBuf,
+    /// Enable bounded background Ping observations for the Lua statusline.
+    pub measure_latency: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -427,6 +429,7 @@ impl std::fmt::Debug for Config {
             .field("api_id", &self.api_id)
             .field("api_hash", &"[redacted]")
             .field("session_path", &self.session_path)
+            .field("measure_latency", &self.measure_latency)
             .finish()
     }
 }
@@ -480,6 +483,7 @@ impl Config {
             api_id,
             api_hash,
             session_path,
+            measure_latency: false,
         })
     }
 
@@ -515,6 +519,7 @@ impl Config {
             api_id: self.api_id,
             api_hash: self.api_hash.clone(),
             session_path,
+            measure_latency: self.measure_latency,
         })
     }
 
@@ -786,6 +791,7 @@ mod tests {
     #[test]
     fn debug_output_redacts_the_api_hash() {
         let config = Config {
+            measure_latency: false,
             api_id: 42,
             api_hash: "super-secret".to_owned(),
             session_path: PathBuf::from("session.db"),
@@ -798,6 +804,7 @@ mod tests {
     #[test]
     fn additional_accounts_use_distinct_sibling_session_files() {
         let base = Config {
+            measure_latency: false,
             api_id: 42,
             api_hash: "secret".to_owned(),
             session_path: PathBuf::from("state/custom.session"),
@@ -858,6 +865,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("temporary directory");
         let session_path = root.join("session.db");
         let config = Config {
+            measure_latency: false,
             api_id: 42,
             api_hash: "secret".to_owned(),
             session_path: session_path.clone(),

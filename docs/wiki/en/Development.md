@@ -142,3 +142,9 @@ Color supplements focus markers rather than carrying meaning alone.
 Keep English and Simplified Chinese pages together. The small
 [Wiki export workflow](../README.md) validates page parity and internal links,
 then maps this directory to GitHub Wiki filenames without a documentation framework.
+
+The statusline follows Yazi’s ordered status components and Codex’s finite item
+list, with no copied code. `src/statusline.rs` owns declarative configuration and
+ephemeral metrics; `src/ui/statusline.rs` fits them to terminal cells. Optional
+Ping observations use the existing Grammers client in an owned task that aborts
+on shutdown/account switch and never consumes the update stream.

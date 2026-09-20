@@ -51,6 +51,40 @@ return {
 终端使用 Nerd Font Mono（v3+）时，可设置 `nerd_font = true`，启用聊天、文件夹、
 归档、置顶和附件图标；默认 `false`。字体选择和回退方法见[外观](Appearance.md)。
 
+## 底部状态栏
+
+单行底栏替代原来的应用顶栏。可以配置左右组件及顺序；省略的字段保留以下默认值：
+
+```lua
+statusline = {
+  enabled = true,
+  left = { "mode", "app", "account", "context" },
+  right = { "connection", "latency", "dc", "position" },
+},
+```
+
+| 组件 | 含义 |
+| --- | --- |
+| `mode` | CHATS、NORMAL、SELECT、INSERT 或当前浮层模式 |
+| `app` | Termgram |
+| `account` | 本地账号槽位与 Telegram 显示名称 |
+| `context` | 当前选择/帮助的实际快捷键，或可用更新 |
+| `connection` | 正在连接、在线、重连或离线 |
+| `latency` | 主连接最近一次成功 Ping 的毫秒数 |
+| `dc` | 已认证会话的主数据中心 ID |
+| `position` | 最新位置、距底部的显示行数，或阅读历史时的新消息数 |
+
+每个组件在左右两侧合计只能出现一次，未知或重复组件会导致配置报错。空列表可以清空
+一侧。窄窗口先隐藏次要组件，优先保留模式与当前操作；每侧的剩余组件维持原有顺序。
+`enabled = false` 隐藏底栏，错误仍会在上方可读地显示。
+
+延迟是可选诊断：在现有 Telegram 连接上每 60 秒最多发起一次 Ping，超时为 5 秒。
+五秒未完成即显示不可用；旧探测结束前不追加探测，避免断网时积累请求。
+结果包含 SDK 排队与重试时间，**不是消息到达延迟**。绘制过程中不发网络请求。
+从两侧移除 `latency` 或关闭底栏，会停止这些额外请求。破折号表示尚不可用；断线会使
+测量失效，超过 90 秒的样本不再显示，切换账号清空观测。DC 是会话的主数据中心，
+不代表全部媒体传输服务器，也不根据地理位置猜测。
+
 ## 文件路径
 
 `config.lua`、`settings.conf`、`appearance.json`、`navigation.json` 位于配置目录；

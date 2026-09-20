@@ -110,3 +110,8 @@ Grammers 集成。本次保留 Grammers，把所需修改限制在有说明的 S
 
 英文与简体中文一起更新。[Wiki 导出流程](../README.md) 校验页面对应关系和内部链接，
 再将源目录映射为 GitHub Wiki 文件名，无需引入文档框架。
+
+底栏借鉴 Yazi 的有序状态组件与 Codex 的有限组件列表，没有复制代码。
+`src/statusline.rs` 管理声明式配置与临时观测，`src/ui/statusline.rs` 根据终端列宽排版。
+可选 Ping 使用现有 Grammers 客户端，在由 worker 管理的任务内运行；关闭或切换账号
+会终止该任务，不读取更新流。

@@ -55,6 +55,7 @@ struct Configuration {
     ghost_text: Option<String>,
     nerd_font: bool,
     colors: crate::appearance::Colors,
+    statusline: crate::statusline::Configuration,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +74,7 @@ pub struct Keymap {
     pub ghost_text: String,
     pub nerd_font: bool,
     pub colors: crate::appearance::Colors,
+    pub statusline: crate::statusline::Configuration,
     pending: Vec<Key>,
     count: usize,
     context: Option<Context>,
@@ -153,6 +155,7 @@ impl Default for Keymap {
             bindings: Vec::new(),
             chats: BTreeMap::new(),
             colors: crate::appearance::Colors::default(),
+            statusline: crate::statusline::Configuration::default(),
             ghost_text: "{send} to send".to_owned(),
             nerd_font: false,
             pending: Vec::new(),
@@ -403,10 +406,12 @@ impl Keymap {
         )?;
         let configuration: Configuration =
             lua.from_value(lua.load(source).set_name("config.lua").eval()?)?;
+        configuration.statusline.validate()?;
         let mut keymap = Self {
             chats: configuration.chats,
             colors: configuration.colors,
             nerd_font: configuration.nerd_font,
+            statusline: configuration.statusline,
             ..Self::default()
         };
         if let Some(text) = configuration.ghost_text {
@@ -679,6 +684,20 @@ mod tests {
 
     #[test]
     fn invalid_configuration_is_rejected_without_hanging() {
+        assert!(Keymap::parse("return {statusline={right={'mode','mode'}}}").is_err());
+        assert!(Keymap::parse("return {statusline={right={'imaginary'}}}").is_err());
+        assert!(
+            !Keymap::parse("return {statusline={enabled=false}} ")
+                .unwrap()
+                .statusline
+                .measures_latency()
+        );
+        assert!(
+            !Keymap::parse("return {statusline={left={'mode'},right={'dc'}}}")
+                .unwrap()
+                .statusline
+                .measures_latency()
+        );
         assert!(Keymap::parse("while true do end").is_err());
         assert!(
             Keymap::parse("return { keymap={{context='conversation',on={'g'},run='latest'}} }")

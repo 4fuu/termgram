@@ -527,6 +527,11 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    /// A primary-DC observation, scoped to this worker's account and lifetime.
+    Telemetry {
+        dc_id: Option<i32>,
+        latency: Option<crate::statusline::Latency>,
+    },
     PinnedMessagesLoading {
         chat_id: ChatId,
         request_id: u64,

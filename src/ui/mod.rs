@@ -3,6 +3,7 @@ mod icons;
 mod pins;
 mod preview;
 mod search;
+mod statusline;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
 use ratatui::Frame;
@@ -19,7 +20,6 @@ use crate::app::{
     AppState, AttachmentState, AuthPhase, Focus, MessageAction, Mode, QrRenderMode, Screen,
 };
 use crate::config::DownloadBehavior;
-use crate::event::ConnectionStatus;
 use crate::input::TextInput;
 use crate::keymap::Context;
 use crate::model::{AttachmentKind, Delivery, Message, MessageButtonKind};
@@ -420,31 +420,33 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     let narrow = area.width < 96;
     let show_conversation_only = narrow && app.narrow_conversation && app.active_chat_id.is_some();
     let composer_height = composer_height(app, area.width);
-    let footer_height = app.status_message.as_deref().map_or(1, |message| {
+    let notice_height = app.status_message.as_deref().map_or(0, |message| {
         wrapped_height(message, area.width)
             .min(area.height.saturating_sub(composer_height + 6).max(1))
     });
     let rows = Layout::vertical([
-        Constraint::Length(1),
         Constraint::Min(5),
         Constraint::Length(composer_height),
-        Constraint::Length(footer_height),
+        Constraint::Length(notice_height),
+        Constraint::Length(u16::from(app.keymap.statusline.enabled)),
     ])
     .split(area);
 
-    render_header(frame, rows[0], app);
     if show_conversation_only {
-        render_conversation(frame, rows[1], app);
+        render_conversation(frame, rows[0], app);
     } else if narrow {
-        render_chats(frame, rows[1], app);
+        render_chats(frame, rows[0], app);
     } else {
         let panes = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
-            .split(rows[1]);
+            .split(rows[0]);
         render_chats(frame, panes[0], app);
         render_conversation(frame, panes[1], app);
     }
-    render_composer(frame, rows[2], app, show_conversation_only || !narrow);
-    render_footer(frame, rows[3], app, narrow);
+    render_composer(frame, rows[1], app, show_conversation_only || !narrow);
+    if let Some(message) = &app.status_message {
+        render_notice(frame, rows[2], message, WARNING);
+    }
+    statusline::render(frame, rows[3], app);
 
     if app.mode == Mode::Preview {
         preview::render(frame, area, app);
@@ -475,39 +477,6 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     ) {
         app.media_slots.clear();
     }
-}
-
-fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let (label, color) = match app.connection {
-        ConnectionStatus::Connecting => (format!("{} connecting", spinner(app.tick)), WARNING),
-        ConnectionStatus::Online => ("● online".to_owned(), SUCCESS),
-        ConnectionStatus::Reconnecting => (format!("{} reconnecting", spinner(app.tick)), WARNING),
-        ConnectionStatus::Offline => ("● offline".to_owned(), DANGER),
-    };
-    let user = app.user_name.as_deref().unwrap_or("Telegram");
-    let right_width = clamp_u16(UnicodeWidthStr::width(label.as_str()));
-    let chunks = Layout::horizontal([
-        Constraint::Min(1),
-        Constraint::Length(right_width.saturating_add(1)),
-    ])
-    .split(area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Termgram", Style::default().fg(ACCENT).bold()),
-            Span::styled(
-                format!(" · Account {}", app.active_account()),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(format!("  {user}"), Style::default().fg(MUTED)),
-        ])),
-        chunks[0],
-    );
-    frame.render_widget(
-        Paragraph::new(label)
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(color)),
-        chunks[1],
-    );
 }
 
 fn chat_list_title(app: &AppState) -> String {
@@ -981,63 +950,6 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
             .min(inner.bottom().saturating_sub(1));
         frame.set_cursor_position(Position::new(x, y));
     }
-}
-
-fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState, narrow: bool) {
-    if let Some(message) = &app.status_message {
-        render_notice(frame, area, message, WARNING);
-        return;
-    }
-    let content = if let Some(version) = app.available_update() {
-        Line::from(Span::styled(
-            format!(" Update {version} available · run tg update"),
-            Style::default().fg(SUCCESS),
-        ))
-    } else if app.mode != Mode::Navigate {
-        Line::default()
-    } else if app.focus == Focus::Conversation && app.selected_message.is_some() {
-        let hint = |action| app.keymap.hint(Context::Conversation, action);
-        let media = app.selected_message.is_some_and(|id| {
-            app.active_messages().iter().any(|message| {
-                message.id == id
-                    && message
-                        .attachment
-                        .as_ref()
-                        .is_some_and(crate::model::Attachment::supports_preview)
-            })
-        });
-        let preview = if media {
-            format!("{} preview · ", hint("preview"))
-        } else {
-            String::new()
-        };
-        Line::from(format!(
-            " {preview}{} reply · {} open · {} clear selection",
-            hint("compose"),
-            hint("open"),
-            hint("cancel")
-        ))
-    } else {
-        let context = if app.focus == Focus::Chats {
-            crate::keymap::Context::Chats
-        } else {
-            crate::keymap::Context::Conversation
-        };
-        let back = if narrow && app.narrow_conversation {
-            format!(
-                "{} chats · ",
-                app.keymap
-                    .hint(crate::keymap::Context::Conversation, "cancel")
-            )
-        } else {
-            String::new()
-        };
-        Line::from(format!(" {back}{} help", app.keymap.hint(context, "help")))
-    };
-    frame.render_widget(
-        Paragraph::new(content).style(Style::default().fg(MUTED)),
-        area,
-    );
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -1836,6 +1748,44 @@ mod tests {
 
     fn populated_app() -> AppState {
         populated_app_with_settings(Settings::default())
+    }
+
+    #[test]
+    fn statusline_respects_lua_order_and_keeps_mode_and_selection_hints_when_narrow() {
+        let mut app = populated_app();
+        app.keymap = crate::keymap::Keymap::parse(
+            "return {statusline={left={'mode','account'},right={'dc','connection'}}}",
+        )
+        .unwrap();
+        app.metrics.dc_id = Some(4);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let last_row = terminal.backend().buffer().content()[2300..]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(last_row.starts_with(" CHATS "));
+        assert!(last_row.contains("1 · Me"));
+        assert!(last_row.find("DC 4").unwrap() < last_row.find("online").unwrap());
+        app.keymap = crate::keymap::Keymap::default();
+        app.focus = Focus::Conversation;
+        app.selected_message = Some(11);
+        app.messages.get_mut(&7).unwrap()[0].attachment = Some(Attachment {
+            source_id: None,
+            kind: AttachmentKind::Photo,
+            file_name: None,
+            mime_type: None,
+            size: None,
+            fallback_emoji: None,
+        });
+        let narrow = render_text(&app, 40, 10);
+        assert!(narrow.contains("SELECT"));
+        assert!(narrow.contains("o preview · i reply"));
+        app.keymap.statusline.enabled = false;
+        app.status_message = Some("Failed to send".to_owned());
+        let hidden = render_text(&app, 40, 10);
+        assert!(!hidden.contains("SELECT"));
+        assert!(hidden.contains("Failed to send"));
     }
 
     #[test]

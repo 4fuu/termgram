@@ -110,7 +110,10 @@ async fn main() -> Result<()> {
     let mut update_preferences = settings;
 
     let (mut commands, mut events, mut worker, base_config, mut active_chat) = match Config::load()
-    {
+        .map(|mut config| {
+            config.measure_latency = app.keymap.statusline.measures_latency();
+            config
+        }) {
         Ok(config) => match config.for_account(settings.active_account) {
             Ok(selected) => {
                 let TelegramHandle {

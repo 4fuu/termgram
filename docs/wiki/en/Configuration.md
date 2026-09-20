@@ -59,6 +59,46 @@ Set `nerd_font = true` when your terminal uses a Nerd Font Mono (v3+). It enable
 chat, folder, archive, pin and attachment icons; `false` is the default. See
 [Appearance](Appearance.md) for font selection and fallback behavior.
 
+## Bottom statusline
+
+The one-row bottom bar replaces the old application header. Configure its ordered
+segments; omitted fields keep these defaults:
+
+```lua
+statusline = {
+  enabled = true,
+  left = { "mode", "app", "account", "context" },
+  right = { "connection", "latency", "dc", "position" },
+},
+```
+
+| Item | Meaning |
+| --- | --- |
+| `mode` | CHATS, NORMAL, SELECT, INSERT or the current overlay mode |
+| `app` | Termgram |
+| `account` | Local account slot and Telegram display name |
+| `context` | Effective selection/help keys or an available update |
+| `connection` | Connecting, online, reconnecting or offline |
+| `latency` | Latest completed primary-connection Ping in milliseconds |
+| `dc` | The authenticated session's home data center ID |
+| `position` | Live edge, rows from the bottom or new arrivals while reading history |
+
+Each item can appear once across both sides. Unknown or duplicate items reject
+the configuration. Empty lists remove a side. At narrow widths, optional items
+are removed before mode and contextual actions; their order within each side is
+preserved. `enabled = false` hides the bar. Errors remain readable above it.
+
+Latency is an optional diagnostic: at most one Ping runs every 60 seconds, with
+a five-second display deadline, on the existing Telegram connection. A late
+probe displays unavailable; another probe waits until the previous request
+finishes, avoiding a backlog during outages. It includes SDK
+queueing/retries and is **not** the time for a message to arrive. No measurement
+runs during drawing. Removing `latency` from both sides, or disabling the bar,
+disables these extra requests. A dash means unavailable; disconnects invalidate
+measurements, samples older than 90 seconds are not displayed, and account
+switches clear all observations. DC identifies the primary session, not every
+server used for media transfers. The bar does not infer DC from geography.
+
 ## File locations
 
 `config.lua`, `settings.conf`, `appearance.json` and `navigation.json` use the configuration directory.

@@ -483,6 +483,7 @@ mod tests {
         let original_key = request.key;
         let mut broker = Broker::default();
         broker.configure(true, &mut app);
+        broker.remote = false;
         // Explicit remote reads use OSC 5522; local shortcuts retain arboard.
         assert_eq!(
             broker.route(

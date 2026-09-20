@@ -6967,7 +6967,7 @@ mod tests {
         let mut app = ready_app();
         open_first(&mut app);
         app.keymap.attachments.clipboard_as_photo = false;
-        let pasted = format!("'{}'", path.display());
+        let pasted = format!("\"{}\"", path.display());
         let commands = app.update(AppEvent::Paste(pasted.clone()));
         let [TelegramCommand::PrepareAttachments(request)] = commands.as_slice() else {
             panic!("prepare image")

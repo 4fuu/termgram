@@ -29,6 +29,10 @@ Optional Ping/DC diagnostics and reading position are configured in
 [Lua](Configuration.md). Long errors expand above the bar so their cause remains
 readable without replacing the current mode.
 
+Author, reply, body and media have separate visual rows. The current message
+and its active action have distinct markers; time and optional IDs stay in the
+header instead of taking a permanent column from the body.
+
 ## Compose and reply
 
 Click the composer or press `i` to write. From the chat list, `i` continues the
@@ -73,7 +77,7 @@ clickable. Keyboard equivalents remain available.
 ## Settings and accounts
 
 `s` opens automatic update checks, release channel, Enter download behavior,
-and the message-ID column. `c` and `C` open [color pickers](Appearance.md).
+and message IDs in author headers. `c` and `C` open [color pickers](Appearance.md).
 These persist without rewriting Lua. Esc dismisses an overlay, returning focus
 to the previous view. `?` shows effective bindings instead of a static cheat sheet.
 

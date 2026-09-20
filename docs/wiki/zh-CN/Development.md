@@ -115,3 +115,7 @@ Grammers 集成。本次保留 Grammers，把所需修改限制在有说明的 S
 `src/statusline.rs` 管理声明式配置与临时观测，`src/ui/statusline.rs` 根据终端列宽排版。
 可选 Ping 使用现有 Grammers 客户端，在由 worker 管理的任务内运行；关闭或切换账号
 会终止该任务，不读取更新流。
+
+`src/ui/transcript.rs` 负责消息展示，`src/ui/chats.rs` 用 Ratatui Table 对齐语义列。
+消息排版继续使用现有文字折行、动作派发、媒体槽位和视口所有权；小型渲染回归验证
+点击优先级与宽度变化后的消息可见性。

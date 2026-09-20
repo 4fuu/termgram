@@ -148,3 +148,8 @@ list, with no copied code. `src/statusline.rs` owns declarative configuration an
 ephemeral metrics; `src/ui/statusline.rs` fits them to terminal cells. Optional
 Ping observations use the existing Grammers client in an owned task that aborts
 on shutdown/account switch and never consumes the update stream.
+
+`src/ui/transcript.rs` owns message presentation; `src/ui/chats.rs` uses Ratatui
+Table for semantic columns. The transcript retains the existing text wrapping,
+action dispatch, media slots and viewport ownership; small render regressions
+cover hit precedence and message visibility when width changes.

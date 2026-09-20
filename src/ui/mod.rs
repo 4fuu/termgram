@@ -5,6 +5,7 @@ mod pins;
 mod preview;
 mod search;
 mod statusline;
+mod transcript;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
 use ratatui::Frame;
@@ -17,20 +18,17 @@ use ratatui::widgets::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{
-    AppState, AttachmentState, AuthPhase, Focus, MessageAction, Mode, QrRenderMode, Screen,
-};
+use crate::app::{AppState, AuthPhase, Focus, Mode, QrRenderMode, Screen};
 use crate::config::DownloadBehavior;
 use crate::input::TextInput;
 use crate::keymap::Context;
-use crate::model::{AttachmentKind, Delivery, Message, MessageButtonKind};
+use crate::model::{AttachmentKind, Message};
 
 const ACCENT: Color = Color::Rgb(216, 180, 254);
 const MUTED: Color = Color::DarkGray;
 const SUCCESS: Color = Color::Rgb(126, 211, 166);
 const WARNING: Color = Color::Rgb(245, 194, 107);
 const DANGER: Color = Color::Rgb(242, 139, 130);
-const MESSAGE_ID_COLUMN_WIDTH: usize = 12;
 // Terminal QR renderers such as qr-cli use a compact two-module border. A
 // quiet zone is still required for reliable finder-pattern detection, but a
 // full four-module print margin makes short-lived login tokens unnecessarily
@@ -560,32 +558,28 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         return;
     }
 
-    let message_width = usize::from(inner.width.saturating_sub(2).max(1));
+    let reflow = app.viewport_width != inner.width;
+    app.viewport_width = inner.width;
+    let message_width = usize::from(inner.width.max(1));
     let mut lines = Vec::new();
     let mut layouts = Vec::with_capacity(messages.len());
     let mut media_rows = Vec::new();
     for message in messages {
         let start = lines.len();
-        let actions = app.message_actions(message);
-        let rendered = message_lines(
-            message,
-            message_width,
-            app.attachment_state(chat_id, message.id),
-            app.settings().download_behavior,
-            app.selected_message == Some(message.id),
-            app.selected_action,
-            app.settings().show_message_ids,
-            icons::Icons(app.keymap.nerd_font),
-            &actions,
-        );
+        let rendered = transcript::render(message, message_width, app);
         let body_action = rendered.body_action;
         let body_height = rendered.body_height;
-        let mut hit_rows: Vec<_> = rendered
-            .action_rows
-            .into_iter()
-            .map(|(row, action)| (start.saturating_add(row), Some(action)))
-            .chain((0..body_height).map(move |row| (start.saturating_add(row), body_action)))
+        let mut hit_rows: Vec<_> = (0..body_height)
+            .map(|row| (start.saturating_add(row), body_action))
             .collect();
+        // Pointer lookup walks backward: specific action rows must win over
+        // the enclosing message (a reply quote may accompany an attachment).
+        hit_rows.extend(
+            rendered
+                .action_rows
+                .into_iter()
+                .map(|(row, action)| (start.saturating_add(row), Some(action))),
+        );
         lines.extend(rendered.lines);
         if message.id > 0
             && let Some(attachment) = message.attachment.as_ref().filter(|a| a.supports_preview())
@@ -598,23 +592,24 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
                 } else {
                     10
                 });
-            let width =
-                inner
-                    .width
-                    .saturating_sub(21)
-                    .min(if attachment.kind == AttachmentKind::Sticker {
-                        24
-                    } else {
-                        48
-                    });
+            let width = inner.width.saturating_sub(transcript::GUTTER_WIDTH).min(
+                if attachment.kind == AttachmentKind::Sticker {
+                    24
+                } else {
+                    48
+                },
+            );
             if height > 0 && width > 0 {
                 media_rows.push((message.id, lines.len(), width, height));
                 hit_rows.extend(
                     (lines.len()..lines.len() + usize::from(height)).map(|row| (row, body_action)),
                 );
-                lines.extend((0..height).map(|_| Line::from("")));
+                lines.extend((0..height).map(|_| {
+                    Line::from(transcript::gutter(app.selected_message == Some(message.id)))
+                }));
             }
         }
+        lines.push(Line::default());
         layouts.push(MessageLayout {
             id: message.id,
             start,
@@ -640,14 +635,17 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         .min(max_scroll);
     let mut scroll = max_scroll.saturating_sub(app.message_scroll);
     if let Some(anchor_id) = app.viewport_anchor_message {
-        if let Some(anchor_start) = layouts
-            .iter()
-            .find(|layout| layout.id == anchor_id)
-            .map(|layout| layout.start)
-        {
-            scroll = anchor_start
-                .saturating_add(app.viewport_anchor_row)
-                .min(max_scroll);
+        if let Some(layout) = layouts.iter().find(|layout| layout.id == anchor_id) {
+            let row = if app.viewport_anchor_row >= layout.height
+                || (reflow && app.viewport_anchor_row == layout.height.saturating_sub(1))
+            {
+                // Reflow may remove the old physical row. Keep this message
+                // visible from its header instead of landing on its separator.
+                0
+            } else {
+                app.viewport_anchor_row
+            };
+            scroll = layout.start.saturating_add(row).min(max_scroll);
             app.message_scroll = max_scroll.saturating_sub(scroll);
         } else {
             app.viewport_anchor_message = None;
@@ -685,7 +683,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             -i16::try_from(scroll - row).unwrap_or(i16::MAX)
         };
         let viewport = Rect::new(
-            inner.x.saturating_add(21),
+            inner.x.saturating_add(transcript::GUTTER_WIDTH),
             inner.y,
             width,
             inner
@@ -795,6 +793,11 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
                 .replace("{cancel}", &app.keymap.hint(Context::Compose, "cancel"))
         } else if app.focus == Focus::Chats {
             format!("{} to compose", app.keymap.hint(Context::Chats, "compose"))
+        } else if app.selected_message.is_some() {
+            format!(
+                "{} to reply",
+                app.keymap.hint(Context::Conversation, "compose")
+            )
         } else {
             format!(
                 "{} to compose",
@@ -888,7 +891,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         ("Release channel", settings.release_channel.label()),
         ("Downloads", settings.download_behavior.label()),
         (
-            "Message ID column",
+            "Message IDs",
             if settings.show_message_ids {
                 "Shown"
             } else {
@@ -1138,300 +1141,6 @@ fn render_input(
     }
 }
 
-struct RenderedMessage {
-    lines: Vec<Line<'static>>,
-    body_height: usize,
-    body_action: Option<usize>,
-    action_rows: Vec<(usize, usize)>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn message_lines(
-    message: &Message,
-    width: usize,
-    attachment_state: AttachmentState,
-    download_behavior: DownloadBehavior,
-    selected: bool,
-    selected_action: usize,
-    show_message_ids: bool,
-    icons: icons::Icons,
-    actions: &[MessageAction],
-) -> RenderedMessage {
-    let time = message
-        .timestamp
-        .with_timezone(&Local)
-        .format("%H:%M")
-        .to_string();
-    let sender = pad_cells(&truncate_cells(&message.sender, 12), 12);
-    let prefix = format!("{time} {sender} │ ");
-    let prefix_width = UnicodeWidthStr::width(prefix.as_str());
-    let delivery_width = if message.outgoing { 3 } else { 0 };
-    let id_reserve = usize::from(show_message_ids) * MESSAGE_ID_COLUMN_WIDTH;
-    let body_width = width
-        .saturating_sub(prefix_width)
-        .saturating_sub(delivery_width)
-        .saturating_sub(id_reserve)
-        .max(8);
-    let mut body = message_body(message, attachment_state, download_behavior);
-    if let Some(attachment) = &message.attachment {
-        body.insert_str(0, icons.attachment(attachment.kind));
-    }
-    if message.pinned {
-        body = format!("{} {body}", icons.pin());
-    }
-    if let Some(reply) = &message.reply_to {
-        let sender = reply.sender.as_deref().unwrap_or("unknown");
-        body = format!("↩ #{} {}  {body}", reply.message_id, sender);
-    }
-    let wrapped = wrap_cells(&body, body_width);
-    let mut result = Vec::new();
-    for (index, part) in wrapped.into_iter().enumerate() {
-        let line_prefix = if index == 0 {
-            prefix.clone()
-        } else {
-            format!("{}│ ", " ".repeat(prefix_width.saturating_sub(2)))
-        };
-        let selection = selected.then_some(Color::DarkGray);
-        let mut body_style = if message.outgoing {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-        if let Some(background) = selection {
-            body_style = body_style.bg(background);
-        }
-        let mut prefix_style = Style::default().fg(MUTED);
-        if let Some(background) = selection {
-            prefix_style = prefix_style.bg(background);
-        }
-        let mut spans = vec![
-            Span::styled(line_prefix, prefix_style),
-            Span::styled(part, body_style),
-        ];
-        if index == 0 && message.outgoing {
-            let (mark, color) = match message.delivery {
-                Delivery::Pending => (" …", WARNING),
-                Delivery::Sent => (" ✓", MUTED),
-                Delivery::Read => (" ✓✓", SUCCESS),
-                Delivery::Failed => (" !", DANGER),
-            };
-            let mut delivery_style = Style::default().fg(color);
-            if let Some(background) = selection {
-                delivery_style = delivery_style.bg(background);
-            }
-            spans.push(Span::styled(mark, delivery_style));
-        }
-        let mut line = Line::from(spans);
-        if show_message_ids && index == 0 {
-            let label = format!("#{}", message.id);
-            let gap = width
-                .saturating_sub(line.width())
-                .saturating_sub(UnicodeWidthStr::width(label.as_str()));
-            line.spans.push(Span::raw(" ".repeat(gap)));
-            line.spans.push(Span::styled(label, prefix_style));
-        }
-        result.push(line);
-    }
-    let body_height = result.len();
-    let body_action = actions
-        .iter()
-        .position(|action| matches!(action, MessageAction::Attachment | MessageAction::Reply));
-    let continuation = format!("{}│ ", " ".repeat(prefix_width.saturating_sub(2)));
-    let action_rows = append_message_actions(
-        &mut result,
-        message,
-        actions,
-        selected,
-        selected_action,
-        body_width,
-        &continuation,
-    );
-    RenderedMessage {
-        lines: result,
-        body_height,
-        body_action,
-        action_rows,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_message_actions(
-    result: &mut Vec<Line<'static>>,
-    message: &Message,
-    actions: &[MessageAction],
-    selected: bool,
-    selected_action: usize,
-    body_width: usize,
-    continuation: &str,
-) -> Vec<(usize, usize)> {
-    let mut action_rows = Vec::new();
-    for (link_index, link) in message.links.iter().enumerate() {
-        let Some(action_index) = actions
-            .iter()
-            .position(|action| *action == MessageAction::Link(link_index))
-        else {
-            continue;
-        };
-        let label = if link.label == link.url {
-            format!("↗ {}", link.url)
-        } else {
-            format!("↗ {} → {}", link.label, link.url)
-        };
-        push_action_lines(
-            result,
-            &mut action_rows,
-            continuation,
-            &label,
-            body_width,
-            action_index,
-            selected && selected_action == action_index,
-            true,
-        );
-    }
-    for (button_index, button) in message.buttons.iter().enumerate() {
-        let action_index = actions
-            .iter()
-            .position(|action| *action == MessageAction::Button(button_index));
-        let (icon, suffix) = match button.kind {
-            MessageButtonKind::Url => ("↗", ""),
-            MessageButtonKind::Callback => ("●", ""),
-            MessageButtonKind::Game => ("▶", ""),
-            MessageButtonKind::Unsupported => ("×", " · graphical client required"),
-        };
-        let label = format!("{icon} [ {} ]{suffix}", button.label);
-        if let Some(action_index) = action_index {
-            push_action_lines(
-                result,
-                &mut action_rows,
-                continuation,
-                &label,
-                body_width,
-                action_index,
-                selected && selected_action == action_index,
-                button.kind == MessageButtonKind::Url,
-            );
-        } else {
-            result.push(Line::from(vec![
-                Span::styled(continuation.to_owned(), Style::default().fg(MUTED)),
-                Span::styled(label, Style::default().fg(MUTED)),
-            ]));
-        }
-    }
-    action_rows
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_action_lines(
-    lines: &mut Vec<Line<'static>>,
-    action_rows: &mut Vec<(usize, usize)>,
-    prefix: &str,
-    label: &str,
-    width: usize,
-    action_index: usize,
-    selected: bool,
-    underlined: bool,
-) {
-    for part in wrap_cells(label, width) {
-        let row = lines.len();
-        let background = selected.then_some(Color::DarkGray);
-        let mut prefix_style = Style::default().fg(MUTED);
-        let mut action_style = Style::default().fg(ACCENT);
-        if underlined {
-            action_style = action_style.add_modifier(Modifier::UNDERLINED);
-        }
-        if let Some(background) = background {
-            prefix_style = prefix_style.bg(background);
-            action_style = action_style.bg(background);
-        }
-        lines.push(Line::from(vec![
-            Span::styled(prefix.to_owned(), prefix_style),
-            Span::styled(part, action_style),
-        ]));
-        action_rows.push((row, action_index));
-    }
-}
-
-fn message_body(
-    message: &Message,
-    state: AttachmentState,
-    download_behavior: DownloadBehavior,
-) -> String {
-    let Some(attachment) = &message.attachment else {
-        return message.text.clone();
-    };
-    if attachment.kind == AttachmentKind::Sticker {
-        let fallback = attachment.fallback_emoji.as_deref().unwrap_or("◻");
-        let label = if attachment.preview_uses_thumbnail() {
-            "[sticker · static preview]"
-        } else {
-            "[sticker]"
-        };
-        return if message.text.is_empty() {
-            format!("{fallback}  {label}")
-        } else {
-            format!("{fallback}  {label} {}", message.text)
-        };
-    }
-
-    let kind = match attachment.kind {
-        AttachmentKind::Photo => "photo",
-        AttachmentKind::File => "file",
-        AttachmentKind::Video => "video",
-        AttachmentKind::Audio => "audio",
-        AttachmentKind::Sticker => "sticker",
-        AttachmentKind::Other => "attachment",
-    };
-    let mut label = format!("[{kind}]");
-    if let Some(name) = &attachment.file_name {
-        label.push(' ');
-        label.push_str(name);
-    }
-    if let Some(size) = attachment.size {
-        label.push_str(" · ");
-        label.push_str(&human_size(size));
-    }
-    let action = if attachment.supports_preview() {
-        "inline preview"
-    } else {
-        match state {
-            AttachmentState::Ready => "ready to download",
-            AttachmentState::Downloading => "downloading…",
-            AttachmentState::Downloaded => match download_behavior {
-                DownloadBehavior::CacheOnly => "downloaded to cache",
-                DownloadBehavior::RevealOnActivation => "downloaded · activate to reveal",
-            },
-        }
-    };
-    label.push_str(" · ");
-    label.push_str(action);
-    if message.text.is_empty() {
-        label
-    } else {
-        format!("{label}\n{}", message.text)
-    }
-}
-
-fn human_size(size: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = KIB * 1024;
-    const GIB: u64 = MIB * 1024;
-    if size >= GIB {
-        decimal_size(size, GIB, "GiB")
-    } else if size >= MIB {
-        decimal_size(size, MIB, "MiB")
-    } else if size >= KIB {
-        decimal_size(size, KIB, "KiB")
-    } else {
-        format!("{size} B")
-    }
-}
-
-fn decimal_size(size: u64, unit: u64, suffix: &str) -> String {
-    let whole = size / unit;
-    let decimal = size % unit * 10 / unit;
-    format!("{whole}.{decimal} {suffix}")
-}
-
 fn pane_block<'a>(title: String, focused: bool) -> Block<'a> {
     Block::new()
         .borders(Borders::ALL)
@@ -1527,11 +1236,6 @@ fn truncate_cells(value: &str, max: usize) -> String {
     }
     result.push('…');
     result
-}
-
-fn pad_cells(value: &str, width: usize) -> String {
-    let current = UnicodeWidthStr::width(value);
-    format!("{value}{}", " ".repeat(width.saturating_sub(current)))
 }
 
 fn wrap_cells(value: &str, max: usize) -> Vec<String> {
@@ -1630,6 +1334,96 @@ mod tests {
 
     fn populated_app() -> AppState {
         populated_app_with_settings(Settings::default())
+    }
+
+    #[test]
+    fn transcript_separates_metadata_reply_and_body_and_aligns_media() {
+        use crate::event::TelegramCommand;
+        use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = populated_app_with_settings(Settings {
+            show_message_ids: true,
+            ..Settings::default()
+        });
+        app.focus = Focus::Conversation;
+        app.sidebar_hidden = true;
+        app.selected_message = Some(11);
+        let message = &mut app.messages.get_mut(&7).unwrap()[0];
+        message.outgoing = true;
+        message.sender = "Me".to_owned();
+        message.text = "Readable body 你好".to_owned();
+        message.reply_to = Some(ReplyInfo {
+            message_id: 42,
+            chat_id: 7,
+            sender: Some("Bob".to_owned()),
+        });
+        message.attachment = Some(Attachment {
+            source_id: None,
+            kind: AttachmentKind::Photo,
+            file_name: None,
+            mime_type: None,
+            size: None,
+            fallback_emoji: None,
+        });
+        for width in [40, 100] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = |y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            };
+            assert!(row(1).contains("Me"));
+            assert!(row(1).contains("#11"));
+            assert!(!row(1).contains("Readable body"));
+            assert!(row(2).contains("↩ #42 Bob"));
+            assert!(row(4).contains("Readable body"));
+            assert_eq!(buffer[(3, 4)].fg, Color::Reset);
+            assert_eq!(buffer[(1, 4)].symbol(), "▎");
+            assert_eq!(app.media_slots.len(), 1);
+            assert_eq!(app.media_slots[0].viewport.x, 3);
+            assert!(app.media_slots[0].viewport.right() < width);
+        }
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 8,
+            row: 2,
+            modifiers: Modifiers::empty(),
+        });
+        assert_eq!(app.selected_action, 1);
+        assert!(render_text_mut(&mut app, 100, 24).contains("› ↩ #42 Bob"));
+        let commands = app.handle_action(KeyAction::Enter);
+        assert!(matches!(
+            commands.first(),
+            Some(TelegramCommand::LoadMessage { message_id: 42, .. })
+        ));
+    }
+
+    #[test]
+    fn reflow_clamps_the_anchor_to_its_message_when_wrapping_shrinks() {
+        let mut app = populated_app();
+        app.narrow_conversation = true;
+        let mut message = app.active_messages()[0].clone();
+        message.text = "long content ".repeat(300);
+        let mut messages = vec![message.clone()];
+        for id in 12..32 {
+            let mut following = message.clone();
+            following.id = id;
+            following.text = format!("message {id}");
+            messages.push(following);
+        }
+        app.messages.insert(7, messages);
+        app.message_scroll = 1;
+        app.viewport_anchor_message = Some(11);
+        app.viewport_anchor_row = 70;
+        render_text_mut(&mut app, 40, 14);
+        assert_eq!(app.viewport_anchor_message, Some(11));
+        assert!(render_text_mut(&mut app, 120, 14).contains("long content"));
+        assert_eq!(app.viewport_anchor_message, Some(11));
+        assert_eq!(app.viewport_anchor_row, 0);
+        app.sidebar_hidden = true;
+        render_text_mut(&mut app, 120, 14);
+        assert_eq!(app.viewport_anchor_message, Some(11));
     }
 
     #[test]
@@ -2130,7 +1924,7 @@ mod tests {
     }
 
     #[test]
-    fn replies_render_target_metadata_and_optional_right_id_column() {
+    fn replies_render_target_metadata_and_optional_header_ids() {
         let mut app = populated_app();
         let message = app.messages.get_mut(&7).unwrap().first_mut().unwrap();
         message.reply_to = Some(ReplyInfo {
@@ -2221,7 +2015,7 @@ mod tests {
         ]);
 
         let output = render_text_mut(&mut app, 120, 36);
-        assert!(output.contains("[photo] image.jpg · 2.0 KiB · inline preview"));
+        assert!(output.contains("[photo] image.jpg · 2.0 KiB"));
         // TestBackend retains the continuation cell for a wide emoji, so the
         // exact amount of padding between these two tokens is backend-specific.
         assert!(output.contains("🙂"));
@@ -2490,7 +2284,7 @@ mod tests {
         assert!(after.contains(&format!("message-{anchor:02}")));
         assert!(!after.contains("new-three"));
         assert!(after.contains("1 new"));
-        assert_eq!(app.message_scroll, 8);
+        assert_eq!(app.message_scroll, 10); // Header, three body lines and spacing.
         assert_eq!(app.new_messages_to_anchor, 0);
 
         let anchored_scroll = app.message_scroll;

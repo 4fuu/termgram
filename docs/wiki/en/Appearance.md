@@ -67,3 +67,24 @@ underlined selected title identify focus without covering colors with a reversed
 row. Nerd Font chat/pin icons share the title column; CJK and emoji names truncate
 by terminal cells. The compact sidebar defaults to 30 columns and F4 toggles it.
 See [Lua configuration](Configuration.md) for width and semantic color options.
+
+## Conversation layout
+
+Each message has a separate author header, with local time, outgoing delivery
+state and optional message ID aligned on the right. Incoming authors use stable
+colors from the terminal palette; outgoing authors use green. Body text keeps the
+terminal's default foreground and background. Earlier dates include month/day;
+other years include the year. On very narrow headers, optional IDs yield space to
+the author and delivery/time information.
+
+Replies occupy their own row above text/media. A thin left marker identifies the
+selected message; the current reply, attachment or link action also gains emphasis.
+Body, action rows and inline media share a small two-column gutter. A blank line
+separates messages. File labels describe the file and active transfer state;
+selection-specific keys belong in the bottom bar. `o` expands selected media,
+`i` replies, and `g n` / `g p` move among actions.
+
+Resizing and sidebar toggles retain the anchored message. If reflow removes the
+old physical row, the viewport returns to that message's header rather than its
+trailing separator. This is a message/row anchor, not an exact text-character
+position across different wrapping widths.

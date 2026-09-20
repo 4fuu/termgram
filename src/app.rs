@@ -242,6 +242,8 @@ pub struct App {
     /// Semantic top-of-viewport anchor used to survive wrapping changes.
     pub viewport_anchor_message: Option<i32>,
     pub viewport_anchor_row: usize,
+    /// Last rendered conversation width, used to detect a wrapping change.
+    pub viewport_width: u16,
     pub terminal_focused: bool,
     settings: Settings,
     settings_path: Option<PathBuf>,
@@ -343,6 +345,7 @@ impl Default for App {
             new_messages_to_anchor: 0,
             viewport_anchor_message: None,
             viewport_anchor_row: 0,
+            viewport_width: 0,
             terminal_focused: true,
             settings: Settings::default(),
             settings_path: None,

@@ -46,9 +46,12 @@ to disk. Multiline paste cannot execute a series of commands.
 | `forward <chat or saved>` | Choose a destination using Tab, then review the selected message before forwarding |
 | `save` | Review a native forward of the selected message to this account’s Saved Messages |
 | `saved` | Open Saved Messages, including when absent from the recent chat list |
-| `open @username`, `open <Telegram link>` | Look up and open a user or group outside the cached chat list |
+| `open <@username or Telegram link>` | Look up a user, group or message outside the cached chat list ([details](Chats.md)) |
+| `join <invite link>` | Preview an invitation before explicitly joining or requesting approval ([details](Chats.md)) |
+| `info` | Inspect chat details, permissions and slow mode ([details](Chats.md)) |
 | `reply` | Reply to an explicitly selected message |
 | `poll` | Review and vote in the selected [poll or quiz](Polls.md) |
+| `react` | Add or remove standard emoji [reactions](Reactions.md) on the selected message |
 | `spoiler` | Reveal/hide the selected message’s spoilers |
 | `quote` | Expand/collapse its expandable quotes |
 | `preview` | Expand a selected image or sticker |
@@ -62,7 +65,8 @@ to disk. Multiline paste cannot execute a series of commands.
 | `sidebar [show, hide or toggle]` | Control the sidebar; omitted argument toggles |
 | `color chat`, `color folder` | Open the target's color picker |
 | `settings` | Open application settings |
-| `status` | Inspect connection, DC, recent ping and current in-memory loading state |
+| `config reload`, `reload` | Validate and apply Lua settings together; retain current settings on failure |
+| `status` | Inspect connection, DC, recent ping, cache loading, config and clipboard capability |
 | `refresh` | Refresh chat and folder lists |
 | `quit`, `q` | Exit normally |
 
@@ -83,48 +87,6 @@ context has `complete_next`, `complete_previous`, `history_previous` and
 `history_next` actions, in addition to normal editor actions. See
 [Lua configuration](Configuration.md). Keyboard bindings and command actions
 share the same application dispatch and descriptions.
-
-`:react` opens the selected message’s [emoji reaction picker](Reactions.md).
-
-Use `:open @alice_name` to start a conversation by username, then `i` to compose.
-`:open https://t.me/example/123` also opens a linked message. Resolution runs only
-after Enter, with a timeout; typing does not query Telegram. Existing drafts,
-unread counters and folder membership are preserved. Starting to compose or
-opening another chat cancels the pending navigation, and superseded lookup
-results cannot change your view. Use `:chat` for cached names, aliases or IDs.
-Broadcast channels remain unsupported in this revision.
-
-
-`:join https://t.me/+hash` previews a group invitation; `t.me/joinchat/hash` and
-`tg://join?invite=hash` work too. Opening an invite with `:open` or activating its
-message link shows the same preview. It shows the title, available description,
-member count and Telegram scam/fake warning. Cancel is selected initially: use
-Down to select Join/Request to join, then Enter to confirm. A mouse click selects
-an option; Enter confirms. Already joined groups offer Open chat.
-
-The server is checked again before joining. Admin approval remains “request
-submitted” until approved. Closing during submission keeps the request running
-and reports its result without changing your view. If confirmation fails or times
-out, reopen the invitation to check current membership before trying again.
-Expired/revoked links report Telegram's error; paid subscriptions, broadcast
-channels and bot verification require the official client. Invite hashes are
-excluded from request logs and are not written to preferences or disk command history.
-
-
-`:info` opens details for the captured chat: full name, username, description,
-member count when available, your role, notification mute, text/photo/file
-permissions and slow mode. Scroll with j/k or the mouse wheel; Ctrl-R refreshes;
-Esc closes. Long names and descriptions wrap. The active conversation refreshes
-in the background at most once a minute, with one details request at a time.
-Permission updates invalidate older results. Offline details show their age.
-
-Known restrictions appear in the composer ghost text and status line. Sending
-while restricted keeps the text, reply and attachments in the draft. Slow mode
-shows a countdown and allows one pending message or attachment at a time.
-Server rejections explain permission or wait errors and preserve retry content;
-Telegram still checks permission at send time. This viewer does not modify roles,
-ban users, or pay for messages. Notification mute is separate from write restrictions.
-
 
 `:config reload` and `:reload` atomically reload the Lua file. Errors retain the
 current settings. `:status` shows the config path, revision, last error, active

@@ -48,6 +48,11 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Conversation | v | Open the selected [poll or quiz](Polls.md) |
 | Poll | Space/Enter, then Ctrl-S | Choose answers, then submit |
 | Poll | u / Ctrl-R / Esc | Prepare vote retraction / refresh / close |
+| Conversation | g e | Open the selected message's [reactions](Reactions.md) |
+| Reactions | Enter/Space / u / Ctrl-R / Esc | Toggle an emoji / remove your emoji reactions / refresh / close |
+| Chat details (`:info`) | j/k or mouse wheel / Ctrl-R / Esc | Scroll / refresh / close |
+| Invite preview (`:join`) | Up/Down, then Enter | Choose and confirm; initially selects Cancel |
+| Help / Status | j/k or mouse wheel / Esc | Scroll wrapped content / close |
 | Pinned messages | Enter / Esc | Open selected message / close |
 | Pinned messages | Ctrl-N / Ctrl-P | Next / previous page |
 | Pinned messages | p / U | Confirm unpin / unpin all |
@@ -105,5 +110,3 @@ the attachment, so Enter then activates that media action.
 Composer Ctrl-O opens attachment review. Its a/p/d/o/O/i keys add, choose photo or file, remove, preview, reveal and edit the caption. See [Attachments](Attachments.md).
 
 Ctrl-V / Ctrl-Alt-V paste native clipboard files, images or text in the conversation, composer and attachment review. `:paste` is the command equivalent; no paste sends automatically.
-
-Conversation `g e` opens [Reactions](Reactions.md): Enter/Space toggle, `u` removes your emoji reactions, Ctrl-R refreshes and Esc closes.

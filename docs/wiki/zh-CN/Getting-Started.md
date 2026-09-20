@@ -42,7 +42,8 @@ Windows 默认目录为 `%LOCALAPPDATA%\Programs\Termgram\bin`，也可先查看
    手机号页按 Tab 使用二维码，再用已登录的 Telegram 在 **设置 → 设备 → 连接桌面设备** 扫码。
 3. 用 `j/k` 或方向键选择聊天，Enter 打开。
 4. 按 `i` 进入输入框，输入消息后 Enter 发送，Ctrl-J 换行。
-   Esc 退出输入，在当前账号的本次运行中保留草稿。
+   Esc 退出输入，为当前聊天和账号保留本地草稿，正常重启后也会恢复。
+   详见[输入与回复](UX.md)。
 5. `G` 回到最新消息，`?` 打开帮助；导航状态按 `q` 退出。
 
 二维码会自动轮换。Tab 切换紧凑字符块与较大的全单元格显示，Esc 返回手机号登录。
@@ -92,6 +93,9 @@ Cargo 安装根目录设置会改变位置；`--root DIR` 安装到 `DIR/bin`，
 安装其他分支时添加 `--branch BRANCH`；固定提交则改用 `--rev COMMIT`，把占位文字替换
 为所需 Git 引用。PR 功能在合并前需要选择该 PR 的源码分支。此安装方式需要保留 Git URL；
 不要改成 `cargo install termgram`，后者会查找 crates.io 上的包。
+
+若要安装与已发布 Wiki 完全一致的版本，打开页尾的 **文档来源**，取得对应提交，
+再用 `--rev COMMIT` 安装。这样可以避免阅读尚在评审中的新功能文档时，实际安装了默认分支。
 
 `cargo uninstall termgram` 卸载 Cargo 管理的程序，保留 Termgram 配置与账号数据。
 使用过 `--root` 时，更新和卸载也应提供相同目录。`--force` 可以重编同一提交，例如修改了

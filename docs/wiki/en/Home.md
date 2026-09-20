@@ -13,6 +13,7 @@ time. Cached messages are available while it reconnects.
 | Browse commands and complete chat or folder names | [Commands](Commands.md) |
 | Remap keys, jump to a saved chat, change ghost text | [Lua configuration](Configuration.md) |
 | Read, reply, send files, and switch accounts | [Daily workflows](UX.md) |
+| Open a username, join an invitation, or inspect chat permissions | [Chat discovery and details](Chats.md) |
 | Navigate Telegram folders | [Folders](Folders.md) |
 | Pin chats or messages, browse pins | [Pins](Pins.md) |
 | Read polls and quizzes, vote or retract a vote | [Polls](Polls.md) |
@@ -32,8 +33,10 @@ Documentation is available in English and Simplified Chinese; the interface
 currently uses English text, with configurable composer ghost text.
 
 Broadcast channels, secret chats, calls, stories, sticker/GIF pickers,
-server-wide message search, contact management, chat creation, group
-administration are outside this revision’s scope.
+server-wide message search, contact management, creating groups and group
+administration are outside this revision’s scope. Forum-topic navigation, cloud
+drafts, simultaneous account connections, durable send queues, albums, scheduled
+or silent sending and typing indicators are also not implemented.
 Message editing, deletion, copying, forwarding and Saved Messages are supported;
 see [daily workflows](UX.md).
 Folders are created and edited in an official client. Supported messages, links

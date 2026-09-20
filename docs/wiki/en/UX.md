@@ -214,7 +214,7 @@ Click media to select it, then `o` for a larger preview or `i` to reply. Use
 URL entities appear as selectable link rows, including hidden-text links.
 Public `t.me`, `telegram.me`, and `tg://resolve` chat/message links open in-app;
 private `t.me/c` and `tg://privatepost` links work for known groups. Other HTTP(S)
-links open through the operating system. Invite links show a confirmation preview (see Commands); broadcast-channel links
+links open through the operating system. Invite links show a [confirmation preview](Chats.md); broadcast-channel links
 remain unsupported. URL, web-view, callback and game bot buttons are supported;
 payment, password-gated, contact/location and peer-selection buttons identify
 that a graphical client is required.
@@ -237,4 +237,6 @@ has a running network worker. Sessions, messages, media, and color overrides are
 isolated. Switching resets searches and conversation views while retaining each
 account's local drafts.
 
-To open a new private chat, use `:open @username`, then `i` to compose. Chat/message links also work with `:open`; see [Commands](Commands.md).
+To open a new private chat, use `:open @username`, then `i` to compose.
+Use `:info` to inspect the chat's identity and write restrictions. See
+[Chat discovery and details](Chats.md) for invitations and permissions.

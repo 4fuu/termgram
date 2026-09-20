@@ -49,6 +49,11 @@ flowchart LR
 - `src/app.rs` 管理选择、焦点、草稿和请求代次，功能 reducer 在 `src/app/`，渲染在 `src/ui/`。
 - `src/keymap.rs` 加载声明式 Lua，把 Yazi 按键映射为动作。上下文、数量、组合键和提示使用
   同一组绑定。`config.lua` 归用户所有，托管设置和账号外观另存。
+- `src/actions.rs`、`src/commands.rs` 为命令、帮助和补全共享有限的动作元数据，
+  命令保留账号/聊天/消息身份。配置完整校验后才由终端所有者应用；解析或模式切换失败保留旧设置。
+- `src/drafts.rs` 按 Telegram 用户和聊天身份保存正文及编辑草稿，与可清理的历史缓存分开。
+  `src/clipboard.rs`、`src/terminal/clipboard.rs` 将数据交给现有附件暂存流程；
+  原生剪贴板只有一个所有者，终端 MIME 事件使用已有 Yazi reader。
 - `src/telegram/local.rs` 在联网前打开账号缓存，处理本地请求、限制认证前的待执行命令并
   持久保存更新。`src/cache.rs` 负责迁移、历史覆盖范围、修订与保留策略。
 - `src/telegram/mod.rs` 管理客户端、更新流和任务生命周期，`requests.rs` 限制普通 RPC，
@@ -86,6 +91,7 @@ flowchart LR
 | Telegram Desktop `4d4da471fbee771c10e173a83c003ba1728989f1` | 活跃群恢复、原生过滤规则、本地优先存储 | 通过 Telegram API/Grammers 对齐行为，不复制 Desktop 存储格式 |
 | Grammers 0.10.0 | MTProto 传输与更新顺序 | 批次/游标/活跃群的局部补丁，保留上游许可证 |
 | libSQL / regex / mlua / tempfile / ratatui-image | 数据库、正则、有界 Lua 求值、临时文件、内联渲染 | 应用 schema、资源限制、命令与 UX |
+| arboard / notify-rust | 原生剪贴板与桌面通知适配 | 草稿暂存、账号/请求身份、通知条件与隐私 |
 
 参考源码：[Yazi](https://github.com/sxyazi/yazi/tree/9203fd2604f867ab5ec18f24203b918975c4c00a)、
 [Codex TUI](https://github.com/openai/codex/tree/78245b47af2a7aafcabe025828ceecca69db4df1/codex-rs/tui)、

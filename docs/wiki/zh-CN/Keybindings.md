@@ -1,8 +1,5 @@
 # 快捷键
 
-投票消息按 `v` 打开面板；Space/Enter 勾选，Ctrl-S 提交。`u` 准备撤回，
-Ctrl-R 刷新，Esc 关闭。详见[投票与测验](Polls.md)。
-
 [English](../en/Keybindings.md) · [指南首页](Home.md)
 
 下表是默认值，`?` 显示当前 Lua 配置实际生效的绑定。大写字母表示 Shift 加该字母。
@@ -47,6 +44,14 @@ Ctrl-R 刷新，Esc 关闭。详见[投票与测验](Polls.md)。
 | 会话 | O | 在系统文件管理器中定位附件 |
 | 会话 | / / c | 本地正则搜索 / 聊天颜色 |
 | 会话 | p / P | 置顶/取消置顶所选消息；打开置顶列表 |
+| 会话 | v | 打开选中的[投票或测验](Polls.md) |
+| 投票 | Space/Enter，然后 Ctrl-S | 选择答案，然后提交 |
+| 投票 | u / Ctrl-R / Esc | 准备撤回投票 / 刷新 / 关闭 |
+| 会话 | g e | 打开选中消息的[回应](Reactions.md) |
+| 回应 | Enter/Space / u / Ctrl-R / Esc | 添加或移除 / 移除本人的 emoji 回应 / 刷新 / 关闭 |
+| 聊天资料（`:info`） | j/k 或滚轮 / Ctrl-R / Esc | 滚动 / 刷新 / 关闭 |
+| 邀请预览（`:join`） | Up/Down，然后 Enter | 选择并确认；默认选中取消 |
+| 帮助 / 状态 | j/k 或滚轮 / Esc | 按换行后的内容滚动 / 关闭 |
 | 置顶消息 | Enter / Esc | 打开所选消息/关闭 |
 | 置顶消息 | Ctrl-N / Ctrl-P | 下一页/上一页 |
 | 置顶消息 | p / U | 确认取消置顶/取消全部置顶 |
@@ -101,5 +106,3 @@ Lua 解析之后不再有另一套硬编码按键兜底。
 输入框 Ctrl-O 打开附件列表，其中 a/p/d/o/O/i 分别添加、切换照片或文件、移除、预览、定位和编辑说明，见[附件](Attachments.md)。
 
 会话、输入框和附件列表中的 Ctrl-V / Ctrl-Alt-V 粘贴原生剪贴板的文件、图片或文字；也可用 `:paste`，不会自动发送。
-
-对话中按 `g e` 打开[回应](Reactions.md)：Enter/Space 添加或移除，`u` 移除本人的 emoji 回应，Ctrl-R 刷新，Esc 关闭。

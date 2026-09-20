@@ -8,7 +8,8 @@ Place `config.lua` beside Termgram's `settings.conf`, or set `TERMGRAM_CONFIG` t
 an explicit file path. Use `:config reload` (or `:reload`) to load changes without restarting. Start with [the example](../../../examples/config.lua).
 The file returns a Lua table; tables, strings, mathematics and UTF-8 helpers are
 available. Filesystem, process and plugin APIs are deliberately outside this
-configuration interface. Invalid files show an error and retain default bindings.
+configuration interface. Invalid files use defaults at startup; a failed reload
+keeps the settings already in use and reports the error.
 
 ```lua
 return {
@@ -173,6 +174,7 @@ binding can become visible again.
 | --- | --- |
 | `quit`, `redraw`, `next_account`, `add_account` | Global lifecycle/account controls |
 | `help`, `settings`, `accounts` | Navigation; open or toggle the overlay |
+| `reload_config` | Validate and apply the Lua file without restarting |
 | `open`, `cancel`, `focus` | Contextual activation, dismissal, pane/QR switching |
 | `toggle_sidebar` | Show/hide the sidebar in navigation or composition |
 | `up`, `down`, `page_up`, `page_down` | List selection, rendered-row scrolling, or search selection; accept `count` |
@@ -180,7 +182,14 @@ binding can become visible again.
 | `oldest`, `latest` | First/last chat, or loaded-history start/latest conversation |
 | `first_unread`, `mark_read`, `mark_unread` | Jump to the first unread message; explicitly read the chat or set Telegram’s unread reminder |
 | `mentions` | Browse Telegram unread mentions and replies to you |
+| `mute_chat`, `unmute_chat` | Set the current chat's Telegram notification mute |
 | `compose`, `send`, `newline` | Enter a draft or reply to the explicit conversation selection / send / newline |
+| `edit_message`, `discard_edit`, `delete_message` | Edit a delivered message, discard a local edit, or review deletion |
+| `copy_text`, `copy_link`, `forward_message`, `save_message`, `saved_messages` | Copy, review forwarding, or open Saved Messages |
+| `attach`, `attachments`, `paste_clipboard` | Add files, review attachments, or paste into the draft |
+| `remove_attachment`, `attachment_format` | Remove a draft file or switch photo/original format in attachment review |
+| `poll`, `toggle_poll_answer`, `retract_vote` | Open a poll, choose answers, or prepare vote retraction |
+| `reactions`, `clear_reactions` | Open emoji reactions or remove your choices in the picker |
 | `spoilers`, `expand_quote` | Reveal/hide spoilers and expand/collapse quotes in the conversation |
 | `preview` | Expand a selected image or sticker; `preview` context controls the expanded view |
 | `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |

@@ -62,6 +62,14 @@ flowchart LR
 - `src/keymap.rs` loads declarative Lua and maps Yazi keys to actions. Contexts,
   counts, chords and hints share one binding collection. `config.lua` is user
   owned; managed settings and account-specific appearance are separate files.
+- `src/actions.rs` and `src/commands.rs` share finite action metadata with help
+  and completion. Command targets are captured by account/chat/message identity.
+  Reload prepares a whole configuration before the terminal owner applies it;
+  a failed parse or terminal-mode change retains the previous settings.
+- `src/drafts.rs` keeps ordinary and edit drafts by Telegram user/chat identity,
+  separately from discardable history. `src/clipboard.rs` and
+  `src/terminal/clipboard.rs` feed existing attachment staging; native clipboard
+  work has one owner, and terminal MIME events use the existing Yazi reader.
 - `src/telegram/local.rs` opens the account cache before networking, serves local
   requests, bounds commands waiting for authentication, and persists changes.
   `src/cache.rs` owns schema migration, history coverage, revisions and retention.
@@ -112,6 +120,7 @@ bundled SQLite engine and reviewing the upstream WAL-reset fix.
 | Telegram Desktop `4d4da471fbee771c10e173a83c003ba1728989f1` | Active-group recovery, native filter semantics and local-first storage | Behavioral reference through Telegram API/Grammers; no Desktop storage-format clone |
 | Grammers 0.10.0 | MTProto transport and update ordering | Narrow batch/cursor/active-channel patches; retained upstream licenses |
 | libSQL / regex / mlua / tempfile / ratatui-image | Storage, regex, bounded Lua evaluation, partial files, inline rendering | Application schemas, limits, commands and UX |
+| arboard / notify-rust | Native clipboard and desktop notification adapters | Draft staging, account/request identity, alert eligibility and privacy |
 
 Source references: [Yazi](https://github.com/sxyazi/yazi/tree/9203fd2604f867ab5ec18f24203b918975c4c00a),
 [Codex TUI](https://github.com/openai/codex/tree/78245b47af2a7aafcabe025828ceecca69db4df1/codex-rs/tui),

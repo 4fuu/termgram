@@ -7,7 +7,7 @@
 把 `config.lua` 放在 `settings.conf` 旁，或用 `TERMGRAM_CONFIG` 指定路径。
 使用 `:config reload`（或 `:reload`）即可加载修改，无需重启，可以从[配置示例](../../../examples/config.lua)开始。配置返回一个 Lua table，
 支持 table、字符串、数学和 UTF-8 辅助函数，不提供文件系统、进程或插件接口。
-配置错误会显示提示，并继续使用默认快捷键。
+启动时配置错误会显示提示并使用默认值；运行中重载失败则保留已经生效的设置。
 
 ```lua
 return {
@@ -136,7 +136,8 @@ Lua 在凭据 `.env` 之前加载，因此 `TERMGRAM_CONFIG` 必须已存在于�
 更改会话路径不会移动设置或颜色文件。
 
 Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段、动作、别名和同上下文
-前缀冲突会报错；整个无效配置回退为默认值。不提供任意插件 API。
+前缀冲突会报错；启动时整个无效配置回退为默认值，`:config reload` 失败则保留当前配置。
+不提供任意插件 API。
 
 ## 动作表
 
@@ -147,6 +148,7 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | --- | --- |
 | `quit`、`redraw`、`next_account`、`add_account` | 全局退出、重绘、账号控制 |
 | `help`、`settings`、`accounts` | 导航；打开或切换浮层 |
+| `reload_config` | 校验并应用 Lua 文件，无需重启 |
 | `open`、`cancel`、`focus` | 按上下文激活、关闭、切换面板或二维码 |
 | `toggle_sidebar` | 在导航或输入时展开/收起侧栏 |
 | `up`、`down`、`page_up`、`page_down` | 列表选择、显示行滚动或搜索选择，支持 `count` |
@@ -154,7 +156,14 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 | `oldest`、`latest` | 首末聊天，或已加载历史起点/最新会话 |
 | `first_unread`、`mark_read`、`mark_unread` | 跳到首条未读、明确将聊天全部标为已读、设置 Telegram 未读提醒 |
 | `mentions` | 浏览 Telegram 未读提及及回复给你的消息 |
+| `mute_chat`、`unmute_chat` | 设置当前聊天的 Telegram 通知静音 |
 | `compose`、`send`、`newline` | 进入草稿或回复会话中明确选中的消息 / 发送 / 换行 |
+| `edit_message`、`discard_edit`、`delete_message` | 编辑已送达消息、丢弃本地编辑或检查删除范围 |
+| `copy_text`、`copy_link`、`forward_message`、`save_message`、`saved_messages` | 复制、预览转发或打开 Saved Messages |
+| `attach`、`attachments`、`paste_clipboard` | 添加文件、查看附件或粘贴到草稿 |
+| `remove_attachment`、`attachment_format` | 在附件列表中移除文件或切换照片/原文件格式 |
+| `poll`、`toggle_poll_answer`、`retract_vote` | 打开投票、选择答案或准备撤回 |
+| `reactions`、`clear_reactions` | 打开 emoji 回应或在选择器中移除本人的选择 |
 | `spoilers`、`expand_quote` | 在会话中揭示/隐藏剧透、展开/收起引用 |
 | `preview` | 展开所选图片或贴纸；大图通过 `preview` 上下文配置按键 |
 | `home`、`end`、`left`、`right`、`backspace`、`delete`、`clear`、`delete_word` | 编辑器 |

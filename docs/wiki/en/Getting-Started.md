@@ -48,7 +48,8 @@ request elevation or edit PATH. Release selection and updates are described in
    scan it in Telegram under **Settings → Devices → Link Desktop Device**.
 3. Move through chats with `j/k` or arrows, then Enter to open one.
 4. Press `i`, type your message, and Enter to send. Ctrl-J adds a newline.
-   Esc leaves the editor while keeping the draft in this running account.
+   Esc leaves the editor while keeping a local draft for this chat and account,
+   including across normal restarts. See [drafts and replies](UX.md#compose-and-reply).
 5. `G` returns to the newest messages; `?` opens help. `q` quits from navigation.
 
 QR codes rotate automatically. Tab switches between compact block rendering and
@@ -105,6 +106,10 @@ To select another branch, add `--branch BRANCH`; for a specific commit, use
 PR features require that PR's source branch until merged. The Git URL is required
 for this installation route; do not substitute `cargo install termgram`, which
 would look for a crates.io package.
+
+For the exact version described by the published Wiki, open its **Documentation
+source** footer and use that commit with `--rev COMMIT`. This avoids installing
+the default branch while following guides for changes that are still in review.
 
 `cargo uninstall termgram` removes the Cargo-managed executable, leaving your
 Termgram configuration and account data. If you installed with `--root`, pass the

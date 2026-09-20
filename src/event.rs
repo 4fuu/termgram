@@ -60,6 +60,10 @@ pub enum ConnectionStatus {
 /// Commands sent from the application to the Telegram worker.
 #[derive(Clone, Eq, PartialEq)]
 pub enum TelegramCommand {
+    LoadChatInfo {
+        chat_id: ChatId,
+        request_id: u64,
+    },
     PreviewInvite {
         hash: String,
         request_id: u64,
@@ -327,6 +331,14 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::LoadChatInfo {
+                chat_id,
+                request_id,
+            } => NetworkEvent::ChatInfoReady {
+                chat_id,
+                request_id,
+                result: Err(error),
+            },
             Self::PreviewInvite { request_id, .. } => NetworkEvent::InviteReady {
                 request_id,
                 result: Err(error),
@@ -659,6 +671,14 @@ impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LoadChatInfo {
+                chat_id,
+                request_id,
+            } => formatter
+                .debug_struct("LoadChatInfo")
+                .field("chat_id", chat_id)
+                .field("request_id", request_id)
+                .finish(),
             Self::PreviewInvite { request_id, .. } | Self::JoinInvite { request_id, .. } => {
                 formatter
                     .debug_struct(if matches!(self, Self::PreviewInvite { .. }) {
@@ -1074,6 +1094,14 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    ChatInfoReady {
+        chat_id: ChatId,
+        request_id: u64,
+        result: Result<crate::chat_info::Info, String>,
+    },
+    ChatInfoInvalidated {
+        chat_id: ChatId,
+    },
     InviteReady {
         request_id: u64,
         result: Result<crate::invites::Preview, String>,

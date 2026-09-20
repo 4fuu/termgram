@@ -3,6 +3,7 @@
 mod alerts;
 mod appearance;
 mod attachments;
+pub(crate) mod chat_info;
 mod commands;
 mod composition;
 mod deletion;
@@ -178,6 +179,7 @@ pub enum Mode {
     Edit,
     DeletePrompt,
     Invite,
+    ChatInfo,
     ForwardPrompt,
     Poll,
     Reactions,
@@ -261,6 +263,7 @@ pub struct App {
     pub editing: editing::State,
     pub deletion: deletion::State,
     pub invites: invites::State,
+    pub chat_info: chat_info::State,
     pub sharing: sharing::State,
     pub forwarding: forwarding::State,
     pub narrow_conversation: bool,
@@ -348,6 +351,7 @@ pub struct App {
 pub type AppState = App;
 
 impl Default for App {
+    #[allow(clippy::too_many_lines)]
     fn default() -> Self {
         Self {
             screen: Screen::Connecting,
@@ -383,6 +387,7 @@ impl Default for App {
             editing: editing::State::default(),
             deletion: deletion::State::default(),
             invites: invites::State::default(),
+            chat_info: chat_info::State::default(),
             sharing: sharing::State::default(),
             forwarding: forwarding::State::default(),
             narrow_conversation: false,
@@ -611,7 +616,8 @@ impl App {
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
                 Mode::PinnedMessages => Context::Pins,
-                Mode::Invite
+                Mode::ChatInfo
+                | Mode::Invite
                 | Mode::DeletePrompt
                 | Mode::PinPrompt
                 | Mode::Help
@@ -673,6 +679,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.chat_info_binding(run, count) {
+            return commands;
+        }
         if let Some(commands) = self.invite_binding(run) {
             return commands;
         }
@@ -1008,6 +1017,18 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<TelegramCommand> {
+        if self.mode == Mode::ChatInfo {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.chat_info_binding(&Action::Up, 3);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.chat_info_binding(&Action::Down, 3);
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.mode == Mode::Invite {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                 && let Some(index) =
@@ -1269,6 +1290,7 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        self.observe_chat_info(&event);
         if let Some(commands) = self.observe_reactions(&event) {
             return commands;
         }
@@ -1544,7 +1566,9 @@ impl App {
                 }
                 Vec::new()
             }
-            NetworkEvent::ReactionsChanged(_)
+            NetworkEvent::ChatInfoReady { .. }
+            | NetworkEvent::ChatInfoInvalidated { .. }
+            | NetworkEvent::ReactionsChanged(_)
             | NetworkEvent::ReactionsLoading { .. }
             | NetworkEvent::ReactionsLoaded { .. }
             | NetworkEvent::ReactionsFinished { .. }
@@ -2391,7 +2415,8 @@ impl App {
             }
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
-            Mode::Invite
+            Mode::ChatInfo
+            | Mode::Invite
             | Mode::Attachments
             | Mode::PinnedMessages
             | Mode::PinPrompt
@@ -2906,6 +2931,10 @@ impl App {
     }
 
     fn send_draft(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
+        if let Some(reason) = self.draft_restriction(chat_id) {
+            self.status_message = Some(format!("{reason} · draft kept · :info for details"));
+            return Vec::new();
+        }
         if self.preparing_attachments() {
             self.status_message = Some(
                 "Wait for attachment preparation or cancel it in the attachment list".to_owned(),
@@ -7024,6 +7053,73 @@ mod tests {
                 button_index: 3,
             }]
         );
+    }
+
+    #[test]
+    fn chat_information_invalidates_old_permissions_and_preserves_restricted_drafts() {
+        use crate::chat_info::{Info, Restriction};
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.connection = crate::event::ConnectionStatus::Online;
+        let outgoing = app.request_visible_chat_info();
+        let [TelegramCommand::LoadChatInfo { request_id, .. }] = outgoing.as_slice() else {
+            panic!("details")
+        };
+        let info = Info {
+            title: "Group".to_owned(),
+            role: "Member".to_owned(),
+            about: "Long description ".repeat(100),
+            restrictions: vec![Restriction {
+                content: None,
+                reason: "Read only".to_owned(),
+                until: 0,
+            }],
+            ..Info::default()
+        };
+        app.handle_network(NetworkEvent::ChatInfoInvalidated { chat_id: 1 });
+        app.handle_network(NetworkEvent::ChatInfoReady {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Ok(info.clone()),
+        });
+        assert!(app.chat_info.entries.is_empty());
+        let outgoing = app.request_visible_chat_info();
+        let [TelegramCommand::LoadChatInfo { request_id, .. }] = outgoing.as_slice() else {
+            panic!("refreshed details")
+        };
+        app.handle_network(NetworkEvent::ChatInfoReady {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Ok(info),
+        });
+        assert!(app.request_visible_chat_info().is_empty());
+        app.start_composing();
+        app.draft_data_mut(1).input.set_value("keep my draft");
+        assert!(app.send_draft(1).is_empty());
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "keep my draft");
+        assert!(app.status_message.as_ref().unwrap().contains("Read only"));
+        app.mode = Mode::Navigate;
+        app.run_binding("command", 1);
+        app.commands.input.set_value("info");
+        app.run_binding("open", 1);
+        assert_eq!(app.mode, Mode::ChatInfo);
+        for (width, height) in [(90, 28), (40, 12)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            app.run_binding("down", 20);
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert!(app.chat_info.scroll > 0);
+        }
+        app.run_binding("cancel", 1);
+        assert_eq!(app.mode, Mode::Navigate);
+        app.handle_network(NetworkEvent::ChatInfoInvalidated { chat_id: 1 });
+        assert_eq!(app.draft_restriction(1), None);
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "keep my draft");
     }
 
     #[test]

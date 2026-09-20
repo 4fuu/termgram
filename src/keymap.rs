@@ -320,6 +320,7 @@ impl Default for Keymap {
             (
                 Context::Overlay,
                 &[
+                    ("<C-r>", "refresh"),
                     ("<Enter>", "open"),
                     ("<Space>", "open"),
                     ("<Esc>", "cancel"),

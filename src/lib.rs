@@ -3,6 +3,7 @@ pub mod app;
 pub mod appearance;
 pub mod cache;
 pub mod chat_discovery;
+pub mod chat_info;
 pub mod cloud_search;
 pub mod commands;
 pub mod config;

@@ -303,6 +303,16 @@ fn context(app: &AppState, narrow: bool) -> String {
             app.keymap.hint(Context::Forward, "cancel")
         );
     }
+    if app.mode == Mode::ChatInfo {
+        let hint = |action| app.keymap.hint(Context::Overlay, action);
+        return format!(
+            "{}/{} scroll · {} refresh · {} close",
+            hint("up"),
+            hint("down"),
+            hint("refresh"),
+            hint("cancel")
+        );
+    }
     if app.mode == Mode::Invite {
         let hint = |action| app.keymap.hint(Context::Overlay, action);
         return format!(
@@ -343,6 +353,11 @@ fn context(app: &AppState, narrow: bool) -> String {
             hint("open"),
             hint("cancel")
         );
+    }
+    if app.mode == Mode::Compose
+        && let Some(reason) = app.active_chat_id.and_then(|id| app.draft_restriction(id))
+    {
+        return format!("{reason} · :info");
     }
     if app.status_message.is_some() {
         return String::new();

@@ -1,3 +1,4 @@
+mod chat_info;
 mod deletion;
 mod editing;
 mod entities;
@@ -587,6 +588,31 @@ async fn process_update(
                 | tl::enums::Update::DialogFilterOrder(_)
                 | tl::enums::Update::DialogFilters => {
                     cache.folders.dirty = true;
+                }
+                tl::enums::Update::Channel(update) => {
+                    events
+                        .send(NetworkEvent::ChatInfoInvalidated {
+                            chat_id: PeerId::channel_unchecked(update.channel_id)
+                                .bot_api_dialog_id_unchecked(),
+                        })
+                        .await?;
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::Chat(update) => {
+                    events
+                        .send(NetworkEvent::ChatInfoInvalidated {
+                            chat_id: PeerId::chat_unchecked(update.chat_id)
+                                .bot_api_dialog_id_unchecked(),
+                        })
+                        .await?;
+                    cache.dialogs.dirty = true;
+                }
+                tl::enums::Update::ChatDefaultBannedRights(update) => {
+                    if let Some(chat_id) = PeerId::from(update.peer.clone()).bot_api_dialog_id() {
+                        events
+                            .send(NetworkEvent::ChatInfoInvalidated { chat_id })
+                            .await?;
+                    }
                 }
                 tl::enums::Update::NotifySettings(update) => {
                     cache.notify_revision = cache.notify_revision.wrapping_add(1);
@@ -1479,7 +1505,8 @@ async fn handle_command(
                 requests::spawn(command, client, cache, requests);
             }
         }
-        command @ (TelegramCommand::PreviewInvite { .. }
+        command @ (TelegramCommand::LoadChatInfo { .. }
+        | TelegramCommand::PreviewInvite { .. }
         | TelegramCommand::JoinInvite { .. }
         | TelegramCommand::LoadReactions { .. }
         | TelegramCommand::ChangeReaction { .. }
@@ -1662,7 +1689,7 @@ async fn handle_command(
                     .await
                 }
                 .await
-                .map_err(|error| format!("{error:#}"));
+                .map_err(|error| chat_info::send_error(&error));
                 TransferCompletion::Send {
                     chat_id,
                     local_id,

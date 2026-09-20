@@ -767,6 +767,7 @@ impl App {
                 });
                 commands
             }
+            Kind::Info => self.begin_chat_info(origin.chat.expect("validated target")),
             Kind::Join => self.begin_invite(invite.expect("validated invite")),
             Kind::Chat => self.open_chat_by_id(chat.expect("validated chat")),
             Kind::Open => self.activate_url(open_target.as_deref().expect("validated target")),

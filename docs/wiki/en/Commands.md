@@ -109,3 +109,18 @@ out, reopen the invitation to check current membership before trying again.
 Expired/revoked links report Telegram's error; paid subscriptions, broadcast
 channels and bot verification require the official client. Invite hashes are
 excluded from request logs and are not written to preferences or disk command history.
+
+
+`:info` opens details for the captured chat: full name, username, description,
+member count when available, your role, notification mute, text/photo/file
+permissions and slow mode. Scroll with j/k or the mouse wheel; Ctrl-R refreshes;
+Esc closes. Long names and descriptions wrap. The active conversation refreshes
+in the background at most once a minute, with one details request at a time.
+Permission updates invalidate older results. Offline details show their age.
+
+Known restrictions appear in the composer ghost text and status line. Sending
+while restricted keeps the text, reply and attachments in the draft. Slow mode
+shows a countdown and allows one pending message or attachment at a time.
+Server rejections explain permission or wait errors and preserve retry content;
+Telegram still checks permission at send time. This viewer does not modify roles,
+ban users, or pay for messages. Notification mute is separate from write restrictions.

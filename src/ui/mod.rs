@@ -1,4 +1,5 @@
 mod appearance;
+mod chat_info;
 mod chats;
 mod commands;
 mod deletion;
@@ -473,7 +474,9 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     statusline::render(frame, rows[2], app);
 
-    if app.mode == Mode::Invite {
+    if app.mode == Mode::ChatInfo {
+        chat_info::render(frame, area, app);
+    } else if app.mode == Mode::Invite {
         invites::render(frame, area, app);
     } else if app.mode == Mode::ForwardPrompt {
         forwarding::render(frame, area, app);
@@ -510,7 +513,8 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     if matches!(
         app.mode,
-        Mode::Invite
+        Mode::ChatInfo
+            | Mode::Invite
             | Mode::Search
             | Mode::Poll
             | Mode::Reactions
@@ -909,7 +913,10 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
     let placeholder = input.is_empty();
     let text = if placeholder {
         use crate::keymap::Context;
-        let hint = if app.keymap.ghost_text.is_empty() {
+        let hint = if let Some(reason) = app.active_chat_id.and_then(|id| app.draft_restriction(id))
+        {
+            reason
+        } else if app.keymap.ghost_text.is_empty() {
             String::new()
         } else if active {
             app.keymap

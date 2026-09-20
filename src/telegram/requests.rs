@@ -91,6 +91,7 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    ChatInfo(crate::chat_info::Info),
     Invite(crate::invites::Preview, Option<PeerRef>),
     Joined(crate::invites::Outcome, Option<PeerRef>),
     Reactions(crate::reactions::Review),
@@ -130,7 +131,8 @@ pub(super) fn spawn(
     let chat_id = match &command {
         TelegramCommand::ResolveAlertSettings { key, .. } => Some(key.chat),
         TelegramCommand::SearchCloud(request) => Some(request.chat_id),
-        TelegramCommand::LoadReactions { chat_id, .. }
+        TelegramCommand::LoadChatInfo { chat_id, .. }
+        | TelegramCommand::LoadReactions { chat_id, .. }
         | TelegramCommand::ChangeReaction { chat_id, .. }
         | TelegramCommand::RefreshReactions { chat_id, .. }
         | TelegramCommand::LoadPoll { chat_id, .. }
@@ -236,6 +238,14 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::LoadChatInfo { .. } => Ok(Response::ChatInfo(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                super::chat_info::load(client, peer()?),
+            )
+            .await
+            .context("Chat information timed out")??,
+        )),
         TelegramCommand::PreviewInvite { hash, .. } => {
             let (preview, peer) = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
@@ -649,13 +659,32 @@ pub(super) async fn complete(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
-            if let Some(event) = command.failure(format!("Telegram request failed: {error:#}")) {
+            let detail = if matches!(
+                command,
+                TelegramCommand::SendMessage { .. } | TelegramCommand::ForwardMessage { .. }
+            ) {
+                super::chat_info::send_error(&error)
+            } else {
+                format!("Telegram request failed: {error:#}")
+            };
+            if let Some(event) = command.failure(detail) {
                 events.send(event).await?;
             }
             return Ok(());
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::LoadChatInfo {
+                chat_id,
+                request_id,
+            },
+            Response::ChatInfo(info),
+        ) => NetworkEvent::ChatInfoReady {
+            chat_id,
+            request_id,
+            result: Ok(info),
+        },
         (TelegramCommand::PreviewInvite { request_id, .. }, Response::Invite(preview, peer)) => {
             if let (Some(chat), Some(peer)) = (&preview.joined, peer) {
                 cache_invited_chat(cache, chat, peer);

@@ -250,6 +250,7 @@ impl App {
                     | Kind::Mute(_)
                     | Kind::Mentions
                     | Kind::Open
+                    | Kind::Join
             ) && self.connection != ConnectionStatus::Online)
                 .then(|| "Connect to Telegram first".to_owned())
         })
@@ -599,6 +600,17 @@ impl App {
             return Vec::new();
         }
         // Resolve and validate arguments before leaving COMMAND or changing focus.
+        let invite =
+            if matches!(spec.kind, Kind::Join) {
+                match crate::invites::hash(argument) {
+                    Some(hash) => Some(hash),
+                    None => return self.command_error(
+                        "Use :join https://t.me/+hash, t.me/joinchat/hash or tg://join?invite=hash",
+                    ),
+                }
+            } else {
+                None
+            };
         let open_target = if matches!(spec.kind, Kind::Open) {
             match crate::chat_discovery::target(argument) {
                 Ok(target) => Some(target),
@@ -755,6 +767,7 @@ impl App {
                 });
                 commands
             }
+            Kind::Join => self.begin_invite(invite.expect("validated invite")),
             Kind::Chat => self.open_chat_by_id(chat.expect("validated chat")),
             Kind::Open => self.activate_url(open_target.as_deref().expect("validated target")),
             Kind::Folder => {

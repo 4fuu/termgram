@@ -14,6 +14,7 @@ pub mod event;
 pub mod folders;
 pub mod forwarding;
 pub mod input;
+pub mod invites;
 pub mod keymap;
 pub mod media;
 pub mod model;

@@ -91,6 +91,8 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    Invite(crate::invites::Preview, Option<PeerRef>),
+    Joined(crate::invites::Outcome, Option<PeerRef>),
     Reactions(crate::reactions::Review),
     Poll(crate::polls::Poll),
     Search(super::search::Page),
@@ -234,6 +236,29 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::PreviewInvite { hash, .. } => {
+            let (preview, peer) = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                super::invites::preview(client, hash),
+            )
+            .await
+            .context("Invite preview timed out")??;
+            Ok(Response::Invite(preview, peer))
+        }
+        TelegramCommand::JoinInvite {
+            hash,
+            title,
+            request_needed,
+            ..
+        } => {
+            let (result, peer) = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                super::invites::join(client, hash, title, *request_needed),
+            )
+            .await
+            .context("Join confirmation timed out; reopen the invite to check membership")??;
+            Ok(Response::Joined(result, peer))
+        }
         TelegramCommand::ResolveAlertSettings { key, .. } => Ok(Response::AlertSettings(
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -631,6 +656,25 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (TelegramCommand::PreviewInvite { request_id, .. }, Response::Invite(preview, peer)) => {
+            if let (Some(chat), Some(peer)) = (&preview.joined, peer) {
+                cache_invited_chat(cache, chat, peer);
+            }
+            NetworkEvent::InviteReady {
+                request_id,
+                result: Ok(preview),
+            }
+        }
+        (TelegramCommand::JoinInvite { request_id, .. }, Response::Joined(outcome, peer)) => {
+            if let (crate::invites::Outcome::Joined(chat), Some(peer)) = (&outcome, peer) {
+                cache_invited_chat(cache, chat, peer);
+            }
+            cache.dialogs.dirty = true;
+            NetworkEvent::InviteJoined {
+                request_id,
+                result: Ok(outcome),
+            }
+        }
         (
             TelegramCommand::ResolveAlertSettings { key, request_id },
             Response::AlertSettings(settings),
@@ -1181,6 +1225,15 @@ pub(super) async fn complete(
     };
     events.send(event).await?;
     Ok(())
+}
+
+fn cache_invited_chat(cache: &mut WorkerCache, chat: &Chat, peer: PeerRef) {
+    cache.peers.insert(chat.id, peer);
+    cache.linked_peers.insert(chat.id);
+    cache_sender_name(cache, peer.id, chat.title.clone());
+    if peer.id.kind() == PeerKind::Channel {
+        cache.visible_channel_groups.insert(chat.id);
+    }
 }
 
 #[cfg(test)]

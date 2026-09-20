@@ -6,6 +6,7 @@ mod editing;
 mod entities;
 mod forwarding;
 mod icons;
+mod invites;
 mod pins;
 mod polls;
 mod preview;
@@ -472,7 +473,9 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     statusline::render(frame, rows[2], app);
 
-    if app.mode == Mode::ForwardPrompt {
+    if app.mode == Mode::Invite {
+        invites::render(frame, area, app);
+    } else if app.mode == Mode::ForwardPrompt {
         forwarding::render(frame, area, app);
     } else if app.mode == Mode::DeletePrompt {
         deletion::render(frame, area, app);
@@ -507,7 +510,8 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     if matches!(
         app.mode,
-        Mode::Search
+        Mode::Invite
+            | Mode::Search
             | Mode::Poll
             | Mode::Reactions
             | Mode::Edit

@@ -10,6 +10,7 @@ mod drafts;
 mod editing;
 mod entities;
 mod forwarding;
+pub(crate) mod invites;
 mod message_pins;
 mod message_views;
 mod notifications;
@@ -176,6 +177,7 @@ pub enum Mode {
     Compose,
     Edit,
     DeletePrompt,
+    Invite,
     ForwardPrompt,
     Poll,
     Reactions,
@@ -258,6 +260,7 @@ pub struct App {
     pub attachment_draft: staging::State,
     pub editing: editing::State,
     pub deletion: deletion::State,
+    pub invites: invites::State,
     pub sharing: sharing::State,
     pub forwarding: forwarding::State,
     pub narrow_conversation: bool,
@@ -379,6 +382,7 @@ impl Default for App {
             attachment_draft: staging::State::default(),
             editing: editing::State::default(),
             deletion: deletion::State::default(),
+            invites: invites::State::default(),
             sharing: sharing::State::default(),
             forwarding: forwarding::State::default(),
             narrow_conversation: false,
@@ -573,6 +577,7 @@ impl App {
         self.settings_hit_regions.clear();
         self.account_hit_regions.clear();
         self.commands.hit_regions.clear();
+        self.invites.hit_regions.clear();
         self.attachment_draft.hit_regions.clear();
         self.chat_pane_region = None;
         self.composer_region = None;
@@ -606,7 +611,8 @@ impl App {
                 Mode::Filter => Context::Input,
                 Mode::Search => Context::Search,
                 Mode::PinnedMessages => Context::Pins,
-                Mode::DeletePrompt
+                Mode::Invite
+                | Mode::DeletePrompt
                 | Mode::PinPrompt
                 | Mode::Help
                 | Mode::Settings
@@ -619,8 +625,9 @@ impl App {
         };
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
-                if ((self.mode == Mode::Reactions
-                    && matches!(run, Action::Open | Action::Send | Action::ClearReactions))
+                if ((self.mode == Mode::Invite && run == Action::Open)
+                    || (self.mode == Mode::Reactions
+                        && matches!(run, Action::Open | Action::Send | Action::ClearReactions))
                     || matches!(run, Action::Reveal | Action::ToggleSidebar)
                     || (matches!(self.mode, Mode::ForwardPrompt | Mode::Poll)
                         && run == Action::Send))
@@ -666,6 +673,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.invite_binding(run) {
+            return commands;
+        }
         if let Some(commands) = self.reaction_binding(run, count) {
             return commands;
         }
@@ -998,6 +1008,15 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<TelegramCommand> {
+        if self.mode == Mode::Invite {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && let Some(index) =
+                    pointer_row_hit(&self.invites.hit_regions, mouse.column, mouse.row)
+            {
+                self.invites.selected = index;
+            }
+            return Vec::new();
+        }
         if matches!(
             mouse.kind,
             MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -1266,6 +1285,9 @@ impl App {
             self.update_pin_preview(message);
         }
         match event {
+            event @ (NetworkEvent::InviteReady { .. } | NetworkEvent::InviteJoined { .. }) => {
+                self.observe_invite(event)
+            }
             NetworkEvent::SavedReady { request_id, result } => self.saved_ready(request_id, result),
             NetworkEvent::ForwardReady { request_id, result } => {
                 self.forward_ready(request_id, result);
@@ -2369,7 +2391,8 @@ impl App {
             }
             Mode::Filter => self.handle_filter(action),
             Mode::Search => self.edit_search(action),
-            Mode::Attachments
+            Mode::Invite
+            | Mode::Attachments
             | Mode::PinnedMessages
             | Mode::PinPrompt
             | Mode::DeletePrompt
@@ -3457,6 +3480,9 @@ impl App {
     }
 
     fn activate_url(&mut self, url: &str) -> Vec<TelegramCommand> {
+        if let Some(hash) = crate::invites::hash(url) {
+            return self.begin_invite(hash);
+        }
         if telegram_link(url).is_some() {
             self.pending_telegram_link = Some(url.to_owned());
             self.status_message = Some("Opening Telegram link…".to_owned());
@@ -4587,6 +4613,7 @@ pub fn telegram_link(text: &str) -> Option<String> {
             || lower.starts_with("http://t.me/")
             || lower.starts_with("https://telegram.me/")
             || lower.starts_with("http://telegram.me/")
+            || lower.starts_with("tg://join?")
             || lower.starts_with("tg://resolve?")
             || lower.starts_with("tg://privatepost?")
         {
@@ -4603,9 +4630,11 @@ pub fn telegram_link(text: &str) -> Option<String> {
         let lower = normalized.to_ascii_lowercase();
         let has_target = if lower.starts_with("tg://") {
             lower.split_once('?').is_some_and(|(_, query)| {
-                query
-                    .split('&')
-                    .any(|field| field.starts_with("domain=") || field.starts_with("channel="))
+                query.split('&').any(|field| {
+                    field.starts_with("domain=")
+                        || field.starts_with("channel=")
+                        || field.starts_with("invite=")
+                })
             })
         } else {
             lower
@@ -6995,6 +7024,88 @@ mod tests {
                 button_index: 3,
             }]
         );
+    }
+
+    #[test]
+    fn invitation_requires_confirmation_and_late_results_do_not_navigate() {
+        use crate::invites::{Outcome, Preview};
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.connection = crate::event::ConnectionStatus::Online;
+        let preview = Preview {
+            title: "Test group".to_owned(),
+            about: "A group".to_owned(),
+            participants: Some(12),
+            request_needed: true,
+            warning: None,
+            blocked: None,
+            joined: None,
+        };
+        let outgoing = app.activate_url("https://t.me/+test_invite");
+        let [TelegramCommand::PreviewInvite { request_id, .. }] = outgoing.as_slice() else {
+            panic!("preview only")
+        };
+        let old = *request_id;
+        app.run_binding("cancel", 1);
+        app.handle_network(NetworkEvent::InviteReady {
+            request_id: old,
+            result: Ok(preview.clone()),
+        });
+        assert_eq!(app.mode, Mode::Navigate);
+        assert!(app.invites.preview.is_none());
+        app.run_binding("command", 1);
+        app.commands
+            .input
+            .set_value("join tg://join?invite=test_invite");
+        let outgoing = app.run_binding("open", 1);
+        let [TelegramCommand::PreviewInvite { request_id, .. }] = outgoing.as_slice() else {
+            panic!("preview")
+        };
+        app.handle_network(NetworkEvent::InviteReady {
+            request_id: *request_id,
+            result: Ok(preview),
+        });
+        assert_eq!(app.invites.selected, 0);
+        assert_eq!(app.invite_action(), Some("Request to join"));
+        for (width, height) in [(82, 24), (40, 12)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert!(!app.invites.hit_regions.is_empty());
+        }
+        app.run_binding("down", 1);
+        let mut repeat = KeyEvent::new(yazi_term::event::KeyCode::Enter, Modifiers::empty());
+        repeat.kind = yazi_term::event::KeyEventKind::Repeat;
+        assert!(app.handle_key(&repeat).is_empty());
+        let outgoing = app.run_binding("open", 1);
+        let [
+            TelegramCommand::JoinInvite {
+                request_id,
+                request_needed,
+                ..
+            },
+        ] = outgoing.as_slice()
+        else {
+            panic!("join")
+        };
+        assert!(*request_needed);
+        assert!(app.run_binding("open", 1).is_empty());
+        app.run_binding("cancel", 1);
+        app.handle_network(NetworkEvent::InviteJoined {
+            request_id: *request_id,
+            result: Ok(Outcome::Requested),
+        });
+        assert_eq!(app.mode, Mode::Navigate);
+        assert_eq!(app.active_chat_id, Some(1));
+        assert!(
+            app.status_message
+                .as_ref()
+                .unwrap()
+                .contains("waiting for an administrator")
+        );
+        assert!(!format!("{:?}", outgoing[0]).contains("test_invite"));
     }
 
     #[test]

@@ -93,3 +93,19 @@ unread counters and folder membership are preserved. Starting to compose or
 opening another chat cancels the pending navigation, and superseded lookup
 results cannot change your view. Use `:chat` for cached names, aliases or IDs.
 Broadcast channels remain unsupported in this revision.
+
+
+`:join https://t.me/+hash` previews a group invitation; `t.me/joinchat/hash` and
+`tg://join?invite=hash` work too. Opening an invite with `:open` or activating its
+message link shows the same preview. It shows the title, available description,
+member count and Telegram scam/fake warning. Cancel is selected initially: use
+Down to select Join/Request to join, then Enter to confirm. A mouse click selects
+an option; Enter confirms. Already joined groups offer Open chat.
+
+The server is checked again before joining. Admin approval remains “request
+submitted” until approved. Closing during submission keeps the request running
+and reports its result without changing your view. If confirmation fails or times
+out, reopen the invitation to check current membership before trying again.
+Expired/revoked links report Telegram's error; paid subscriptions, broadcast
+channels and bot verification require the official client. Invite hashes are
+excluded from request logs and are not written to preferences or disk command history.

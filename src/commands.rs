@@ -9,6 +9,7 @@ pub enum Kind {
     Help,
     Chat,
     Open,
+    Join,
     Folder,
     Account,
     Search,
@@ -69,7 +70,7 @@ impl Spec {
     pub fn action(&self) -> Option<Action> {
         match &self.kind {
             Kind::Action(action) => Some(action.clone()),
-            Kind::Chat | Kind::Open | Kind::Status => None,
+            Kind::Chat | Kind::Open | Kind::Join | Kind::Status => None,
             Kind::Help => Some(Action::CommandLine),
             Kind::Folder => Some(Action::FolderNext),
             Kind::Account => Some(Action::Accounts),
@@ -105,6 +106,14 @@ macro_rules! command {
 }
 
 pub static COMMANDS: &[Spec] = &[
+    command!(
+        "join",
+        None,
+        "<invite link>",
+        Kind::Join,
+        None,
+        "Preview an invitation before joining or requesting approval"
+    ),
     command!(
         "react",
         None,

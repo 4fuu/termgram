@@ -60,6 +60,16 @@ pub enum ConnectionStatus {
 /// Commands sent from the application to the Telegram worker.
 #[derive(Clone, Eq, PartialEq)]
 pub enum TelegramCommand {
+    PreviewInvite {
+        hash: String,
+        request_id: u64,
+    },
+    JoinInvite {
+        hash: String,
+        title: String,
+        request_needed: bool,
+        request_id: u64,
+    },
     LoadReactions {
         chat_id: ChatId,
         message_id: i32,
@@ -317,6 +327,14 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::PreviewInvite { request_id, .. } => NetworkEvent::InviteReady {
+                request_id,
+                result: Err(error),
+            },
+            Self::JoinInvite { request_id, .. } => NetworkEvent::InviteJoined {
+                request_id,
+                result: Err(error),
+            },
             Self::LoadReactions {
                 chat_id,
                 message_id,
@@ -641,6 +659,16 @@ impl fmt::Debug for TelegramCommand {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PreviewInvite { request_id, .. } | Self::JoinInvite { request_id, .. } => {
+                formatter
+                    .debug_struct(if matches!(self, Self::PreviewInvite { .. }) {
+                        "PreviewInvite"
+                    } else {
+                        "JoinInvite"
+                    })
+                    .field("request_id", request_id)
+                    .finish_non_exhaustive()
+            }
             Self::LoadReactions {
                 chat_id,
                 request_id,
@@ -1046,6 +1074,14 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    InviteReady {
+        request_id: u64,
+        result: Result<crate::invites::Preview, String>,
+    },
+    InviteJoined {
+        request_id: u64,
+        result: Result<crate::invites::Outcome, String>,
+    },
     ReactionsChanged(crate::reactions::Update),
     ReactionsLoading {
         request_id: u64,

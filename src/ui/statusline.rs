@@ -303,6 +303,16 @@ fn context(app: &AppState, narrow: bool) -> String {
             app.keymap.hint(Context::Forward, "cancel")
         );
     }
+    if app.mode == Mode::Invite {
+        let hint = |action| app.keymap.hint(Context::Overlay, action);
+        return format!(
+            "{}/{} select · {} confirm · {} close",
+            hint("up"),
+            hint("down"),
+            hint("open"),
+            hint("cancel")
+        );
+    }
     if app.mode == Mode::DeletePrompt {
         let hint = |action| app.keymap.hint(Context::Overlay, action);
         return format!(

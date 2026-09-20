@@ -214,8 +214,8 @@ Click media to select it, then `o` for a larger preview or `i` to reply. Use
 URL entities appear as selectable link rows, including hidden-text links.
 Public `t.me`, `telegram.me`, and `tg://resolve` chat/message links open in-app;
 private `t.me/c` and `tg://privatepost` links work for known groups. Other HTTP(S)
-links open through the operating system. Invite and broadcast-channel links are
-outside scope. URL, web-view, callback and game bot buttons are supported;
+links open through the operating system. Invite links show a confirmation preview (see Commands); broadcast-channel links
+remain unsupported. URL, web-view, callback and game bot buttons are supported;
 payment, password-gated, contact/location and peer-selection buttons identify
 that a graphical client is required.
 

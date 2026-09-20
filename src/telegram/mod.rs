@@ -3,6 +3,7 @@ mod editing;
 mod entities;
 mod folders;
 mod forwarding;
+mod invites;
 mod local;
 mod media_cache;
 mod message_actions;
@@ -1478,7 +1479,9 @@ async fn handle_command(
                 requests::spawn(command, client, cache, requests);
             }
         }
-        command @ (TelegramCommand::LoadReactions { .. }
+        command @ (TelegramCommand::PreviewInvite { .. }
+        | TelegramCommand::JoinInvite { .. }
+        | TelegramCommand::LoadReactions { .. }
         | TelegramCommand::ChangeReaction { .. }
         | TelegramCommand::RefreshReactions { .. }
         | TelegramCommand::LoadPoll { .. }

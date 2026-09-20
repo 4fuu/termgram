@@ -90,7 +90,7 @@ pub struct Settings {
     pub release_channel: ReleaseChannel,
     pub download_behavior: DownloadBehavior,
     /// Show the inspected message identifier in the bottom message details.
-    /// Reply previews always show their target identifier
+    /// Reply details always show their target identifier
     /// regardless of this preference.
     pub show_message_ids: bool,
     /// One-based local session slot currently selected for Telegram.

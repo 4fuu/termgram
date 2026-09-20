@@ -76,3 +76,7 @@ action cycling moves to `g n` / `g p`, and `o` expands an image preview.
 `i` also works from the chat list and replies when a message is explicitly selected. Use the account picker with arrows and Enter;
 digit keys in navigation are counts, and the old account-number hints are gone.
 There is no separate hardcoded keyboard fallback after Lua resolution.
+
+Click a reply quote to jump to its original. For a selected reply, Enter opens
+that target by default; use `g n` / `g p` for its other actions. Media clicks select
+the attachment, so Enter then activates that media action.

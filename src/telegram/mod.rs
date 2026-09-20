@@ -1350,6 +1350,7 @@ async fn handle_command(
         | TelegramCommand::ChangeMessagePin { .. }
         | TelegramCommand::LoadHistory { .. }
         | TelegramCommand::LoadMessage { .. }
+        | TelegramCommand::LoadReplyPreviews { .. }
         | TelegramCommand::SendMessage { .. }
         | TelegramCommand::ResolveTelegramLink { .. }
         | TelegramCommand::ActivateButton { .. }
@@ -1384,6 +1385,19 @@ async fn handle_command(
             {
                 events
                     .send(NetworkEvent::HistoryLoading {
+                        chat_id: *chat_id,
+                        request_id: *request_id,
+                    })
+                    .await?;
+            }
+            if let TelegramCommand::LoadReplyPreviews {
+                chat_id,
+                request_id,
+                ..
+            } = &command
+            {
+                events
+                    .send(NetworkEvent::ReplyPreviewsLoading {
                         chat_id: *chat_id,
                         request_id: *request_id,
                     })

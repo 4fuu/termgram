@@ -5,6 +5,7 @@ mod attachments;
 mod composition;
 mod message_pins;
 mod pins;
+mod replies;
 mod search;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -211,6 +212,7 @@ pub struct App {
     pub folder_id: i32,
     pub pins: pins::State,
     pub message_pins: message_pins::State,
+    replies: replies::State,
     /// Position in the filtered chat list, never a persistent model identity.
     pub selected_chat: usize,
     pub active_chat_id: Option<ChatId>,
@@ -324,6 +326,7 @@ impl Default for App {
             folder_id: 0,
             pins: pins::State::default(),
             message_pins: message_pins::State::default(),
+            replies: replies::State::default(),
             selected_chat: 0,
             active_chat_id: None,
             messages: BTreeMap::new(),
@@ -982,6 +985,18 @@ impl App {
                     self.mode = Mode::Navigate;
                     self.select_message_id(message_id, false);
                     self.selected_action = action_index.unwrap_or(0);
+                    if action_index.is_some()
+                        && self
+                            .active_messages()
+                            .iter()
+                            .find(|message| message.id == message_id)
+                            .is_some_and(|message| {
+                                self.message_actions(message).get(self.selected_action)
+                                    == Some(&MessageAction::Reply)
+                            })
+                    {
+                        return self.navigate_to_selected_reply();
+                    }
                     return Vec::new();
                 }
                 if pointer_in_region(self.conversation_pane_region, mouse.column, mouse.row) {
@@ -1029,6 +1044,7 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn handle_network(&mut self, event: NetworkEvent) -> Vec<TelegramCommand> {
+        self.update_reply_previews(&event);
         self.track_snapshot_changes(&event);
         if let NetworkEvent::MessageUpdated(message) = &event {
             self.update_pin_preview(message);
@@ -1178,6 +1194,9 @@ impl App {
                 Vec::new()
             }
             NetworkEvent::HistoryLoading { .. }
+            | NetworkEvent::ReplyPreviewsLoading { .. }
+            | NetworkEvent::ReplyPreviews { .. }
+            | NetworkEvent::ReplyPreviewsFailed { .. }
             | NetworkEvent::PinnedMessagesLoading { .. }
             | NetworkEvent::SyncCheckpoint(_)
             | NetworkEvent::AttachmentDownloadStarted { .. }
@@ -1697,15 +1716,15 @@ impl App {
     #[must_use]
     pub fn message_actions(&self, message: &Message) -> Vec<MessageAction> {
         let mut actions = Vec::new();
+        if message.reply_to.is_some() {
+            actions.push(MessageAction::Reply);
+        }
         if (message.id > 0 && message.attachment.is_some())
             || self
                 .retry_attachments
                 .contains_key(&(message.chat_id, message.id))
         {
             actions.push(MessageAction::Attachment);
-        }
-        if message.reply_to.is_some() {
-            actions.push(MessageAction::Reply);
         }
         actions.extend((0..message.links.len()).map(MessageAction::Link));
         actions.extend(
@@ -3027,13 +3046,17 @@ impl App {
             self.status_message = Some("Selected message is not a reply".to_owned());
             return Vec::new();
         };
-        if let Some(target) = self.messages.get(&reply.chat_id).and_then(|messages| {
-            messages
-                .iter()
-                .find(|message| message.id == reply.message_id)
-                .cloned()
-        }) {
+        if self.reply_is_unavailable(&reply) {
+            self.status_message = Some("Original message is no longer available".to_owned());
+            return Vec::new();
+        }
+        if let Some(target) = self.reply_message(&reply).cloned() {
             if reply.chat_id == chat_id {
+                upsert_message_preserving(
+                    self.messages.entry(chat_id).or_default(),
+                    target,
+                    reply.message_id,
+                );
                 self.focus_reply_target(reply.message_id);
                 return Vec::new();
             }
@@ -3587,6 +3610,14 @@ impl App {
             return Vec::new();
         }
         self.active_reply_request = None;
+        if self.reply_is_unavailable(&ReplyInfo {
+            chat_id: request.target_chat,
+            message_id: request.target_message,
+            sender: None,
+        }) {
+            self.status_message = Some("Original message is no longer available".to_owned());
+            return Vec::new();
+        }
         match result {
             Ok(mut message)
                 if message.id == request.target_message
@@ -5745,6 +5776,108 @@ mod tests {
         app.handle_action(KeyAction::PageDown);
         assert_eq!(app.selected_message, None);
         assert_eq!(app.viewport_anchor_message, None);
+    }
+
+    #[test]
+    fn reply_previews_batch_visible_targets_and_keep_live_edits_and_deletions() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        let mut replies = Vec::new();
+        for (id, target) in [(21, 10), (22, 10), (23, 11)] {
+            let mut source = message(id, 1, "reply", false);
+            source.reply_to = Some(ReplyInfo {
+                chat_id: 1,
+                message_id: target,
+                sender: None,
+            });
+            replies.push(source);
+        }
+        app.messages.insert(1, replies);
+        app.set_message_hit_regions(vec![
+            (0, 80, 1, (21, None)),
+            (0, 80, 2, (22, None)),
+            (0, 80, 3, (23, None)),
+        ]);
+        let commands = app.request_visible_replies();
+        let [
+            TelegramCommand::LoadReplyPreviews {
+                chat_id: 1,
+                message_ids,
+                request_id,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("one batch expected")
+        };
+        assert_eq!(message_ids, &[10, 11]);
+        assert!(app.request_visible_replies().is_empty());
+        app.handle_network(NetworkEvent::MessageUpdated(message(
+            10, 1, "new edit", false,
+        )));
+        app.handle_network(NetworkEvent::MessagesDeleted {
+            channel_id: None,
+            message_ids: vec![11],
+        });
+        app.handle_network(NetworkEvent::ReplyPreviews {
+            chat_id: 1,
+            request_id: *request_id,
+            messages: vec![
+                message(10, 1, "stale", false),
+                message(11, 1, "deleted", false),
+            ],
+            unavailable: Vec::new(),
+            complete: true,
+        });
+        let first = app.messages[&1]
+            .iter()
+            .find(|message| message.id == 21)
+            .unwrap()
+            .reply_to
+            .as_ref()
+            .unwrap();
+        assert_eq!(app.reply_message(first).unwrap().text, "new edit");
+        let deleted = app.messages[&1]
+            .iter()
+            .find(|message| message.id == 23)
+            .unwrap()
+            .reply_to
+            .as_ref()
+            .unwrap();
+        assert!(app.reply_message(deleted).is_none());
+        assert!(app.reply_preview_status(deleted).contains("unavailable"));
+        assert_eq!(app.new_messages_while_scrolled, 0);
+    }
+
+    #[test]
+    fn reply_excerpt_enters_the_timeline_only_when_explicitly_opened() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        let mut source = message(21, 1, "reply", false);
+        source.reply_to = Some(ReplyInfo {
+            chat_id: 1,
+            message_id: 10,
+            sender: None,
+        });
+        app.messages.insert(1, vec![source]);
+        app.set_message_hit_regions(vec![(0, 80, 1, (21, None))]);
+        let commands = app.request_visible_replies();
+        let [TelegramCommand::LoadReplyPreviews { request_id, .. }] = commands.as_slice() else {
+            panic!("one batch expected")
+        };
+        app.handle_network(NetworkEvent::ReplyPreviews {
+            chat_id: 1,
+            request_id: *request_id,
+            messages: vec![message(10, 1, "original", false)],
+            unavailable: Vec::new(),
+            complete: true,
+        });
+        assert_eq!(app.active_messages().len(), 1);
+        app.selected_message = Some(21);
+        app.selected_action = 0;
+        assert!(app.handle_action(KeyAction::Enter).is_empty());
+        assert_eq!(app.selected_message, Some(10));
+        assert_eq!(app.viewport_anchor_message, Some(10));
+        assert_eq!(app.active_messages().len(), 2);
     }
 
     #[test]

@@ -162,7 +162,8 @@ async fn main() -> Result<()> {
             .map(|slot| (slot.chat_id, slot.message_id))
             .filter(|key| !app.media_previews.contains_key(key))
             .collect::<Vec<_>>();
-        let outgoing = app.request_visible_media();
+        let mut outgoing = app.request_visible_media();
+        outgoing.extend(app.request_visible_replies());
         dispatch(&mut app, &mut commands, &mut pending_commands, outgoing);
         if missing_previews
             .iter()

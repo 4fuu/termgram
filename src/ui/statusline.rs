@@ -295,6 +295,13 @@ fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {
             super::icons::Icons(app.keymap.nerd_font).pin()
         ));
     }
+    if let Some(reply) = &message.reply_to {
+        parts.push(format!("reply #{}", reply.message_id));
+        let status = app.reply_preview_status(reply);
+        if !status.is_empty() {
+            parts.push(status.to_owned());
+        }
+    }
     if let Some(attachment) = &message.attachment {
         // Actual filenames matter; Telegram's generated photo.jpg does not.
         if let Some(name) = &attachment.file_name

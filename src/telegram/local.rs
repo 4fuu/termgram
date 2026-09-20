@@ -135,6 +135,7 @@ async fn serve_cached(
     if matches!(
         command,
         TelegramCommand::LoadHistory { .. }
+            | TelegramCommand::LoadReplyPreviews { .. }
             | TelegramCommand::LoadPinnedMessages { .. }
             | TelegramCommand::LoadPinnedContext { .. }
             | TelegramCommand::LoadOlder { .. }
@@ -146,6 +147,24 @@ async fn serve_cached(
         changes.clear();
     }
     match command {
+        TelegramCommand::LoadReplyPreviews {
+            chat_id,
+            message_ids,
+            request_id,
+        } => {
+            let (messages, unavailable) = store.reply_previews(*chat_id, message_ids).await?;
+            let complete = messages.len() + unavailable.len() == message_ids.len();
+            events
+                .send(NetworkEvent::ReplyPreviews {
+                    chat_id: *chat_id,
+                    request_id: *request_id,
+                    messages,
+                    unavailable,
+                    complete,
+                })
+                .await?;
+            return Ok(complete);
+        }
         TelegramCommand::LoadPinnedMessages {
             chat_id,
             before,

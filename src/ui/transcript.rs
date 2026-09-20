@@ -1,6 +1,6 @@
 //! Author/metadata, reply, body and media hierarchy inspired by Codex history
 //! cells. Reuses Termgram's wrapping/actions and Ratatui spans; no copied runtime.
-use super::{ACCENT, MUTED, icons::Icons, wrap_cells};
+use super::{ACCENT, MUTED, icons::Icons, truncate_cells, wrap_cells};
 use crate::{
     app::{AppState, MessageAction},
     model::{Attachment, AttachmentKind, Message, MessageButtonKind},
@@ -35,21 +35,49 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
     let mut lines = header(message, body_width, selected);
     let mut action_rows = Vec::new();
     if let Some(reply) = &message.reply_to {
-        let label = format!(
-            "↩ #{} {}",
-            reply.message_id,
-            reply.sender.as_deref().unwrap_or("unknown")
-        );
+        let original = app.reply_message(reply);
+        let author = original
+            .map(|message| message.sender.as_str())
+            .or(reply.sender.as_deref())
+            .filter(|sender| !sender.eq_ignore_ascii_case("unknown"))
+            .unwrap_or("Original message");
+        let excerpt = original.map_or_else(String::new, |message| {
+            if message.text.is_empty() {
+                message
+                    .attachment
+                    .as_ref()
+                    .map_or_else(String::new, |attachment| {
+                        attachment.display_name().to_owned()
+                    })
+            } else {
+                crate::model::sanitize_terminal_line(&message.text)
+            }
+        });
+        let label = if excerpt.is_empty() {
+            format!("↩ {author}")
+        } else {
+            format!("↩ {author} · {excerpt}")
+        };
         let reply_action = actions
             .iter()
             .position(|action| *action == MessageAction::Reply);
         let current = selected && reply_action == Some(app.selected_action);
-        for part in wrap_cells(&label, body_width) {
+        let quote_width = body_width.saturating_sub(4).max(1);
+        let mut parts = wrap_cells(&label, quote_width);
+        if parts.len() > 2 {
+            parts[1] = format!(
+                "{}…",
+                truncate_cells(&parts[1], quote_width.saturating_sub(1))
+            );
+            parts.truncate(2);
+        }
+        for part in parts {
             if let Some(action) = reply_action {
                 action_rows.push((lines.len(), action));
             }
             lines.push(Line::from(vec![
                 action_gutter(selected, current),
+                Span::styled("  │ ", Style::default().fg(ACCENT)),
                 Span::styled(part, action_style(current)),
             ]));
         }
@@ -61,6 +89,12 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
         let current =
             selected && actions.get(app.selected_action) == Some(&MessageAction::Attachment);
         for part in wrap_cells(&label, body_width) {
+            if let Some(action) = actions
+                .iter()
+                .position(|action| *action == MessageAction::Attachment)
+            {
+                action_rows.push((lines.len(), action));
+            }
             lines.push(Line::from(vec![
                 action_gutter(selected, current),
                 Span::styled(part, action_style(current)),
@@ -75,7 +109,7 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
     let body_height = lines.len();
     let body_action = actions
         .iter()
-        .position(|action| matches!(action, MessageAction::Attachment | MessageAction::Reply));
+        .position(|action| *action == MessageAction::Attachment);
     action_rows.extend(append_message_actions(
         &mut lines,
         message,

@@ -48,8 +48,11 @@ persisted across process restarts or account switches.
 Select a message and press `i` or `R` to reply, or use `R` with no selection for the
 latest message. Clicking the composer preserves an existing reply draft without
 creating a reply from the message selection. The composer shows the target. Esc cancels the reply first,
-keeping text; another Esc returns to navigation. `r` opens a selected message's
-reply target. Failed sends keep their content and reply target; activating a
+keeping text; another Esc returns to navigation. `r` opens a selected message's reply target. Clicking the indented quote also
+jumps there; Enter opens the selected reply action. Excerpts load from memory,
+then local cache, then a bounded background batch for visible missing targets.
+An unavailable original is distinct from an excerpt still loading. Edits and
+deletions update excerpts, including while a slower request is in flight. Failed sends keep their content and reply target; activating a
 failed outgoing message returns it to the composer for retry.
 
 ## Files, links and mouse input

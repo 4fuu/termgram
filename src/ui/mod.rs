@@ -570,7 +570,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         let body_action = rendered.body_action;
         let body_height = rendered.body_height;
         let mut hit_rows: Vec<_> = (0..body_height)
-            .map(|row| (start.saturating_add(row), body_action))
+            .map(|row| (start.saturating_add(row), None))
             .collect();
         // Pointer lookup walks backward: specific action rows must win over
         // the enclosing message (a reply quote may accompany an attachment).
@@ -772,7 +772,10 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
         format!(
             " Reply to #{} {} ",
             reply.message_id,
-            reply.sender.as_deref().unwrap_or("unknown")
+            app.reply_message(reply)
+                .map(|message| message.sender.as_str())
+                .or(reply.sender.as_deref())
+                .unwrap_or("Original message")
         )
     });
     let block = pane_block(title, active);
@@ -1419,7 +1422,7 @@ mod tests {
             assert!(row(1).contains("Me"));
             assert!(!row(1).contains("#11"));
             assert!(!row(1).contains("Readable body"));
-            assert!(row(2).contains("↩ #42 Bob"));
+            assert!(row(2).contains("│ ↩ Bob"));
             assert!(row(3).contains("Readable body"));
             assert_eq!(buffer[(3, 3)].fg, Color::Reset);
             assert_eq!(buffer[(1, 3)].symbol(), "▎");
@@ -1428,19 +1431,65 @@ mod tests {
             assert_eq!(app.media_slots[0].viewport.x, 3);
             assert!(app.media_slots[0].viewport.right() < width);
         }
-        app.handle_mouse(MouseEvent {
+        let commands = app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 8,
             row: 2,
             modifiers: Modifiers::empty(),
         });
-        assert_eq!(app.selected_action, 1);
-        assert!(render_text_mut(&mut app, 100, 24).contains("› ↩ #42 Bob"));
-        let commands = app.handle_action(KeyAction::Enter);
+        assert_eq!(app.selected_action, 0);
+        assert!(render_text_mut(&mut app, 100, 24).contains("│ ↩ Bob"));
+        assert!(app.handle_action(KeyAction::Enter).is_empty());
         assert!(matches!(
             commands.first(),
             Some(TelegramCommand::LoadMessage { message_id: 42, .. })
         ));
+    }
+
+    #[test]
+    fn loaded_reply_excerpt_is_two_rows_and_click_opens_its_exact_target() {
+        use crate::event::{NetworkEvent, TelegramCommand};
+        use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = populated_app();
+        app.focus = Focus::Conversation;
+        app.sidebar_hidden = true;
+        let mut original = app.active_messages()[0].clone();
+        original.id = 10;
+        original.sender = "Full original author".to_owned();
+        original.text = "An excerpt with 中文 content ".repeat(50);
+        app.messages.get_mut(&7).unwrap()[0].reply_to = Some(ReplyInfo {
+            chat_id: 7,
+            message_id: 10,
+            sender: None,
+        });
+        render_text_mut(&mut app, 70, 24);
+        let commands = app.request_visible_replies();
+        let [TelegramCommand::LoadReplyPreviews { request_id, .. }] = commands.as_slice() else {
+            panic!("one batch expected")
+        };
+        app.handle_network(NetworkEvent::ReplyPreviews {
+            chat_id: 7,
+            request_id: *request_id,
+            messages: vec![original],
+            unavailable: Vec::new(),
+            complete: true,
+        });
+        let text = render_text_mut(&mut app, 70, 24);
+        assert!(text.contains("Full original author · An excerpt"));
+        assert_eq!(text.matches("  │ ").count(), 2);
+        assert!(!text.contains("unknown"));
+        assert_eq!(app.active_messages().len(), 1);
+        assert!(
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 8,
+                row: 2,
+                modifiers: Modifiers::empty()
+            })
+            .is_empty()
+        );
+        assert_eq!(app.selected_message, Some(10));
+        assert_eq!(app.viewport_anchor_message, Some(10));
     }
 
     #[test]
@@ -1983,7 +2032,7 @@ mod tests {
         });
 
         let without_column = render_text(&app, 100, 30);
-        assert!(without_column.contains("↩ #42 Bob"));
+        assert!(without_column.contains("│ ↩ Bob"));
         assert!(!without_column.contains("#11"));
 
         let settings = Settings {
@@ -2000,7 +2049,7 @@ mod tests {
             sender: Some("Bob".to_owned()),
         });
         let with_column = render_text(&app, 100, 30);
-        assert!(with_column.contains("↩ #42 Bob"));
+        assert!(with_column.contains("│ ↩ Bob"));
         assert!(with_column.contains("#11"));
     }
 

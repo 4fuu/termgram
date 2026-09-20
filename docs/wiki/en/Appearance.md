@@ -94,7 +94,10 @@ delivery, pin and download/preview state. Select a message to inspect its detail
 `context` supplies the effective Lua keys. On small terminals lower-priority
 segments yield space and details can be shortened.
 
-Replies occupy their own row above text/media. A thin left marker identifies the
+Replies show an indented author and original-message excerpt above text/media,
+limited to two rows. Click the quote, or select the message and press Enter, to
+jump to the original. IDs and loading/unavailable details belong to the bottom
+bar. Clicking media still only selects it; `o` opens its preview. A thin left marker identifies the
 selected message; the current reply, attachment or link action also gains emphasis.
 Body, action rows and inline media share a small two-column gutter. Inline images
 do not repeat a `photo` or `sticker` filename above the preview. While an image is

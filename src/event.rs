@@ -84,6 +84,12 @@ pub enum TelegramCommand {
         message_id: i32,
         request_id: u64,
     },
+    /// Resolve the visible replies in one request per target conversation.
+    LoadReplyPreviews {
+        chat_id: ChatId,
+        message_ids: Vec<i32>,
+        request_id: u64,
+    },
     SendMessage {
         chat_id: ChatId,
         local_id: i32,
@@ -306,6 +312,15 @@ impl TelegramCommand {
             TelegramCommand::MarkRead { chat_id } => {
                 NetworkEvent::ReadMarkFailed { chat_id, error }
             }
+            TelegramCommand::LoadReplyPreviews {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::ReplyPreviewsFailed {
+                chat_id,
+                request_id,
+                error,
+            },
             TelegramCommand::SearchCached(request) => NetworkEvent::SearchFailed {
                 request_id: request.id,
                 error,
@@ -374,6 +389,16 @@ impl fmt::Debug for TelegramCommand {
                 .field("chat_id", chat_id)
                 .field("source_message_id", source_message_id)
                 .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish(),
+            Self::LoadReplyPreviews {
+                chat_id,
+                message_ids,
+                request_id,
+            } => formatter
+                .debug_struct("LoadReplyPreviews")
+                .field("chat_id", chat_id)
+                .field("message_ids", message_ids)
                 .field("request_id", request_id)
                 .finish(),
             Self::SendMessage {
@@ -527,6 +552,22 @@ impl fmt::Debug for TelegramCommand {
 /// SDK-independent updates sent from the Telegram worker to the application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
+    ReplyPreviewsLoading {
+        chat_id: ChatId,
+        request_id: u64,
+    },
+    ReplyPreviews {
+        chat_id: ChatId,
+        request_id: u64,
+        messages: Vec<Message>,
+        unavailable: Vec<i32>,
+        complete: bool,
+    },
+    ReplyPreviewsFailed {
+        chat_id: ChatId,
+        request_id: u64,
+        error: String,
+    },
     /// A primary-DC observation, scoped to this worker's account and lifetime.
     Telemetry {
         dc_id: Option<i32>,

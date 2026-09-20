@@ -95,6 +95,7 @@ enum Response {
     Dialogs(Vec<Dialog>, (i64, i64)),
     Folders(Vec<crate::folders::Folder>),
     History(Vec<TelegramMessage>),
+    ReplyPreviews(Vec<TelegramMessage>, Vec<i32>),
     Message(Box<TelegramMessage>),
     Link(Chat, PeerRef, Option<Box<TelegramMessage>>),
     Button(Option<String>, Option<String>),
@@ -118,6 +119,7 @@ pub(super) fn spawn(
         | TelegramCommand::ChangeMessagePin { chat_id, .. }
         | TelegramCommand::LoadOlder { chat_id, .. }
         | TelegramCommand::LoadMessage { chat_id, .. }
+        | TelegramCommand::LoadReplyPreviews { chat_id, .. }
         | TelegramCommand::SendMessage { chat_id, .. }
         | TelegramCommand::ActivateButton { chat_id, .. }
         | TelegramCommand::MarkRead { chat_id } => Some(*chat_id),
@@ -253,6 +255,29 @@ async fn execute(
             messages.reverse();
             Ok(Response::History(messages))
         }
+        TelegramCommand::LoadReplyPreviews {
+            chat_id,
+            message_ids,
+            ..
+        } => {
+            anyhow::ensure!(
+                message_ids.len() <= 32 && message_ids.iter().all(|id| *id > 0),
+                "invalid reply preview batch"
+            );
+            let messages: Vec<_> = client
+                .get_messages_by_id(peer()?, message_ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .filter(|message| super::peer_id(message).ok() == Some(*chat_id))
+                .collect();
+            let unavailable = message_ids
+                .iter()
+                .copied()
+                .filter(|id| !messages.iter().any(|message| message.id() == *id))
+                .collect();
+            Ok(Response::ReplyPreviews(messages, unavailable))
+        }
         TelegramCommand::LoadMessage {
             source_message_id,
             message_id,
@@ -349,6 +374,27 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::LoadReplyPreviews {
+                chat_id,
+                request_id,
+                ..
+            },
+            Response::ReplyPreviews(raw, unavailable),
+        ) => {
+            let mut messages = raw
+                .iter()
+                .map(|message| map_message(message, cache))
+                .collect::<Result<Vec<_>>>()?;
+            hydrate_reply_senders(&mut messages, cache);
+            NetworkEvent::ReplyPreviews {
+                chat_id,
+                request_id,
+                messages,
+                unavailable,
+                complete: true,
+            }
+        }
         (
             TelegramCommand::ChangeMessagePin {
                 chat_id,

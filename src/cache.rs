@@ -116,6 +116,33 @@ impl Store {
         self.owner.clone()
     }
 
+    /// Exact cached reply targets, including deletion tombstones.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn reply_previews(
+        &self,
+        chat_id: ChatId,
+        ids: &[i32],
+    ) -> Result<(Vec<Message>, Vec<i32>)> {
+        anyhow::ensure!(ids.len() <= 32, "reply preview batch is too large");
+        let mut rows = self.connection.query(
+            "SELECT wanted.value, messages.data, messages.id IS NOT NULL OR
+              (?1>-1000000000000 AND EXISTS(SELECT 1 FROM global_deletions WHERE id=wanted.value))
+             FROM json_each(?2) AS wanted LEFT JOIN messages ON messages.chat_id=?1 AND messages.id=wanted.value",
+            params![chat_id, serde_json::to_string(ids)?],
+        ).await?;
+        let mut messages = Vec::new();
+        let mut unavailable = Vec::new();
+        while let Some(row) = rows.next().await? {
+            if let Some(data) = row.get::<Option<String>>(1)? {
+                messages.push(serde_json::from_str(&data)?);
+            } else if row.get::<i64>(2)? != 0 {
+                unavailable.push(row.get(0)?);
+            }
+        }
+        Ok((messages, unavailable))
+    }
+
     /// # Errors
     /// Returns database or decoding errors.
     pub async fn snapshot(&self) -> Result<(Option<String>, Vec<Chat>)> {
@@ -304,6 +331,22 @@ impl Store {
             self.revision += 1;
             let revision = self.revision;
             match event {
+                NetworkEvent::ReplyPreviews {
+                    chat_id,
+                    request_id,
+                    messages,
+                    complete: true,
+                    ..
+                } => {
+                    let Some(started) = self.history_revisions.remove(&(*chat_id, *request_id))
+                    else {
+                        continue;
+                    };
+                    for message in messages {
+                        write_message(&transaction, message, revision, started).await?;
+                    }
+                    prune_chat_messages(&transaction, *chat_id).await?;
+                }
                 NetworkEvent::PinnedMessagesLoading {
                     chat_id,
                     request_id,
@@ -403,6 +446,10 @@ impl Store {
                 NetworkEvent::HistoryLoading {
                     chat_id,
                     request_id,
+                }
+                | NetworkEvent::ReplyPreviewsLoading {
+                    chat_id,
+                    request_id,
                 } => {
                     self.history_revisions
                         .insert((*chat_id, *request_id), revision);
@@ -460,6 +507,11 @@ impl Store {
                     prune_chat_messages(&transaction, *chat_id).await?;
                 }
                 NetworkEvent::HistoryFailed {
+                    chat_id,
+                    request_id,
+                    ..
+                }
+                | NetworkEvent::ReplyPreviewsFailed {
                     chat_id,
                     request_id,
                     ..
@@ -821,6 +873,57 @@ mod tests {
             links: Vec::new(),
             buttons: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn reply_snapshot_keeps_live_edits_and_deleted_targets_across_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reply-cache.sqlite3");
+        let mut store = Store::open(&path).await.unwrap();
+        store
+            .apply(&[
+                NetworkEvent::ReplyPreviewsLoading {
+                    chat_id: 42,
+                    request_id: 1,
+                },
+                NetworkEvent::MessageUpdated(message(10, "edited")),
+                NetworkEvent::MessagesDeleted {
+                    channel_id: None,
+                    message_ids: vec![11],
+                },
+                NetworkEvent::ReplyPreviews {
+                    chat_id: 42,
+                    request_id: 1,
+                    messages: vec![
+                        message(10, "stale"),
+                        message(11, "deleted"),
+                        message(12, "original"),
+                    ],
+                    unavailable: Vec::new(),
+                    complete: true,
+                },
+            ])
+            .await
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).await.unwrap();
+        let (messages, deleted) = store.reply_previews(42, &[10, 11, 12, 13]).await.unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| (message.id, message.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(10, "edited"), (12, "original")]
+        );
+        assert_eq!(deleted, vec![11]);
+        assert!(
+            store
+                .reply_previews(43, &[10, 12])
+                .await
+                .unwrap()
+                .0
+                .is_empty()
+        );
     }
 
     #[tokio::test]

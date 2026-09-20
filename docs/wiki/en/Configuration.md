@@ -208,3 +208,5 @@ Ctrl-C cancels command entry by default; it still quits in other contexts.
 `attachments.clipboard_as_photo = true` starts clipboard images as Telegram photos. Set `false` for original files. Rebind `paste_clipboard` in the `conversation`, `compose` and `attachments` contexts.
 
 `attachments.terminal_clipboard = true` uses detected OSC 5522 MIME paste before native clipboard reads. Set `false` to disable this terminal mode. See [Terminal](Terminal.md).
+
+Message editing uses the `edit` context. `edit_message` opens/resumes a saved edit in the conversation; `discard_edit` discards it. `send`, `cancel`, `newline` and the usual input actions work in `edit`. The statusline displays EDIT and the selected message’s edit time.

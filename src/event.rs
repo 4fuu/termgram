@@ -100,6 +100,18 @@ pub enum TelegramCommand {
         /// native Telegram reply.
         reply_to: Option<i32>,
     },
+    LoadEdit {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+    },
+    EditMessage {
+        chat_id: ChatId,
+        message_id: i32,
+        request_id: u64,
+        revision: [u8; 32],
+        text: String,
+    },
     PrepareAttachments(crate::staging::Request),
     /// Upload a reviewed local file and send it as Telegram media.
     SendAttachment {
@@ -199,6 +211,24 @@ impl TelegramCommand {
     #[allow(clippy::too_many_lines)]
     pub fn failure(self, error: String) -> Option<NetworkEvent> {
         let event = match self {
+            Self::LoadEdit {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::EditLoaded {
+                chat_id,
+                request_id,
+                result: Err(error),
+            },
+            Self::EditMessage {
+                chat_id,
+                request_id,
+                ..
+            } => NetworkEvent::EditFinished {
+                chat_id,
+                request_id,
+                error: Some(error),
+            },
             Self::SetChatUnread {
                 chat_id,
                 unread,
@@ -394,6 +424,27 @@ impl fmt::Debug for TelegramCommand {
                 .field("request_id", request_id)
                 .field("before_id", before_id)
                 .finish(),
+            Self::LoadEdit {
+                chat_id,
+                message_id,
+                request_id,
+            } => formatter
+                .debug_struct("LoadEdit")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish(),
+            Self::EditMessage {
+                chat_id,
+                message_id,
+                request_id,
+                ..
+            } => formatter
+                .debug_struct("EditMessage")
+                .field("chat_id", chat_id)
+                .field("message_id", message_id)
+                .field("request_id", request_id)
+                .finish_non_exhaustive(),
             Self::StartQrAuth => formatter.write_str("StartQrAuth"),
             Self::SubmitPhone(_) => formatter
                 .debug_tuple("SubmitPhone")
@@ -770,6 +821,16 @@ pub enum NetworkEvent {
     NewMessage(Message),
     /// A replayed or edited message that must not change unread state.
     MessageUpdated(Message),
+    EditLoaded {
+        chat_id: ChatId,
+        request_id: u64,
+        result: Result<crate::editing::Source, String>,
+    },
+    EditFinished {
+        chat_id: ChatId,
+        request_id: u64,
+        error: Option<String>,
+    },
     MessageSent {
         local_id: i32,
         message: Message,

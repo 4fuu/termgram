@@ -181,3 +181,5 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 `attachments.clipboard_as_photo = true` 将剪贴板图片默认作为 Telegram 照片，设为 `false` 则作为原文件。可在 `conversation`、`compose`、`attachments` 上下文重绑 `paste_clipboard`。
 
 `attachments.terminal_clipboard = true` 在检测到支持时优先使用 OSC 5522 MIME 粘贴。设为 `false` 关闭此终端模式，使用原生剪贴板。见[终端](Terminal.md)。
+
+消息编辑使用 `edit` 上下文。会话中的 `edit_message` 打开/继续本地编辑，`discard_edit` 丢弃编辑；`edit` 中支持 `send`、`cancel`、`newline` 和常规输入动作。底栏显示 EDIT，所选消息的编辑时间也显示在底栏。

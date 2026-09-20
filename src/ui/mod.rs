@@ -1,6 +1,7 @@
 mod appearance;
 mod chats;
 mod commands;
+mod editing;
 mod icons;
 mod pins;
 mod preview;
@@ -460,7 +461,9 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
     statusline::render(frame, rows[2], app);
 
-    if app.mode == Mode::Command {
+    if app.mode == Mode::Edit {
+        editing::render(frame, area, app);
+    } else if app.mode == Mode::Command {
         commands::render(frame, area, app);
     } else if app.mode == Mode::Status {
         commands::render_status(frame, area, app);
@@ -486,6 +489,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     if matches!(
         app.mode,
         Mode::Search
+            | Mode::Edit
             | Mode::Command
             | Mode::Status
             | Mode::Colors
@@ -1865,6 +1869,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                edited_at: None,
                 pinned: false,
                 id: 11,
                 chat_id: 7,
@@ -2227,6 +2232,7 @@ mod tests {
         let mut app = populated_app();
         app.messages.get_mut(&7).unwrap().extend([
             Message {
+                edited_at: None,
                 pinned: false,
                 id: 12,
                 chat_id: 7,
@@ -2248,6 +2254,7 @@ mod tests {
                 buttons: Vec::new(),
             },
             Message {
+                edited_at: None,
                 pinned: false,
                 id: 13,
                 chat_id: 7,
@@ -2490,6 +2497,7 @@ mod tests {
         let mut app = populated_app();
         let messages = (0_i32..30)
             .map(|id| Message {
+                edited_at: None,
                 pinned: false,
                 id,
                 chat_id: 7,
@@ -2518,6 +2526,7 @@ mod tests {
             .get_mut(&7)
             .expect("active history")
             .push(Message {
+                edited_at: None,
                 pinned: false,
                 id: 30,
                 chat_id: 7,
@@ -2554,6 +2563,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                edited_at: None,
                 pinned: false,
                 id: 99,
                 chat_id: 7,

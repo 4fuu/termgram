@@ -607,7 +607,8 @@ impl App {
         if matches!(
             spec.target,
             Target::Message | Target::Attachment | Target::Preview
-        ) || (matches!(spec.kind, Kind::Pin(_)) && argument == "message")
+        ) || matches!(spec.kind, Kind::Action(Action::EditMessage))
+            || (matches!(spec.kind, Kind::Pin(_)) && argument == "message")
         {
             if origin.conversation != self.active_chat_id {
                 return self.command_error("The conversation changed; select the message again");

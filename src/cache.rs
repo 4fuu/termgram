@@ -891,6 +891,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            edited_at: None,
             pinned: false,
             id,
             chat_id: 42,

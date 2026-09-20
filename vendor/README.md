@@ -142,3 +142,13 @@ PowerShell source and JSON, not interpolation of clipboard values into commands.
 The Wayland dependency retains its default Rust backend; `native_lib` and `dlopen`
 are not enabled, so the existing Linux musl builds do not require new Wayland
 C development packages. Actual clipboard availability is desktop-dependent.
+
+Message editing in `src/telegram/editing.rs` calls Grammers 0.10.0
+`Client::edit_message` directly. `grammers-mtsender/src/sender.rs` already routes
+RPC `OwnUpdate` results through the existing PTS-ordered update stream, so edits
+need no second fetch/reader or SDK patch. Eligibility follows Desktop
+`history/history_item.cpp` (`canBeEdited`, `isTooOldForEdit`) and
+`data/data_peer.cpp` (`canEditMessagesIndefinitely`) at
+`4d4da471fbee771c10e173a83c003ba1728989f1`; no Desktop source is copied.
+The UTF-16 range adapter retains untouched entities and enclosing styles while
+dropping partially replaced or changed semantic targets.

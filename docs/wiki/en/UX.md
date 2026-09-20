@@ -77,6 +77,35 @@ An unavailable original is distinct from an excerpt still loading. Edits and
 deletions update excerpts, including while a slower request is in flight. Failed sends keep their content and reply target; activating a
 failed outgoing message returns it to the composer for retry.
 
+## Edit a message or caption
+
+Select a delivered message and press `e` or use `:edit`. Termgram fetches the
+current original and checks its author, media type and Telegram's server-provided
+editing time limit. Unsupported, forwarded or inline-bot messages show the
+reason in the footer. The server remains authoritative about chat permissions.
+
+The editor identifies the chat and message, and the footer shows EDIT plus the
+effective keys. Enter saves; Shift-Enter or Ctrl-J adds a newline. Esc/Ctrl-C
+closes the editor while keeping the edit. `e` or `:edit` resumes that chat's
+saved edit; Ctrl-D in the editor or `:edit-discard` discards it. One edit is kept
+per chat alongside its normal draft, reply and files. It survives account
+switches and normal restarts, using the same local draft save lifecycle.
+
+Failed saves keep the input. A changed server revision is reported as a conflict;
+it never silently replaces your edit with new server text. To start from that
+new original, discard the local edit and reopen it. Telegram does not provide an
+atomic compare-and-set edit, so an external edit in the brief interval between
+verification and save can still race. Saving an empty caption removes the caption;
+a text message must remain nonempty. Media replacement is not part of this editor.
+
+Formatting before/after the changed range is retained with UTF-16 offsets;
+formatting spanning the full replacement adjusts its length. Partly changed
+entities and changed hidden-link/emoji targets are removed instead of attached
+to unrelated text. Editing several separated ranges may remove formatting
+between the first and last change. Server edit updates follow the existing ordered
+synchronization stream and update cached replies. The selected message's edit
+time appears in the bottom bar.
+
 ## Files, links and mouse input
 
 Use `:attach <paths...>` to prepare files in the chat draft. Plain pasted paths

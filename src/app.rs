@@ -5,6 +5,7 @@ mod attachments;
 mod commands;
 mod composition;
 mod drafts;
+mod editing;
 mod message_pins;
 mod pins;
 mod reads;
@@ -160,6 +161,7 @@ pub enum Mode {
     #[default]
     Navigate,
     Compose,
+    Edit,
     Command,
     Status,
     Attachments,
@@ -232,6 +234,7 @@ pub struct App {
     pub search: search::State,
     pub commands: commands::State,
     pub attachment_draft: staging::State,
+    pub editing: editing::State,
     pub narrow_conversation: bool,
     pub sidebar_hidden: bool,
     pub should_quit: bool,
@@ -344,6 +347,7 @@ impl Default for App {
             search: search::State::default(),
             commands: commands::State::default(),
             attachment_draft: staging::State::default(),
+            editing: editing::State::default(),
             narrow_conversation: false,
             sidebar_hidden: false,
             should_quit: false,
@@ -558,6 +562,7 @@ impl App {
         } else {
             match self.mode {
                 Mode::Compose => Context::Compose,
+                Mode::Edit => Context::Edit,
                 Mode::Command => Context::Command,
                 Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
@@ -598,7 +603,7 @@ impl App {
         }
         if (matches!(
             context,
-            Context::Compose | Context::Input | Context::Command
+            Context::Compose | Context::Edit | Context::Input | Context::Command
         ) || (context == Context::Search && self.search.editing))
             && key.kind != yazi_term::event::KeyEventKind::Release
             && let Some(text) = key.text(&mut [0; 4])
@@ -619,6 +624,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.editing_binding(run) {
+            return commands;
+        }
         if let Some(commands) = self.attachment_binding(run) {
             return commands;
         }
@@ -967,6 +975,7 @@ impl App {
         if matches!(
             self.mode,
             Mode::Help
+                | Mode::Edit
                 | Mode::Status
                 | Mode::Search
                 | Mode::Colors
@@ -1128,6 +1137,22 @@ impl App {
             self.update_pin_preview(message);
         }
         match event {
+            NetworkEvent::EditLoaded {
+                chat_id,
+                request_id,
+                result,
+            } => {
+                self.edit_loaded(chat_id, request_id, result);
+                Vec::new()
+            }
+            NetworkEvent::EditFinished {
+                chat_id,
+                request_id,
+                error,
+            } => {
+                self.edit_finished(chat_id, request_id, error);
+                Vec::new()
+            }
             NetworkEvent::Telemetry { dc_id, latency } => {
                 self.metrics.dc_id = dc_id;
                 self.metrics.latency = latency.filter(|sample| {
@@ -1961,6 +1986,13 @@ impl App {
             ) if self.auth_progress.is_none() => {
                 self.auth_input.insert_str(&normalized.replace('\n', ""));
             }
+            Screen::Main if self.mode == Mode::Edit && !self.message_edit_pending() => {
+                if let Some(chat) = self.active_chat_id
+                    && let Some(edit) = &mut self.draft_data_mut(chat).edit
+                {
+                    edit.input.insert_str(&normalized);
+                }
+            }
             Screen::Main if self.mode == Mode::Compose => {
                 if let Some(chat_id) = self.active_chat_id {
                     self.draft_data_mut(chat_id).input.insert_str(&normalized);
@@ -2082,6 +2114,7 @@ impl App {
         match self.mode {
             Mode::Navigate => self.handle_navigation(action),
             Mode::Compose => self.handle_compose(action),
+            Mode::Edit => self.edit_message_input(action),
             Mode::Command => self.edit_command(action),
             Mode::Status => {
                 if action == KeyAction::Escape {
@@ -2632,6 +2665,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            edited_at: None,
             pinned: false,
             id: local_id,
             chat_id,
@@ -2657,7 +2691,8 @@ impl App {
     }
 
     fn send_staged_attachments(&mut self, chat_id: ChatId) -> Vec<TelegramCommand> {
-        let draft = std::mem::take(self.draft_data_mut(chat_id));
+        let mut draft = std::mem::take(self.draft_data_mut(chat_id));
+        self.draft_data_mut(chat_id).edit = draft.edit.take();
         let mut caption = draft.input.value().to_owned();
         let mut reply_to = draft.reply;
         let total = draft.attachments.len();
@@ -2681,6 +2716,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                edited_at: None,
                 pinned: false,
                 id: local_id,
                 chat_id,
@@ -4561,6 +4597,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            edited_at: None,
             pinned: false,
             id,
             chat_id,
@@ -4864,6 +4901,7 @@ mod tests {
     fn restored_drafts_preserve_cursor_reply_and_account_identity() {
         let mut app = ready_app();
         let saved = crate::drafts::Stored {
+            edit: None,
             attachments: Vec::new(),
             chat: 1,
             topic: 0,
@@ -6740,6 +6778,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            edited_at: None,
             pinned: false,
             id: -1,
             chat_id: 1,
@@ -6761,6 +6800,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            edited_at: None,
             pinned: false,
             id: -2,
             attachment: Some(Attachment {
@@ -6771,6 +6811,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            edited_at: None,
             pinned: false,
             id: 42,
             attachment: second.attachment.clone(),
@@ -7658,5 +7699,118 @@ mod tests {
         fresh.last_message = "previous live message".to_owned();
         app.handle_network(NetworkEvent::Dialogs(vec![fresh]));
         assert_eq!(app.chats[0].last_message, "previous live message");
+    }
+    #[test]
+    fn editing_keeps_normal_draft_and_recovers_failure_without_sending_a_new_message() {
+        let mut app = ready_app();
+        app.account_user_id = Some(100);
+        open_first(&mut app);
+        app.selected_message = Some(20);
+        app.draft_data_mut(1).input.set_value("unsent draft");
+        let commands = app.run_binding("edit_message", 1);
+        let [TelegramCommand::LoadEdit { request_id, .. }] = commands.as_slice() else {
+            panic!("load original")
+        };
+        app.handle_network(NetworkEvent::EditLoaded {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Ok(crate::editing::Source {
+                message_id: 20,
+                text: "old caption".to_owned(),
+                revision: [1; 32],
+                caption: true,
+            }),
+        });
+        app.handle_action(KeyAction::Clear);
+        app.update(AppEvent::Paste("new 界🙂".to_owned()));
+        assert_eq!(app.active_draft().unwrap().value(), "unsent draft");
+        for width in [35, 110] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 18)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 1,
+                    row: 3,
+                    modifiers: Modifiers::empty()
+                })
+                .is_empty()
+            );
+            assert_eq!(app.mode, Mode::Edit);
+            assert_eq!(app.selected_message, Some(20));
+            assert!(
+                app.request_visible_read().is_empty(),
+                "editor covers the timeline"
+            );
+        }
+        let commands = app.run_binding("send", 1);
+        let [
+            TelegramCommand::EditMessage {
+                chat_id: 1,
+                message_id: 20,
+                request_id,
+                text,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("edit only")
+        };
+        assert_eq!(text, "new 界🙂");
+        app.handle_network(NetworkEvent::EditFinished {
+            chat_id: 1,
+            request_id: *request_id,
+            error: Some("MESSAGE_EDIT_TIME_EXPIRED".to_owned()),
+        });
+        assert_eq!(app.message_edit().unwrap().input.value(), "new 界🙂");
+        app.run_binding("cancel", 1);
+        assert_eq!(app.mode, Mode::Navigate);
+        app.run_binding("edit_message", 1);
+        let commands = app.run_binding("send", 1);
+        let [TelegramCommand::EditMessage { request_id, .. }] = commands.as_slice() else {
+            panic!("retry edit")
+        };
+        app.run_binding("cancel", 1);
+        app.active_chat_id = Some(2);
+        app.handle_network(NetworkEvent::EditFinished {
+            chat_id: 1,
+            request_id: *request_id,
+            error: None,
+        });
+        assert!(app.draft_data(1).unwrap().edit.is_none());
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "unsent draft");
+        assert!(
+            !app.messages
+                .values()
+                .flatten()
+                .any(|message| message.id < 0)
+        );
+    }
+
+    #[test]
+    fn cancelled_original_load_does_not_open_or_replace_an_edit() {
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.selected_message = Some(20);
+        let commands = app.run_binding("edit_message", 1);
+        let [TelegramCommand::LoadEdit { request_id, .. }] = commands.as_slice() else {
+            panic!("load")
+        };
+        app.run_binding("cancel", 1);
+        app.handle_network(NetworkEvent::EditLoaded {
+            chat_id: 1,
+            request_id: *request_id,
+            result: Ok(crate::editing::Source {
+                message_id: 20,
+                text: "late".to_owned(),
+                revision: [1; 32],
+                caption: false,
+            }),
+        });
+        assert_eq!(app.mode, Mode::Navigate);
+        assert!(app.message_edit().is_none());
     }
 }

@@ -90,6 +90,8 @@ pub(super) async fn refresh_pending(
 }
 
 enum Response {
+    EditSource(crate::editing::Source),
+    Edited(Option<Box<TelegramMessage>>),
     PinnedMessages(Vec<TelegramMessage>, usize),
     DialogPins(crate::pins::DialogPins),
     Dialogs(Vec<Dialog>, (i64, i64)),
@@ -113,7 +115,9 @@ pub(super) fn spawn(
     requests: &mut JoinSet<Completion>,
 ) {
     let chat_id = match &command {
-        TelegramCommand::LoadHistory { chat_id, .. }
+        TelegramCommand::LoadEdit { chat_id, .. }
+        | TelegramCommand::EditMessage { chat_id, .. }
+        | TelegramCommand::LoadHistory { chat_id, .. }
         | TelegramCommand::ChangeDialogPin { chat_id, .. }
         | TelegramCommand::SetArchived { chat_id, .. }
         | TelegramCommand::LoadPinnedMessages { chat_id, .. }
@@ -161,6 +165,17 @@ async fn execute(
 ) -> Result<Response> {
     let peer = || peer.context("conversation is missing its Telegram peer reference");
     match command {
+        TelegramCommand::LoadEdit { message_id, .. } => Ok(Response::EditSource(
+            super::editing::load(client, peer()?, *message_id, self_id).await?,
+        )),
+        TelegramCommand::EditMessage {
+            message_id,
+            revision,
+            text,
+            ..
+        } => Ok(Response::Edited(
+            super::editing::save(client, peer()?, *message_id, self_id, *revision, text).await?,
+        )),
         TelegramCommand::LoadPinnedMessages { before, .. } => {
             let mut iter = client
                 .search_messages(peer()?)
@@ -395,6 +410,37 @@ pub(super) async fn complete(
         }
     };
     let event = match (command, response) {
+        (
+            TelegramCommand::LoadEdit {
+                chat_id,
+                request_id,
+                ..
+            },
+            Response::EditSource(source),
+        ) => NetworkEvent::EditLoaded {
+            chat_id,
+            request_id,
+            result: Ok(source),
+        },
+        (
+            TelegramCommand::EditMessage {
+                chat_id,
+                request_id,
+                ..
+            },
+            Response::Edited(message),
+        ) => {
+            if let Some(message) = message {
+                events
+                    .send(NetworkEvent::MessageUpdated(map_message(&message, cache)?))
+                    .await?;
+            }
+            NetworkEvent::EditFinished {
+                chat_id,
+                request_id,
+                error: None,
+            }
+        }
         (
             TelegramCommand::LoadReplyPreviews {
                 chat_id,

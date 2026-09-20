@@ -25,6 +25,7 @@ pub struct Key {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Draft {
     pub input: TextInput,
+    pub edit: Option<crate::editing::Draft>,
     pub reply: Option<ReplyInfo>,
     pub attachments: Vec<crate::staging::Attachment>,
 }
@@ -32,7 +33,10 @@ pub struct Draft {
 impl Draft {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.input.is_empty() && self.reply.is_none() && self.attachments.is_empty()
+        self.input.is_empty()
+            && self.reply.is_none()
+            && self.attachments.is_empty()
+            && self.edit.is_none()
     }
 
     #[must_use]
@@ -42,6 +46,7 @@ impl Draft {
             topic,
             text: self.input.value().to_owned(),
             cursor: self.input.cursor(),
+            edit: self.edit.as_ref().map(crate::editing::Draft::stored),
             reply: self.reply.clone(),
             attachments: self.attachments.clone(),
         }
@@ -55,6 +60,8 @@ pub struct Stored {
     pub topic: i32,
     pub text: String,
     pub cursor: usize,
+    #[serde(default)]
+    pub edit: Option<crate::editing::Stored>,
     pub reply: Option<ReplyInfo>,
     #[serde(default)]
     pub attachments: Vec<crate::staging::Attachment>,
@@ -65,6 +72,7 @@ impl Stored {
     pub fn draft(&self) -> Draft {
         Draft {
             input: TextInput::with_cursor(sanitize_terminal_text(&self.text), self.cursor),
+            edit: self.edit.as_ref().map(crate::editing::Stored::draft),
             reply: self.reply.clone(),
             attachments: self.attachments.clone(),
         }
@@ -118,7 +126,7 @@ impl Store {
             .context("missing draft schema version")?
             .get::<i64>(0)?;
         ensure!(
-            version <= 2,
+            version <= 3,
             "drafts were created by a newer Termgram version"
         );
         if version == 0 {
@@ -126,6 +134,9 @@ impl Store {
         }
         if version < 2 {
             transaction.execute_batch("PRAGMA user_version=2;").await?;
+        }
+        if version < 3 {
+            transaction.execute_batch("PRAGMA user_version=3;").await?;
         }
         transaction.commit().await?;
         Ok(Self {
@@ -279,6 +290,7 @@ mod tests {
 
     fn stored(chat: ChatId, topic: i32, text: &str) -> Stored {
         Stored {
+            edit: None,
             attachments: Vec::new(),
             chat,
             topic,
@@ -315,6 +327,16 @@ mod tests {
                 owned: false,
                 lease: None,
             });
+        initial.get_mut(&100).unwrap()[0].edit = Some(crate::editing::Stored {
+            source: crate::editing::Source {
+                message_id: 41,
+                text: "original".to_owned(),
+                revision: [1; 32],
+                caption: true,
+            },
+            text: "modified caption 界🙂".to_owned(),
+            cursor: 18,
+        });
         store.save(&initial, &Snapshot::new()).await.unwrap();
         let duplicate = stored(7, 0, "duplicate");
         assert!(

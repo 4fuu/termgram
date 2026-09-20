@@ -26,6 +26,7 @@ pub enum Context {
     Chats,
     Conversation,
     Compose,
+    Edit,
     Command,
     Attachments,
     Input,
@@ -168,6 +169,7 @@ impl Default for Keymap {
                 Context::Conversation,
                 &[
                     (":", "command"),
+                    ("e", "edit_message"),
                     ("p", "pin"),
                     ("P", "pins"),
                     ("c", "chat_color"),
@@ -216,6 +218,17 @@ impl Default for Keymap {
                     ("i", "reply"),
                     ("O", "reveal"),
                     ("o", "preview"),
+                ][..],
+            ),
+            (
+                Context::Edit,
+                &[
+                    ("<Enter>", "send"),
+                    ("<S-Enter>", "newline"),
+                    ("<C-j>", "newline"),
+                    ("<Esc>", "cancel"),
+                    ("<C-c>", "cancel"),
+                    ("<C-d>", "discard_edit"),
                 ][..],
             ),
             (
@@ -366,6 +379,7 @@ impl Default for Keymap {
         }
         for context in [
             Context::Compose,
+            Context::Edit,
             Context::Input,
             Context::Search,
             Context::Command,

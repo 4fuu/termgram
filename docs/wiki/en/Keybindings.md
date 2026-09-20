@@ -70,6 +70,9 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Search | Tab / Ctrl-F | Change scope / edit query |
 | Search | Ctrl-N / Ctrl-P | Next / previous result page |
 | Search | Up/Down, PageUp/PageDown | Select result / move ten results |
+| Conversation | e | Edit selected message or resume local edit |
+| Message editor | Enter / Esc or Ctrl-C / Ctrl-D | Save / keep and close / discard edit |
+| Message editor | Shift-Enter or Ctrl-J | Newline |
 
 A number prefix such as `20k` works in the two navigation panes. For a single
 key that jumps N messages, use `count` in [Lua configuration](Configuration.md).

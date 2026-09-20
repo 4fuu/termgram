@@ -116,6 +116,8 @@ pub struct Message {
     pub reply_to: Option<ReplyInfo>,
     pub text: String,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub edited_at: Option<DateTime<Utc>>,
     pub outgoing: bool,
     pub delivery: Delivery,
     pub attachment: Option<Attachment>,

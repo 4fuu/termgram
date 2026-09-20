@@ -1,3 +1,4 @@
+mod editing;
 mod folders;
 mod local;
 mod media_cache;
@@ -1364,7 +1365,9 @@ async fn handle_command(
         .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TRANSFERS)))
         .clone();
     match command {
-        command @ (TelegramCommand::LoadOlder { .. }
+        command @ (TelegramCommand::LoadEdit { .. }
+        | TelegramCommand::EditMessage { .. }
+        | TelegramCommand::LoadOlder { .. }
         | TelegramCommand::ChangeDialogPin { .. }
         | TelegramCommand::SetArchived { .. }
         | TelegramCommand::LoadPinnedMessages { .. }
@@ -2293,6 +2296,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        edited_at: message.edit_date(),
         pinned: message.pinned(),
         id: message.id(),
         chat_id,
@@ -2959,6 +2963,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            edited_at: None,
             pinned: false,
             id: 42,
             chat_id: 7,
@@ -3019,6 +3024,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            edited_at: None,
             pinned: false,
             id: 42,
             chat_id: 7,

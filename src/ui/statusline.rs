@@ -104,6 +104,7 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
         Item::Mode => (
             match app.mode {
                 Mode::Compose => " INSERT ",
+                Mode::Edit => " EDIT ",
                 Mode::Command => " COMMAND ",
                 Mode::Filter | Mode::Search => " SEARCH ",
                 Mode::Navigate if app.focus == Focus::Chats => " CHATS ",
@@ -191,30 +192,13 @@ fn segment(item: Item, right: bool, app: &AppState, narrow: bool) -> Option<Segm
     })
 }
 
-fn context(app: &AppState, narrow: bool) -> String {
-    if app.mode == Mode::Status {
-        return format!("{} close", app.keymap.hint(Context::Overlay, "cancel"));
-    }
-    if app.mode == Mode::Command {
-        let hint = |action| app.keymap.hint(Context::Command, action);
-        return format!(
-            "{} complete · {} run · {} cancel",
-            hint("complete_next"),
-            hint("open"),
-            hint("cancel")
-        );
-    }
-    if app.status_message.is_some() {
-        return String::new();
-    }
+fn selected_context(app: &AppState) -> Option<String> {
     if app.mode == Mode::Navigate
         && app.focus == Focus::Conversation
         && app.selected_message.is_some()
     {
         let hint = |action| app.keymap.hint(Context::Conversation, action);
-        let Some(message) = app.inspected_message() else {
-            return String::new();
-        };
+        let message = app.inspected_message()?;
         let mut hints = Vec::new();
         if app.has_newer_history() {
             hints.push(format!("{} continue", hint("message_down")));
@@ -237,10 +221,44 @@ fn context(app: &AppState, narrow: bool) -> String {
             hints.push(format!("{} {manager}", hint("reveal")));
         }
         hints.push(format!("{} reply", hint("compose")));
+        if message.outgoing && message.id > 0 {
+            hints.push(format!("{} edit", hint("edit_message")));
+        }
         if hints.len() == 1 {
             hints.push(format!("{} clear", hint("cancel")));
         }
-        return hints.join(" · ");
+        return Some(hints.join(" · "));
+    }
+    None
+}
+
+fn context(app: &AppState, narrow: bool) -> String {
+    if app.mode == Mode::Edit {
+        let hint = |action| app.keymap.hint(Context::Edit, action);
+        return format!(
+            "{} save · {} keep/close · {} discard",
+            hint("send"),
+            hint("cancel"),
+            hint("discard_edit")
+        );
+    }
+    if app.mode == Mode::Status {
+        return format!("{} close", app.keymap.hint(Context::Overlay, "cancel"));
+    }
+    if app.mode == Mode::Command {
+        let hint = |action| app.keymap.hint(Context::Command, action);
+        return format!(
+            "{} complete · {} run · {} cancel",
+            hint("complete_next"),
+            hint("open"),
+            hint("cancel")
+        );
+    }
+    if app.status_message.is_some() {
+        return String::new();
+    }
+    if let Some(hint) = selected_context(app) {
+        return hint;
     }
     if let Some(version) = app.available_update() {
         return format!("Update {version} available · run tg update");
@@ -317,6 +335,12 @@ fn message_metadata(app: &AppState) -> Option<(String, Color, u8)> {
         };
         color = tone;
         parts.push(state.to_owned());
+    }
+    if let Some(edited) = message.edited_at {
+        parts.push(format!(
+            "edited {}",
+            edited.with_timezone(&Local).format("%H:%M")
+        ));
     }
     if message.pinned {
         parts.push(format!(

@@ -5,6 +5,7 @@ pub mod cache;
 pub mod commands;
 pub mod config;
 pub mod drafts;
+pub mod editing;
 pub mod event;
 pub mod folders;
 pub mod input;

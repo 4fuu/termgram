@@ -96,6 +96,22 @@ macro_rules! command {
 
 pub static COMMANDS: &[Spec] = &[
     command!(
+        "edit",
+        None,
+        "",
+        Kind::Action(Action::EditMessage),
+        Conversation,
+        ""
+    ),
+    command!(
+        "edit-discard",
+        None,
+        "",
+        Kind::Action(Action::DiscardEdit),
+        Conversation,
+        ""
+    ),
+    command!(
         "unread",
         None,
         "",

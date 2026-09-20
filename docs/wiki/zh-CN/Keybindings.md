@@ -65,6 +65,9 @@
 | 搜索 | Tab / Ctrl-F | 更改范围 / 编辑查询 |
 | 搜索 | Ctrl-N / Ctrl-P | 下一页 / 上一页结果 |
 | 搜索 | Up/Down、PageUp/PageDown | 选择结果 / 移动十个结果 |
+| 会话 | e | 编辑所选消息或继续本地编辑 |
+| 消息编辑 | Enter / Esc 或 Ctrl-C / Ctrl-D | 保存 / 保留并关闭 / 丢弃编辑 |
+| 消息编辑 | Shift-Enter 或 Ctrl-J | 换行 |
 
 `20k` 这类数字前缀在两个导航面板中生效。如果希望一个快捷键直接跳 N 条，
 在 [Lua 配置](Configuration.md) 中设置 `count`。

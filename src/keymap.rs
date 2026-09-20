@@ -1,6 +1,8 @@
 //! Declarative Lua configuration and contextual chords. Yazi owns terminal key
 //! parsing/normalization; this module only maps those keys to Termgram actions.
 
+use crate::actions::Action;
+
 use anyhow::{Context as _, Result, bail};
 use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, VmState};
 use serde::Deserialize;
@@ -64,7 +66,7 @@ struct Configuration {
 struct Binding {
     context: Context,
     keys: Vec<Key>,
-    run: String,
+    run: Action,
     count: usize,
     description: String,
 }
@@ -87,71 +89,10 @@ pub struct Keymap {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Resolution {
-    Action { run: String, count: usize },
+    Action { run: Action, count: usize },
     Pending(String),
     Unbound,
 }
-
-const ACTIONS: &[&str] = &[
-    "quit",
-    "help",
-    "settings",
-    "accounts",
-    "next_account",
-    "add_account",
-    "open",
-    "preview",
-    "compose",
-    "send",
-    "newline",
-    "cancel",
-    "focus",
-    "up",
-    "down",
-    "message_up",
-    "message_down",
-    "page_up",
-    "page_down",
-    "oldest",
-    "latest",
-    "filter",
-    "refresh",
-    "reply",
-    "reply_target",
-    "open_link",
-    "next_action",
-    "previous_action",
-    "reveal",
-    "redraw",
-    "home",
-    "end",
-    "left",
-    "right",
-    "backspace",
-    "delete",
-    "clear",
-    "delete_word",
-    "noop",
-    "chat_color",
-    "folder_color",
-    "search",
-    "search_scope",
-    "search_more",
-    "search_previous",
-    "search_query",
-    "chat_info",
-    "folder_next",
-    "folder_previous",
-    "pin",
-    "pin_up",
-    "pin_down",
-    "archive",
-    "pins",
-    "pins_more",
-    "pins_previous",
-    "unpin_all",
-    "toggle_sidebar",
-];
 
 impl Default for Keymap {
     #[allow(clippy::too_many_lines)]
@@ -474,30 +415,30 @@ impl Keymap {
                 Key::from_str(key)
             })
             .collect::<Result<Vec<_>>>()?;
-        if let Some(alias) = spec.run.strip_prefix("jump ") {
-            if !self.chats.contains_key(alias) {
-                bail!("unknown chat alias: {alias}");
-            }
-        } else if !ACTIONS.contains(&spec.run.as_str()) {
-            bail!("unknown action: {}", spec.run);
+        let action = Action::parse(&spec.run)
+            .ok_or_else(|| anyhow::anyhow!("unknown action: {}", spec.run))?;
+        if let Action::Jump(alias) = &action
+            && !self.chats.contains_key(alias)
+        {
+            bail!("unknown chat alias: {alias}");
         }
         self.bindings
             .retain(|binding| !(binding.context == spec.context && binding.keys == keys));
-        if spec.run == "noop" {
+        if action == Action::Noop {
             return Ok(());
         }
         self.bindings.push(Binding {
             context: spec.context,
             keys,
             description: spec.desc.unwrap_or_else(|| {
-                let action = spec.run.replace('_', " ");
+                let action = action.description().to_owned();
                 if spec.count == 1 {
                     action
                 } else {
                     format!("{action} ×{}", spec.count)
                 }
             }),
-            run: spec.run,
+            run: action,
             count: spec.count,
         });
         Ok(())
@@ -596,13 +537,16 @@ impl Keymap {
 
     #[must_use]
     pub fn hint(&self, context: Context, run: &str) -> String {
+        let Some(action) = Action::parse(run) else {
+            return "unbound".to_owned();
+        };
         self.bindings
             .iter()
-            .find(|binding| binding.context == context && binding.run == run)
+            .find(|binding| binding.context == context && binding.run == action)
             .or_else(|| {
                 self.bindings.iter().find(|binding| {
                     binding.context == Context::Global
-                        && binding.run == run
+                        && binding.run == action
                         && !self.bindings.iter().any(|local| {
                             local.context == context
                                 && (local.keys.starts_with(&binding.keys)
@@ -620,7 +564,7 @@ impl Keymap {
     pub fn help(&self) -> Vec<String> {
         self.bindings
             .iter()
-            .filter(|binding| binding.run != "noop")
+            .filter(|binding| binding.run != Action::Noop)
             .map(|binding| {
                 format!(
                     "{:?}  {:18} {}",
@@ -642,7 +586,7 @@ fn display_keys(keys: &[Key]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Context, Keymap, Resolution};
+    use super::{Action, Context, Keymap, Resolution};
     use yazi_term::event::{KeyCode, KeyEvent, Modifiers};
 
     #[test]
@@ -671,7 +615,7 @@ mod tests {
         assert_eq!(
             map.feed(Context::Conversation, &key('k')),
             Resolution::Action {
-                run: "message_up".to_owned(),
+                run: Action::MessageUp,
                 count: 20
             }
         );
@@ -683,14 +627,14 @@ mod tests {
         assert_eq!(
             map.feed(Context::Conversation, &key('w')),
             Resolution::Action {
-                run: "jump work".to_owned(),
+                run: Action::Jump("work".to_owned()),
                 count: 1
             }
         );
         assert!(
             map.help()
                 .iter()
-                .any(|line| line.contains("<C-s>") && line.ends_with("send"))
+                .any(|line| line.contains("<C-s>") && line.ends_with("Send the current draft"))
         );
     }
 
@@ -756,7 +700,7 @@ mod tests {
                 &KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL)
             ),
             Resolution::Action {
-                run: "message_up".to_owned(),
+                run: Action::MessageUp,
                 count: 40
             }
         );
@@ -766,7 +710,7 @@ mod tests {
                 &KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL)
             ),
             Resolution::Action {
-                run: "message_up".to_owned(),
+                run: Action::MessageUp,
                 count: 20
             }
         );

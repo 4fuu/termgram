@@ -16,6 +16,7 @@ use chrono::Utc;
 use yazi_term::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::{
+    actions::Action,
     config::{DownloadBehavior, MAX_ACCOUNTS, Settings},
     event::{AppEvent, AuthPrompt, ConnectionStatus, NetworkEvent, TelegramCommand},
     input::{KeyAction, TextInput},
@@ -556,7 +557,7 @@ impl App {
         };
         match self.keymap.feed(context, key) {
             Resolution::Action { run, count } => {
-                if matches!(run.as_str(), "reveal" | "toggle_sidebar")
+                if matches!(run, Action::Reveal | Action::ToggleSidebar)
                     && key.kind == yazi_term::event::KeyEventKind::Repeat
                 {
                     return Vec::new();
@@ -568,7 +569,7 @@ impl App {
                 {
                     self.status_message = None;
                 }
-                return self.run_binding(&run, count);
+                return self.run_action(&run, count);
             }
             Resolution::Pending(hint) => {
                 self.status_message = (!hint.is_empty()).then(|| format!("Keys: {hint}"));
@@ -590,18 +591,23 @@ impl App {
         Vec::new()
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[cfg(test)]
     fn run_binding(&mut self, run: &str, count: usize) -> Vec<TelegramCommand> {
+        self.run_action(&Action::parse(run).expect("known test action"), count)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
         self.older_motion = None;
-        if let Some(commands) = self.pin_binding(run, count) {
+        if let Some(commands) = self.pin_binding(run.name(), count) {
             return commands;
         }
         if self.mode == Mode::Search
-            && let Some(commands) = self.search_binding(run, count)
+            && let Some(commands) = self.search_binding(run.name(), count)
         {
             return commands;
         }
-        if let Some(alias) = run.strip_prefix("jump ") {
+        if let Action::Jump(alias) = run {
             if let Some(id) = self.keymap.chats.get(alias).copied() {
                 if let Some(index) = self.chats.iter().position(|chat| chat.id == id) {
                     self.filter.clear();
@@ -620,7 +626,7 @@ impl App {
             return Vec::new();
         }
         match run {
-            "toggle_sidebar" => {
+            Action::ToggleSidebar => {
                 if self.screen != Screen::Main
                     || !matches!(self.mode, Mode::Navigate | Mode::Compose)
                 {
@@ -652,14 +658,18 @@ impl App {
                 self.force_redraw = true;
                 return Vec::new();
             }
-            "archive" => return self.toggle_archive(),
-            "pin" if self.focus == Focus::Conversation => return self.begin_message_pin(false),
-            "pin" | "pin_up" | "pin_down" => return self.change_chat_pin(run),
-            "pins" => return self.open_pinned_messages(),
-            "search" => return self.open_search(),
-            "chat_color" => return self.begin_color_picker(false),
-            "folder_color" => return self.begin_color_picker(true),
-            "folder_next" | "folder_previous" => {
+            Action::Archive => return self.toggle_archive(),
+            Action::Pin if self.focus == Focus::Conversation => {
+                return self.begin_message_pin(false);
+            }
+            Action::Pin | Action::PinUp | Action::PinDown => {
+                return self.change_chat_pin(run.name());
+            }
+            Action::Pins => return self.open_pinned_messages(),
+            Action::Search => return self.open_search(),
+            Action::ChatColor => return self.begin_color_picker(false),
+            Action::FolderColor => return self.begin_color_picker(true),
+            Action::FolderNext | Action::FolderPrevious => {
                 let current = self
                     .folders
                     .iter()
@@ -667,7 +677,7 @@ impl App {
                     .unwrap_or(0);
                 let total = self.folders.len();
                 if total > 0 {
-                    let index = if run == "folder_next" {
+                    let index = if *run == Action::FolderNext {
                         (current + 1) % total
                     } else {
                         (current + total - 1) % total
@@ -680,7 +690,7 @@ impl App {
                 }
                 return Vec::new();
             }
-            "chat_info" => {
+            Action::ChatInfo => {
                 let chat = if self.focus == Focus::Chats {
                     self.selected_chat_entry()
                 } else {
@@ -696,22 +706,22 @@ impl App {
                 });
                 return Vec::new();
             }
-            "help" | "settings" | "accounts" if self.screen == Screen::Main => {
-                if (run == "help" && self.mode == Mode::Help)
-                    || (run == "settings" && self.mode == Mode::Settings)
-                    || (run == "accounts" && self.mode == Mode::Accounts)
+            Action::Help | Action::Settings | Action::Accounts if self.screen == Screen::Main => {
+                if (*run == Action::Help && self.mode == Mode::Help)
+                    || (*run == Action::Settings && self.mode == Mode::Settings)
+                    || (*run == Action::Accounts && self.mode == Mode::Accounts)
                 {
                     return self.handle_main(KeyAction::Escape);
                 }
                 let character = match run {
-                    "help" => '?',
-                    "settings" => 's',
+                    Action::Help => '?',
+                    Action::Settings => 's',
                     _ => 'a',
                 };
                 return self.handle_navigation(KeyAction::Character(character));
             }
-            "message_up" => return self.move_messages_up(count),
-            "message_down" => {
+            Action::MessageUp => return self.move_messages_up(count),
+            Action::MessageDown => {
                 let messages = self.active_messages();
                 if messages.is_empty() {
                     return Vec::new();
@@ -725,11 +735,11 @@ impl App {
                 self.select_message_id(id, true);
                 return Vec::new();
             }
-            "up" if self.mode == Mode::Navigate => return self.move_up(count),
-            "down" if self.mode == Mode::Navigate => return self.move_down(count),
-            "page_up" => return self.move_up(PAGE_STEP.saturating_mul(count)),
-            "page_down" => return self.move_down(PAGE_STEP.saturating_mul(count)),
-            "latest" if self.browsing_older && self.focus == Focus::Conversation => {
+            Action::Up if self.mode == Mode::Navigate => return self.move_up(count),
+            Action::Down if self.mode == Mode::Navigate => return self.move_down(count),
+            Action::PageUp => return self.move_up(PAGE_STEP.saturating_mul(count)),
+            Action::PageDown => return self.move_down(PAGE_STEP.saturating_mul(count)),
+            Action::Latest if self.browsing_older && self.focus == Focus::Conversation => {
                 if let Some(id) = self.active_chat_id
                     && let Some(index) = self.chats.iter().position(|chat| chat.id == id)
                 {
@@ -740,56 +750,56 @@ impl App {
                 }
                 return Vec::new();
             }
-            "latest" => return self.move_to_end(),
-            "oldest" => return self.move_to_start(),
-            "refresh" => {
+            Action::Latest => return self.move_to_end(),
+            Action::Oldest => return self.move_to_start(),
+            Action::Refresh => {
                 let mut commands = self.request_dialog_refresh();
                 commands.push(TelegramCommand::RefreshFolders);
                 return commands;
             }
-            "filter" => {
+            Action::Filter => {
                 self.focus = Focus::Chats;
                 self.mode = Mode::Filter;
                 return Vec::new();
             }
-            "compose" => return self.compose_or_reply(),
-            "preview" => return self.preview_selected_media(),
-            "send" => {
+            Action::Compose => return self.compose_or_reply(),
+            Action::Preview => return self.preview_selected_media(),
+            Action::Send => {
                 return self
                     .active_chat_id
                     .map_or_else(Vec::new, |id| self.send_draft(id));
             }
-            "reply" => return self.start_replying_to_selected(),
-            "reply_target" => return self.navigate_to_selected_reply(),
-            "open_link" => return self.activate_selected_link(),
-            "next_action" => return self.select_actionable_message(true),
-            "previous_action" => return self.select_actionable_message(false),
-            "reveal" => return self.reveal_selected_attachment(),
-            "noop" => return Vec::new(),
+            Action::Reply => return self.start_replying_to_selected(),
+            Action::ReplyTarget => return self.navigate_to_selected_reply(),
+            Action::OpenLink => return self.activate_selected_link(),
+            Action::NextAction => return self.select_actionable_message(true),
+            Action::PreviousAction => return self.select_actionable_message(false),
+            Action::Reveal => return self.reveal_selected_attachment(),
+            Action::Noop => return Vec::new(),
             _ => {}
         }
         let action = match run {
-            "quit" => KeyAction::Quit,
-            "help" => KeyAction::Character('?'),
-            "settings" => KeyAction::Character('s'),
-            "accounts" => KeyAction::Character('a'),
-            "next_account" => KeyAction::NextAccount,
-            "add_account" => KeyAction::AddAccount,
-            "open" => KeyAction::Enter,
-            "cancel" => KeyAction::Escape,
-            "focus" => KeyAction::Tab,
-            "newline" => KeyAction::Newline,
-            "redraw" => KeyAction::Redraw,
-            "up" => KeyAction::Up,
-            "down" => KeyAction::Down,
-            "home" => KeyAction::Home,
-            "end" => KeyAction::End,
-            "left" => KeyAction::Left,
-            "right" => KeyAction::Right,
-            "backspace" => KeyAction::Backspace,
-            "delete" => KeyAction::Delete,
-            "clear" => KeyAction::Clear,
-            "delete_word" => KeyAction::DeleteWord,
+            Action::Quit => KeyAction::Quit,
+            Action::Help => KeyAction::Character('?'),
+            Action::Settings => KeyAction::Character('s'),
+            Action::Accounts => KeyAction::Character('a'),
+            Action::NextAccount => KeyAction::NextAccount,
+            Action::AddAccount => KeyAction::AddAccount,
+            Action::Open => KeyAction::Enter,
+            Action::Cancel => KeyAction::Escape,
+            Action::Focus => KeyAction::Tab,
+            Action::Newline => KeyAction::Newline,
+            Action::Redraw => KeyAction::Redraw,
+            Action::Up => KeyAction::Up,
+            Action::Down => KeyAction::Down,
+            Action::Home => KeyAction::Home,
+            Action::End => KeyAction::End,
+            Action::Left => KeyAction::Left,
+            Action::Right => KeyAction::Right,
+            Action::Backspace => KeyAction::Backspace,
+            Action::Delete => KeyAction::Delete,
+            Action::Clear => KeyAction::Clear,
+            Action::DeleteWord => KeyAction::DeleteWord,
             _ => return Vec::new(),
         };
         self.handle_action(action)

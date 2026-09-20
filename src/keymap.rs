@@ -34,6 +34,7 @@ pub enum Context {
     Attachments,
     Input,
     Overlay,
+    Help,
     Preview,
     Search,
     Pins,
@@ -318,6 +319,24 @@ impl Default for Keymap {
                 ][..],
             ),
             (
+                Context::Help,
+                &[
+                    ("/", "filter"),
+                    ("<C-f>", "filter"),
+                    ("<Esc>", "cancel"),
+                    ("q", "cancel"),
+                    ("?", "cancel"),
+                    ("j", "down"),
+                    ("k", "up"),
+                    ("<Up>", "up"),
+                    ("<Down>", "down"),
+                    ("<PageUp>", "page_up"),
+                    ("<PageDown>", "page_down"),
+                    ("<Home>", "home"),
+                    ("<End>", "end"),
+                ][..],
+            ),
+            (
                 Context::Overlay,
                 &[
                     ("<C-r>", "refresh"),
@@ -432,7 +451,7 @@ impl Default for Keymap {
             Context::Conversation,
             Context::Attachments,
         ] {
-            for key in ["<C-v>", "<C-A-v>"] {
+            for key in ["<C-v>", "<C-A-v>", "<A-v>", "<D-v>"] {
                 result
                     .insert(BindingSpec {
                         context,

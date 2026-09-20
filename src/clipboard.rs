@@ -68,8 +68,15 @@ pub(crate) fn prepare_payload(
             payload.bytes.len() <= MAX_TEXT,
             "Clipboard text exceeds 1 MiB"
         );
+        let text = std::str::from_utf8(&payload.bytes)?;
+        if request.auto_attach_images
+            && !payload.remote
+            && crate::staging::image_path_candidate(text)
+        {
+            return Ok(crate::staging::prepare_image_paste(text, request));
+        }
         return Ok(Prepared {
-            text: Some(std::str::from_utf8(&payload.bytes)?.to_owned()),
+            text: Some(text.to_owned()),
             ..Prepared::default()
         });
     }
@@ -303,18 +310,31 @@ fn read_native(state: &Path, request: &Request) -> Result<Prepared> {
         .map_err(|_| anyhow::anyhow!("Native clipboard lock failed"))?;
     let mut clipboard = arboard::Clipboard::new()
         .context("System clipboard unavailable; use :attach for a local file")?;
-    if let Ok(files) = clipboard.get().file_list()
-        && !files.is_empty()
+    let files = clipboard
+        .get()
+        .file_list()
+        .ok()
+        .filter(|files| !files.is_empty())
+        .map(|files| crate::staging::prepare_paths(files, request));
+    if files
+        .as_ref()
+        .is_some_and(|prepared| !prepared.attachments.is_empty())
     {
-        return Ok(crate::staging::prepare_paths(files, request));
+        return Ok(files.expect("prepared files"));
     }
     if let Ok(image) = clipboard.get_image() {
         return bitmap(state, request, &image);
+    }
+    if let Some(files) = files {
+        return Ok(files);
     }
     let text = clipboard
         .get_text()
         .context("Clipboard has no supported files, image or text")?;
     ensure!(text.len() <= MAX_TEXT, "Clipboard text exceeds 1 MiB");
+    if request.auto_attach_images && crate::staging::image_path_candidate(&text) {
+        return Ok(crate::staging::prepare_image_paste(&text, request));
+    }
     Ok(Prepared {
         text: Some(text),
         ..Prepared::default()
@@ -392,6 +412,7 @@ mod tests {
             id: 1,
             input: Input::Clipboard,
             as_photo: false,
+            auto_attach_images: true,
             available_files: MAX_FILES,
             available_bytes: MAX_BYTES,
         };
@@ -443,6 +464,7 @@ mod tests {
             id: 1,
             input: Input::Clipboard,
             as_photo: false,
+            auto_attach_images: true,
             available_files: MAX_FILES,
             available_bytes: MAX_BYTES,
         };

@@ -2,7 +2,13 @@
 
 [简体中文](../zh-CN/Keybindings.md) · [Guide](Home.md)
 
-These are defaults. `?` displays the current Lua bindings. Uppercase keys mean
+These are defaults. `?` displays the current Lua bindings and available commands.
+Press `/` or Ctrl-F to search keys, descriptions, contexts and commands. Matches
+are highlighted as you type; search is literal and case-insensitive. Enter keeps
+the filter while you scroll. Esc clears the search first, then closes help.
+The `help` context configures browsing keys; `input` configures query editing.
+
+ Uppercase keys mean
 Shift plus that letter. `g g`, `g i`, `g n`, and `g p` are successive presses; a pending
 chord times out after one second and Esc cancels it. Keys apply to the focused
 pane or overlay, so ordinary letters in an editor remain text.
@@ -52,7 +58,8 @@ pane or overlay, so ordinary letters in an editor remain text.
 | Reactions | Enter/Space / u / Ctrl-R / Esc | Toggle an emoji / remove your emoji reactions / refresh / close |
 | Chat details (`:info`) | j/k or mouse wheel / Ctrl-R / Esc | Scroll / refresh / close |
 | Invite preview (`:join`) | Up/Down, then Enter | Choose and confirm; initially selects Cancel |
-| Help / Status | j/k or mouse wheel / Esc | Scroll wrapped content / close |
+| Help | / or Ctrl-F / Enter / Esc | Search and highlight / keep filter / clear search, then close |
+| Help / Status | j/k or mouse wheel / Esc | Scroll wrapped content / close (help clears search first) |
 | Pinned messages | Enter / Esc | Open selected message / close |
 | Pinned messages | Ctrl-N / Ctrl-P | Next / previous page |
 | Pinned messages | p / U | Confirm unpin / unpin all |
@@ -109,4 +116,4 @@ the attachment, so Enter then activates that media action.
 
 Composer Ctrl-O opens attachment review. Its a/p/d/o/O/i keys add, choose photo or file, remove, preview, reveal and edit the caption. See [Attachments](Attachments.md).
 
-Ctrl-V / Ctrl-Alt-V paste native clipboard files, images or text in the conversation, composer and attachment review. `:paste` is the command equivalent; no paste sends automatically.
+Cmd-V / Ctrl-V / Alt-V / Ctrl-Alt-V paste native clipboard files, images or text in the conversation, composer and attachment review. `:paste` is the command equivalent; no paste sends automatically.

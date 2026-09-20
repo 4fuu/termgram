@@ -342,6 +342,21 @@ fn context(app: &AppState, narrow: bool) -> String {
             hint("discard_edit")
         );
     }
+    if app.mode == Mode::Help {
+        return if app.help.editing {
+            format!(
+                "{} keep filter · {} clear search",
+                app.keymap.hint(Context::Input, "open"),
+                app.keymap.hint(Context::Input, "cancel")
+            )
+        } else {
+            format!(
+                "{} search shortcuts · {} close/clear",
+                app.keymap.hint(Context::Help, "filter"),
+                app.keymap.hint(Context::Help, "cancel")
+            )
+        };
+    }
     if app.mode == Mode::Status {
         return format!(
             "{}/{} scroll · {} close",

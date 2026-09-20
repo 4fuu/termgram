@@ -29,6 +29,10 @@ impl App {
         self.prepare_attachment_input(Input::Clipboard, None)
     }
 
+    pub(super) fn paste_image_paths(&mut self, text: String) -> Vec<TelegramCommand> {
+        self.prepare_attachment_input(Input::ImagePaths(text), None)
+    }
+
     /// Reserve the same captured draft destination used by a native read,
     /// before the terminal asynchronously supplies its MIME payload.
     pub fn reserve_terminal_paste(&mut self) -> Option<Request> {
@@ -61,7 +65,19 @@ impl App {
             return Vec::new();
         };
         if self.attachment_draft.pending.is_some() {
-            self.status_message = Some("An attachment is still being prepared".to_owned());
+            let text = fallback.or(match input {
+                Input::ImagePaths(text) => Some(text),
+                _ => None,
+            });
+            self.status_message = Some(
+                if let Some(text) = text {
+                    self.draft_data_mut(chat).input.insert_str(&text);
+                    "Previous attachment is still being prepared; pasted as text"
+                } else {
+                    "An attachment is still being prepared; paste again when it finishes"
+                }
+                .to_owned(),
+            );
             return Vec::new();
         }
         let key = self.draft_key(chat);
@@ -79,8 +95,9 @@ impl App {
         vec![TelegramCommand::PrepareAttachments(Request {
             key,
             id,
-            as_photo: !matches!(&input, Input::Clipboard)
+            as_photo: matches!(&input, Input::Paths(_))
                 || self.keymap.attachments.clipboard_as_photo,
+            auto_attach_images: self.keymap.attachments.auto_attach_images,
             input,
             available_files,
             available_bytes,

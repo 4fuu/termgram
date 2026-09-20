@@ -23,8 +23,8 @@ return {
 }
 ```
 
-上下文包括 `global`、`chats`、`conversation`、`compose`、`edit`、`forward`、`poll`、`reactions`、`attachments`、`command`、`input`（登录与聊天过滤）
-、`overlay`、`preview`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
+上下文包括 `global`、`chats`、`conversation`、`compose`、`edit`、`forward`、`poll`、`reactions`、`attachments`、`command`、`input`（登录、聊天过滤和帮助搜索）
+、`help`、`overlay`、`preview`、`pins` 和 `search`。具体上下文优先于全局绑定。同一上下文中配置相同按键会替换默认绑定；
 `run = "noop"` 删除绑定。组合键用独立按键列表表示，例如 `{ "g", "w" }`。
 配置会检查前缀冲突。组合键一秒后过期，Escape 可以取消尚未完成的组合键。
 按键表示法沿用 Yazi，例如 `<C-s>`、`<A-x>`、`<S-Enter>`、`<Tab>`、`<Esc>`。
@@ -188,11 +188,11 @@ Lua 源码限制 64 KiB、VM 内存 8 MiB、约一百万条指令。未知字段
 
 ## 附件输入
 
-`attachments = { auto_attach_paths = false }` 默认将普通粘贴保留为文字。设为 `true` 后，识别到的本机路径会加入草稿，仍需主动发送。也可用 `:attach` 明确添加文件。列表操作见[附件](Attachments.md)。
+`attachments.auto_attach_images = true` 默认验证粘贴路径的图片头并暂存图片，设为 `false` 则保留为文字。其他类型的路径只有启用 `attachments.auto_attach_paths = true` 才会暂存；仍需主动发送。也可用 `:attach` 明确添加文件。列表操作见[附件](Attachments.md)。
 
 `attachments.clipboard_as_photo = true` 将剪贴板图片默认作为 Telegram 照片，设为 `false` 则作为原文件。可在 `conversation`、`compose`、`attachments` 上下文重绑 `paste_clipboard`。
 
-`attachments.terminal_clipboard = true` 在检测到支持时优先使用 OSC 5522 MIME 粘贴。设为 `false` 关闭此终端模式，使用原生剪贴板。见[终端](Terminal.md)。
+`attachments.terminal_clipboard = true` 在检测到支持时开启 OSC 5522 MIME 粘贴。SSH 快捷键用它读取终端所在主机的剪贴板，本机快捷键优先读系统剪贴板。设为 `false` 关闭此终端模式，使用原生剪贴板。见[终端](Terminal.md)。
 
 消息编辑使用 `edit` 上下文。会话中的 `edit_message` 打开/继续本地编辑，`discard_edit` 丢弃编辑；`edit` 中支持 `send`、`cancel`、`newline` 和常规输入动作。底栏显示 EDIT，所选消息的编辑时间也显示在底栏。
 

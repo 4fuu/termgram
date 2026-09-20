@@ -12,6 +12,7 @@ mod drafts;
 mod editing;
 mod entities;
 mod forwarding;
+pub(crate) mod help;
 pub(crate) mod invites;
 mod message_pins;
 mod message_views;
@@ -315,7 +316,7 @@ pub struct App {
     force_redraw: bool,
     pub keymap: crate::keymap::Keymap,
     pub configuration: configuration::State,
-    pub help_scroll: usize,
+    pub help: help::State,
     next_pending_id: i32,
     next_history_request_id: u64,
     active_history_request: Option<(ChatId, u64)>,
@@ -430,7 +431,7 @@ impl Default for App {
             force_redraw: false,
             keymap: crate::keymap::Keymap::default(),
             configuration: configuration::State::default(),
-            help_scroll: 0,
+            help: help::State::default(),
             next_pending_id: -1,
             next_history_request_id: 1,
             active_history_request: None,
@@ -614,6 +615,8 @@ impl App {
                 Mode::Poll => Context::Poll,
                 Mode::Reactions => Context::Reactions,
                 Mode::Command => Context::Command,
+                Mode::Help if self.help.editing => Context::Input,
+                Mode::Help => Context::Help,
                 Mode::Attachments => Context::Attachments,
                 Mode::Preview => Context::Preview,
                 Mode::Filter => Context::Input,
@@ -623,7 +626,6 @@ impl App {
                 | Mode::Invite
                 | Mode::DeletePrompt
                 | Mode::PinPrompt
-                | Mode::Help
                 | Mode::Settings
                 | Mode::Accounts
                 | Mode::Colors
@@ -637,7 +639,10 @@ impl App {
                 if ((self.mode == Mode::Invite && run == Action::Open)
                     || (self.mode == Mode::Reactions
                         && matches!(run, Action::Open | Action::Send | Action::ClearReactions))
-                    || matches!(run, Action::Reveal | Action::ToggleSidebar)
+                    || matches!(
+                        run,
+                        Action::Reveal | Action::ToggleSidebar | Action::PasteClipboard
+                    )
                     || (matches!(self.mode, Mode::ForwardPrompt | Mode::Poll)
                         && run == Action::Send))
                     && key.kind == yazi_term::event::KeyEventKind::Repeat
@@ -682,6 +687,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn run_action(&mut self, run: &Action, count: usize) -> Vec<TelegramCommand> {
+        if let Some(commands) = self.help_binding(run, count) {
+            return commands;
+        }
         if let Some(commands) = self.chat_info_binding(run, count) {
             return commands;
         }
@@ -1028,7 +1036,7 @@ impl App {
             let scroll = if self.mode == Mode::Status {
                 &mut self.configuration.status_scroll
             } else {
-                &mut self.help_scroll
+                &mut self.help.scroll
             };
             match mouse.kind {
                 MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
@@ -2270,6 +2278,11 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> Vec<TelegramCommand> {
+        if self.screen == Screen::Main && self.mode == Mode::Help && self.help.editing {
+            self.help.query.insert_str(&sanitize_terminal_line(text));
+            self.help.edited();
+            return Vec::new();
+        }
         if self.screen == Screen::Main && self.mode == Mode::Command {
             self.paste_command(text);
             return Vec::new();
@@ -2282,6 +2295,11 @@ impl App {
         {
             if self.keymap.attachments.auto_attach_paths {
                 return self.prepare_attachments(normalized, true);
+            }
+            if self.keymap.attachments.auto_attach_images
+                && crate::staging::image_path_candidate(&normalized)
+            {
+                return self.paste_image_paths(normalized);
             }
             self.mode = Mode::Compose;
         }
@@ -2465,8 +2483,7 @@ impl App {
         match action {
             KeyAction::Character('q') => self.quit(),
             KeyAction::Character('?') => {
-                self.mode_before_help = self.mode;
-                self.mode = Mode::Help;
+                self.open_help();
                 Vec::new()
             }
             KeyAction::Character('s') => {
@@ -2662,32 +2679,6 @@ impl App {
             KeyAction::DeleteWord => {
                 _ = self.filter.delete_word_before();
                 self.clamp_chat_selection();
-                Vec::new()
-            }
-            KeyAction::Redraw => {
-                self.force_redraw = true;
-                Vec::new()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn handle_help(&mut self, action: KeyAction) -> Vec<TelegramCommand> {
-        match action {
-            KeyAction::Up => {
-                self.help_scroll = self.help_scroll.saturating_sub(1);
-                return Vec::new();
-            }
-            KeyAction::Down => {
-                self.help_scroll = self.help_scroll.saturating_add(1);
-                return Vec::new();
-            }
-            _ => {}
-        }
-        match action {
-            KeyAction::Character('q') => self.quit(),
-            KeyAction::Escape | KeyAction::Character('?') => {
-                self.mode = self.mode_before_help;
                 Vec::new()
             }
             KeyAction::Redraw => {
@@ -3000,6 +2991,7 @@ impl App {
             pinned: false,
             id: local_id,
             chat_id,
+            sender_username: None,
             sender: "You".to_owned(),
             reply_to: reply_to.clone(),
             text: text.clone(),
@@ -3056,6 +3048,7 @@ impl App {
                 pinned: false,
                 id: local_id,
                 chat_id,
+                sender_username: None,
                 sender: "You".to_owned(),
                 reply_to: item_reply.clone(),
                 text: item_caption.clone(),
@@ -4570,6 +4563,11 @@ impl App {
 
 fn sanitize_message(message: &mut Message) {
     message.sender = sanitize_terminal_line(&message.sender);
+    message.sender_username = message
+        .sender_username
+        .take()
+        .map(|name| sanitize_terminal_line(&name))
+        .filter(|name| !name.is_empty());
     message.text = sanitize_terminal_text(&message.text);
     if let Some(reply) = &mut message.reply_to {
         reply.sender = reply
@@ -4967,6 +4965,7 @@ mod tests {
             pinned: false,
             id,
             chat_id,
+            sender_username: None,
             sender: if outgoing { "Me" } else { "Them" }.to_owned(),
             reply_to: None,
             text: text.to_owned(),
@@ -6625,8 +6624,59 @@ mod tests {
         app.handle_action(KeyAction::Escape);
         app.handle_action(KeyAction::Character('?'));
         assert_eq!(app.mode, Mode::Help);
-        app.handle_action(KeyAction::Character('?'));
+        app.run_binding("cancel", 1);
         assert_eq!(app.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn help_search_uses_effective_bindings_and_restores_the_draft() {
+        use yazi_term::event::KeyCode;
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.start_composing();
+        app.draft_data_mut(1).input.set_value("unsent draft");
+        app.keymap = crate::keymap::Keymap::parse(
+            r"return {keymap={{context='conversation',on={'Z'},run='latest',desc='查找[图片]'}}}",
+        )
+        .unwrap();
+        app.run_binding("help", 1);
+        app.handle_key(&KeyEvent::new(KeyCode::Char('/'), Modifiers::empty()));
+        for character in "q?".chars() {
+            app.handle_key(&KeyEvent::new(KeyCode::Char(character), Modifiers::empty()));
+        }
+        assert_eq!(app.help.query.value(), "q?");
+        assert_eq!(app.mode, Mode::Help);
+        app.handle_key(&KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL));
+        app.update(AppEvent::Paste("查找[图片]".to_owned()));
+        assert!(
+            app.help
+                .matcher
+                .as_ref()
+                .unwrap()
+                .is_match("Z — 查找[图片]")
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| { cell.symbol() == "图" && cell.fg == ratatui::style::Color::Black })
+        );
+        app.handle_key(&KeyEvent::new(KeyCode::Enter, Modifiers::empty()));
+        assert!(!app.help.editing);
+        assert!(!app.help.query.is_empty());
+        app.handle_key(&KeyEvent::new(KeyCode::Escape, Modifiers::empty()));
+        assert!(app.help.query.is_empty());
+        assert_eq!(app.mode, Mode::Help);
+        app.handle_key(&KeyEvent::new(KeyCode::Escape, Modifiers::empty()));
+        assert_eq!(app.mode, Mode::Compose);
+        assert_eq!(app.active_draft().unwrap().value(), "unsent draft");
     }
 
     #[test]
@@ -6875,6 +6925,85 @@ mod tests {
         app.handle_action(KeyAction::Tab);
         assert_eq!(app.focus, Focus::Conversation);
         assert!(app.narrow_conversation);
+    }
+
+    #[test]
+    fn clipboard_keys_and_command_prepare_without_sending() {
+        use yazi_term::event::{KeyCode, KeyEventKind};
+        for modifiers in [
+            Modifiers::SUPER,
+            Modifiers::CONTROL,
+            Modifiers::ALT,
+            Modifiers::CONTROL | Modifiers::ALT,
+        ] {
+            let mut app = ready_app();
+            open_first(&mut app);
+            let mut key = KeyEvent::new(KeyCode::Char('v'), modifiers);
+            let commands = app.handle_key(&key);
+            assert!(
+                matches!(commands.as_slice(), [TelegramCommand::PrepareAttachments(request)]
+                if request.input == crate::staging::Input::Clipboard && request.key.chat == 1)
+            );
+            assert_eq!(app.mode, Mode::Compose);
+            key.kind = KeyEventKind::Repeat;
+            assert!(app.handle_key(&key).is_empty());
+        }
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.run_binding("command", 1);
+        app.commands.input.set_value("paste");
+        assert!(matches!(app.run_binding("open", 1).as_slice(),
+            [TelegramCommand::PrepareAttachments(request)] if request.input == crate::staging::Input::Clipboard));
+    }
+
+    #[test]
+    fn pasted_images_require_image_headers_and_keep_the_captured_draft() {
+        use image::ImageEncoder;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("screen 图片 name.png");
+        image::codecs::png::PngEncoder::new(fs::File::create(&path).unwrap())
+            .write_image(&[120; 16], 2, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let mut app = ready_app();
+        open_first(&mut app);
+        app.keymap.attachments.clipboard_as_photo = false;
+        let pasted = format!("\"{}\"", path.display());
+        let commands = app.update(AppEvent::Paste(pasted.clone()));
+        let [TelegramCommand::PrepareAttachments(request)] = commands.as_slice() else {
+            panic!("prepare image")
+        };
+        assert!(
+            matches!(&request.input, crate::staging::Input::ImagePaths(value) if value == &pasted)
+        );
+        // Regular typing/pasting remains available while preparation runs.
+        app.update(AppEvent::Paste("caption".to_owned()));
+        app.active_chat_id = Some(2);
+        let prepared = crate::staging::prepare(request).unwrap();
+        assert_eq!(prepared.attachments.len(), 1);
+        assert!(!prepared.attachments[0].as_photo);
+        app.handle_network(NetworkEvent::AttachmentsPrepared {
+            key: request.key,
+            request_id: request.id,
+            result: Ok(prepared),
+        });
+        assert_eq!(app.draft_data(1).unwrap().attachments.len(), 1);
+        assert_eq!(app.draft_data(1).unwrap().input.value(), "caption");
+        assert!(app.draft_attachments().is_empty());
+        let invalid = directory.path().join("not-an-image.png");
+        fs::write(&invalid, "ordinary file contents").unwrap();
+        let fallback = crate::staging::prepare_image_paste(invalid.to_str().unwrap(), request);
+        assert_eq!(fallback.text.as_deref(), invalid.to_str());
+        assert!(fallback.attachments.is_empty());
+        let file_url = url::Url::from_file_path(&path).unwrap().to_string();
+        assert_eq!(
+            crate::staging::prepare_image_paste(&file_url, request)
+                .attachments
+                .len(),
+            1
+        );
+        app.keymap.attachments.auto_attach_images = false;
+        assert!(app.update(AppEvent::Paste(pasted.clone())).is_empty());
+        assert_eq!(app.active_draft().unwrap().value(), pasted);
     }
 
     #[test]
@@ -7129,7 +7258,7 @@ mod tests {
         );
         for mode in [Mode::Help, Mode::Status] {
             app.mode = mode;
-            app.help_scroll = usize::MAX;
+            app.help.scroll = usize::MAX;
             app.configuration.status_scroll = usize::MAX;
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
@@ -7933,6 +8062,7 @@ mod tests {
             pinned: false,
             id: -1,
             chat_id: 1,
+            sender_username: None,
             sender: "You".to_owned(),
             reply_to: None,
             text: String::new(),

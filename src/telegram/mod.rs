@@ -100,6 +100,8 @@ struct WorkerCache {
     top_messages: HashMap<ChatId, i32>,
     read_outbox: HashMap<ChatId, i32>,
     names: HashMap<PeerId, String>,
+    /// Handles share the name cache's bounds and eviction lifecycle.
+    usernames: HashMap<PeerId, String>,
     /// Names belonging to the current complete dialog snapshot are never
     /// evicted by the bounded transient sender-name cache.
     dialog_name_ids: HashSet<PeerId>,
@@ -296,6 +298,8 @@ async fn run(
         let mut media_root = config.session_path.as_os_str().to_os_string();
         media_root.push(".media");
         let mut cache = WorkerCache { cache_owner: Some(bootstrap.cache_owner.clone()), media_root: PathBuf::from(media_root), self_id: user_id, folders: MetadataRefresh { dirty: true, ..MetadataRefresh::default() }, ..WorkerCache::default() };
+        cache_sender_name(&mut cache, me.id(), safe_name(Some(&me.full_name()), "You"));
+        cache_username(&mut cache, me.id(), me.username());
         for chat in bootstrap.chats {
             if let Some(id) = PeerId::from_bot_api_dialog_id(chat.id) {
                 if let Some(peer) = session.peer_ref(id).await? { cache.peers.insert(chat.id, peer); }
@@ -1381,6 +1385,7 @@ fn apply_dialogs(
         cache
             .names
             .insert(dialog.peer_id(), peer_display_name(dialog.peer()));
+        cache_username(cache, dialog.peer_id(), dialog.peer().username());
         let RawDialog::Dialog(raw) = &dialog.raw else {
             unreachable!("folder placeholders are filtered above")
         };
@@ -1467,6 +1472,9 @@ fn reconcile_dialog_snapshot(
                 .bot_api_dialog_id()
                 .is_some_and(|chat_id| cache.linked_peers.contains(&chat_id))
     });
+    cache
+        .usernames
+        .retain(|peer_id, _| cache.names.contains_key(peer_id));
     trim_transient_sender_names(cache);
 }
 
@@ -2472,13 +2480,13 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
         message.text(),
         message.fmt_entities().map_or(&[], Vec::as_slice),
     );
-    let (sender, reply_sender) = if message.outgoing() {
-        let sender = "You".to_owned();
-        let reply_sender = username_or_sender(message.sender().and_then(Peer::username), &sender);
-        (sender, reply_sender)
+    let (name, sender_username) = resolve_sender(message, cache);
+    let sender = if message.outgoing() {
+        "You".to_owned()
     } else {
-        resolve_sender(message, cache)
+        name
     };
+    let reply_sender = username_or_sender(sender_username.as_deref(), &sender);
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
@@ -2502,6 +2510,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
         id: message.id(),
         chat_id,
         sender,
+        sender_username,
         reply_to,
         // Telegram stores the Unicode fallback for custom-emoji entities in
         // the raw message string. Keep that text instead of trying to render
@@ -2584,22 +2593,22 @@ fn cache_message_sender(cache: &mut WorkerCache, chat_id: ChatId, message_id: i3
     }
 }
 
-fn resolve_sender(message: &TelegramMessage, cache: &mut WorkerCache) -> (String, String) {
+fn resolve_sender(message: &TelegramMessage, cache: &mut WorkerCache) -> (String, Option<String>) {
     let Some(sender_id) = message.sender_id() else {
-        return ("Unknown".to_owned(), "Unknown".to_owned());
+        return ("Unknown".to_owned(), None);
     };
     if let Some(peer) = message.sender() {
         let name = peer_display_name(peer);
-        let reply_sender = username_or_sender(peer.username(), &name);
         cache_sender_name(cache, sender_id, name.clone());
-        return (name, reply_sender);
+        cache_username(cache, sender_id, peer.username());
+        return (name, cache.usernames.get(&sender_id).cloned());
     }
     if let Some(name) = cache.names.get(&sender_id) {
-        return (name.clone(), name.clone());
+        return (name.clone(), cache.usernames.get(&sender_id).cloned());
     }
     // Short updates may omit the sender object. Never make a network round
     // trip on the update path just to obtain a display name.
-    ("Unknown".to_owned(), "Unknown".to_owned())
+    ("Unknown".to_owned(), None)
 }
 
 fn username_or_sender(username: Option<&str>, sender: &str) -> String {
@@ -2608,6 +2617,17 @@ fn username_or_sender(username: Option<&str>, sender: &str) -> String {
         sender.to_owned()
     } else {
         format!("@{username}")
+    }
+}
+
+fn cache_username(cache: &mut WorkerCache, peer_id: PeerId, username: Option<&str>) {
+    if let Some(username) = username
+        .map(sanitize_terminal_line)
+        .filter(|name| !name.is_empty())
+    {
+        cache.usernames.insert(peer_id, username);
+    } else {
+        cache.usernames.remove(&peer_id);
     }
 }
 
@@ -2626,6 +2646,7 @@ fn trim_transient_sender_names(cache: &mut WorkerCache) {
         };
         if !cache.dialog_name_ids.contains(&peer_id) {
             cache.names.remove(&peer_id);
+            cache.usernames.remove(&peer_id);
         }
     }
 }
@@ -2959,7 +2980,7 @@ mod tests {
         AuthInterruption, DEFAULT_QR_REFRESH_DELAY, MESSAGE_SENDER_CACHE_LIMIT,
         MIN_QR_REFRESH_DELAY, TRANSIENT_SENDER_NAME_LIMIT, TelegramLink,
         UNRESOLVED_REFRESH_COOLDOWN, WorkerCache, advance_dialog_watermark, base64_url_no_pad,
-        begin_unresolved_refresh, cache_message_sender, cache_sender_name,
+        begin_unresolved_refresh, cache_message_sender, cache_sender_name, cache_username,
         contains_login_token_update, hydrate_reply_sender, normalize_message_url,
         parse_telegram_link, qr_login_url, qr_refresh_delay, reconcile_dialog_snapshot,
         sanitize_download_name, take_auth_interruption, username_or_sender, utf16_entity_text,
@@ -3147,6 +3168,7 @@ mod tests {
         for sender in 2..=last_sender {
             let sender_id = PeerId::user_unchecked(sender);
             cache_sender_name(&mut cache, sender_id, format!("Sender {sender}"));
+            cache_username(&mut cache, sender_id, Some(&format!("user_{sender}")));
         }
 
         assert_eq!(
@@ -3154,6 +3176,14 @@ mod tests {
             TRANSIENT_SENDER_NAME_LIMIT
         );
         assert_eq!(cache.names.len(), TRANSIENT_SENDER_NAME_LIMIT + 1);
+        assert_eq!(cache.usernames.len(), TRANSIENT_SENDER_NAME_LIMIT);
+        assert!(!cache.usernames.contains_key(&PeerId::user_unchecked(2)));
+        cache_username(&mut cache, PeerId::user_unchecked(last_sender), None);
+        assert!(
+            !cache
+                .usernames
+                .contains_key(&PeerId::user_unchecked(last_sender))
+        );
         assert_eq!(
             cache.names.get(&dialog_peer).map(String::as_str),
             Some("Current dialog")
@@ -3180,6 +3210,7 @@ mod tests {
             pinned: false,
             id: 42,
             chat_id: 7,
+            sender_username: None,
             sender: "Bob".to_owned(),
             reply_to: Some(ReplyInfo {
                 message_id: 41,
@@ -3246,6 +3277,7 @@ mod tests {
             pinned: false,
             id: 42,
             chat_id: 7,
+            sender_username: None,
             sender: "Bob".to_owned(),
             reply_to: Some(ReplyInfo {
                 message_id: 41,

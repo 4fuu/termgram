@@ -532,6 +532,7 @@ mod tests {
         Message {
             id,
             chat_id: 42,
+            sender_username: None,
             sender: "Sender".into(),
             text: "private text".into(),
             timestamp: Utc.timestamp_opt(date, 0).unwrap(),

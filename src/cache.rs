@@ -1173,6 +1173,7 @@ mod tests {
             pinned: false,
             id,
             chat_id: 42,
+            sender_username: None,
             sender: "Ada".to_owned(),
             reply_to: None,
             text: text.to_owned(),
@@ -1183,6 +1184,30 @@ mod tests {
             links: Vec::new(),
             buttons: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn usernames_survive_restart_and_older_message_records_still_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.sqlite3");
+        let mut original = message(10, "cached with a public handle");
+        original.sender_username = Some("ada_example".to_owned());
+        let mut store = Store::open(&path).await.unwrap();
+        store
+            .apply(&[NetworkEvent::NewMessage(original.clone())])
+            .await
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(store.history(42, None, 10).await.unwrap()[0], original);
+        let mut old = serde_json::to_value(original).unwrap();
+        old.as_object_mut().unwrap().remove("sender_username");
+        assert!(
+            serde_json::from_value::<Message>(old)
+                .unwrap()
+                .sender_username
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -17,9 +17,12 @@ static PREPARATION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+// Independent Lua preferences, not states of a single operation.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Configuration {
-    /// Plain terminal paste remains text unless explicitly enabled.
+    /// General file paths require opt-in; decodable images attach by default.
     pub auto_attach_paths: bool,
+    pub auto_attach_images: bool,
     pub clipboard_as_photo: bool,
     pub terminal_clipboard: bool,
 }
@@ -28,6 +31,7 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             auto_attach_paths: false,
+            auto_attach_images: true,
             clipboard_as_photo: true,
             terminal_clipboard: true,
         }
@@ -64,6 +68,7 @@ impl Attachment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Input {
     Paths(String),
+    ImagePaths(String),
     Clipboard,
     Terminal(crate::clipboard::Payload),
 }
@@ -74,6 +79,7 @@ pub struct Request {
     pub id: u64,
     pub input: Input,
     pub as_photo: bool,
+    pub auto_attach_images: bool,
     pub available_files: usize,
     pub available_bytes: u64,
 }
@@ -153,10 +159,43 @@ fn hash_copy(
 }
 
 pub(crate) fn prepare(request: &Request) -> Result<Prepared> {
+    if let Input::ImagePaths(value) = &request.input {
+        return Ok(prepare_image_paste(value, request));
+    }
     let Input::Paths(value) = &request.input else {
         anyhow::bail!("native clipboard requires the preparation worker");
     };
     Ok(prepare_paths(paths(value)?, request))
+}
+
+/// A cheap hint keeps ordinary prose on the synchronous text path. Actual
+/// regular-file and image-header checks belong to the preparation worker.
+#[must_use]
+pub fn image_path_candidate(value: &str) -> bool {
+    image::ImageFormat::from_path(value.trim().trim_matches(['\'', '"'])).is_ok()
+}
+
+/// Follow Codex's image-dimensions check after Yazi parses quoted/escaped paths.
+/// All paths must be images, otherwise the original paste stays intact as text.
+pub(crate) fn prepare_image_paste(value: &str, request: &Request) -> Prepared {
+    if let Ok(paths) = paths(value)
+        && !paths.is_empty()
+        && paths.len() <= MAX_FILES
+        && paths.iter().all(|path| {
+            path.is_file()
+                && image::ImageReader::open(path)
+                    .and_then(image::ImageReader::with_guessed_format)
+                    .ok()
+                    .and_then(|reader| reader.into_dimensions().ok())
+                    .is_some_and(|(width, height)| width > 0 && height > 0)
+        })
+    {
+        return prepare_paths(paths, request);
+    }
+    Prepared {
+        text: Some(value.to_owned()),
+        ..Prepared::default()
+    }
 }
 
 pub(crate) fn prepare_paths(paths: Vec<PathBuf>, request: &Request) -> Prepared {
@@ -297,7 +336,7 @@ impl Worker {
                 let _permit = permit;
                 let _owner = owner;
                 let result = match &work.input {
-                    Input::Paths(_) => prepare(&work),
+                    Input::Paths(_) | Input::ImagePaths(_) => prepare(&work),
                     Input::Clipboard => crate::clipboard::read(&state, &work),
                     Input::Terminal(payload) => {
                         crate::clipboard::prepare_payload(&state, &work, payload)
@@ -309,7 +348,7 @@ impl Worker {
             return Some(request.failure(error.to_string()));
         }
         self.task = Some(Work {
-            deadline: matches!(request.input, Input::Clipboard)
+            deadline: matches!(request.input, Input::Clipboard | Input::ImagePaths(_))
                 .then(|| tokio::time::Instant::now() + std::time::Duration::from_secs(10)),
             expired: false,
             request,
@@ -330,7 +369,7 @@ impl Worker {
             } => {
                 work.expired = true;
                 work.deadline = None;
-                return Some(work.request.failure("Clipboard read timed out; its backend must finish before another read can start".to_owned()));
+                return Some(work.request.failure("Attachment preparation timed out; its backend must finish before another read can start".to_owned()));
             }
         };
         let work = self.task.take().expect("active preparation");
@@ -378,6 +417,7 @@ mod tests {
             id: 1,
             input: Input::Clipboard,
             as_photo: true,
+            auto_attach_images: true,
             available_files: MAX_FILES,
             available_bytes: MAX_BYTES,
         };
@@ -418,6 +458,7 @@ mod tests {
             id: 1,
             input: Input::Paths(url::Url::from_file_path(&original).unwrap().to_string()),
             as_photo: true,
+            auto_attach_images: true,
             available_files: MAX_FILES,
             available_bytes: MAX_BYTES,
         })

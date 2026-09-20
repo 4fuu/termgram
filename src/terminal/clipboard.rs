@@ -23,6 +23,7 @@ struct TextTarget {
     user: Option<i64>,
     chat: Option<i64>,
     edit_message: Option<i32>,
+    help_editing: bool,
     screen: Screen,
     mode: Mode,
     focus: Focus,
@@ -35,6 +36,7 @@ impl TextTarget {
             user: app.account_user_id,
             chat: app.active_chat_id,
             edit_message: app.message_edit().map(|edit| edit.source.message_id),
+            help_editing: app.mode == Mode::Help && app.help.editing,
             screen: app.screen.clone(),
             mode: app.mode,
             focus: app.focus,
@@ -64,6 +66,7 @@ pub enum Activity {
 #[derive(Default)]
 pub struct Broker {
     supported: bool,
+    remote: bool,
     next_id: u64,
     pending: Option<Pending>,
     outbound: VecDeque<String>,
@@ -72,13 +75,15 @@ pub struct Broker {
 
 impl Broker {
     pub fn configure(&mut self, supported: bool, app: &mut AppState) {
+        self.remote = remote();
         self.supported = supported && app.keymap.attachments.terminal_clipboard;
         if !self.supported && self.pending.is_some() {
             self.fail(app, "Terminal clipboard is no longer available".to_owned());
         }
     }
 
-    /// Intercept native clipboard intents only after positive capability detection.
+    /// Local shortcuts use the native clipboard, as in Codex. SSH can request
+    /// the terminal host's clipboard after positive capability detection.
     pub fn route(
         &mut self,
         app: &mut AppState,
@@ -89,7 +94,7 @@ impl Broker {
             match command {
                 TelegramCommand::CopyText(text) => self.copy(app, text),
                 TelegramCommand::PrepareAttachments(request)
-                    if self.supported && request.input == Input::Clipboard =>
+                    if self.supported && self.remote && request.input == Input::Clipboard =>
                 {
                     self.start(app, Destination::Draft(request), false, String::new(), None);
                 }
@@ -158,7 +163,7 @@ impl Broker {
                 .submit(crate::clipboard::copy::Job {
                     account: (app.active_account(), app.account_user_id),
                     text,
-                    remote: remote(),
+                    remote: self.remote,
                     multiplexed: std::env::var_os("TMUX").is_some()
                         || std::env::var_os("TMUX_PANE").is_some(),
                 });
@@ -240,10 +245,10 @@ impl Broker {
                     Destination::Draft(request)
                 } else if matches!(app.screen, Screen::Auth(_))
                     || (app.screen == Screen::Main
-                        && matches!(
+                        && (matches!(
                             app.mode,
                             Mode::Command | Mode::Search | Mode::Filter | Mode::Edit
-                        ))
+                        ) || (app.mode == Mode::Help && app.help.editing)))
                 {
                     Destination::Text(TextTarget::capture(app))
                 } else {
@@ -321,7 +326,7 @@ impl Broker {
                 request.input = Input::Terminal(Payload {
                     mime: mime.to_owned(),
                     bytes: bytes.into(),
-                    remote: remote(),
+                    remote: self.remote,
                 });
                 return vec![TelegramCommand::PrepareAttachments(request)];
             }
@@ -478,6 +483,17 @@ mod tests {
         let original_key = request.key;
         let mut broker = Broker::default();
         broker.configure(true, &mut app);
+        broker.remote = false;
+        // Explicit remote reads use OSC 5522; local shortcuts retain arboard.
+        assert_eq!(
+            broker.route(
+                &mut app,
+                vec![TelegramCommand::PrepareAttachments(request.clone())]
+            ),
+            vec![TelegramCommand::PrepareAttachments(request.clone())]
+        );
+        assert!(broker.pending.is_none());
+        broker.remote = true;
         assert!(
             broker
                 .route(&mut app, vec![TelegramCommand::PrepareAttachments(request)])

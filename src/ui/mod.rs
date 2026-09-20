@@ -6,6 +6,7 @@ mod deletion;
 mod editing;
 mod entities;
 mod forwarding;
+mod help;
 mod icons;
 mod invites;
 mod pins;
@@ -505,7 +506,7 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     } else if app.mode == Mode::Search {
         search::render_search(frame, area, app);
     } else if app.mode == Mode::Help {
-        render_help(frame, area, app);
+        help::render(frame, area, app);
     } else if app.mode == Mode::Settings {
         render_settings(frame, area, app);
     } else if app.mode == Mode::Accounts {
@@ -968,36 +969,6 @@ fn render_composer(frame: &mut Frame<'_>, area: Rect, app: &mut AppState, enable
             .min(inner.bottom().saturating_sub(1));
         frame.set_cursor_position(Position::new(x, y));
     }
-}
-
-fn render_help(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
-    let popup = centered(area, area.width.min(72), area.height.min(27));
-    frame.render_widget(Clear, popup);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
-        .title(format!(
-            " Shortcuts · {} close · {}/{} scroll ",
-            app.keymap.hint(Context::Overlay, "cancel"),
-            app.keymap.hint(Context::Overlay, "up"),
-            app.keymap.hint(Context::Overlay, "down")
-        ));
-    let inner = block.inner(popup);
-    let lines = app
-        .help_lines()
-        .iter()
-        .flat_map(|line| wrap_cells(line, usize::from(inner.width.max(1))))
-        .map(Line::from)
-        .collect::<Vec<_>>();
-    app.help_scroll = app
-        .help_scroll
-        .min(lines.len().saturating_sub(usize::from(inner.height)));
-    frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new(lines).scroll((clamp_u16(app.help_scroll), 0)),
-        inner,
-    );
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
@@ -1685,10 +1656,12 @@ mod tests {
         app.sidebar_hidden = true;
         let mut first = app.active_messages()[0].clone();
         first.sender = "Long author name with 中文 and a complete ApellidoFinal".to_owned();
+        first.sender_username = Some("complete_username_1234567890".to_owned());
         first.text = "First body".to_owned();
         let mut second = first.clone();
         second.id += 1;
         second.sender = "Second author".to_owned();
+        second.sender_username = None;
         second.text = "Second body".to_owned();
         app.messages.insert(7, vec![first, second]);
         for background in [[25, 28, 35], [240, 240, 240]] {
@@ -1700,6 +1673,10 @@ mod tests {
                 .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
                 .collect();
             assert!(rows.iter().any(|line| line.contains("ApellidoFinal")));
+            assert!(
+                rows.iter()
+                    .any(|line| line.contains("@complete_username_1234567890"))
+            );
             let first = rows
                 .iter()
                 .position(|line| line.contains("First body"))
@@ -2048,6 +2025,7 @@ mod tests {
                 pinned: false,
                 id: 11,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: "hello from the terminal 🙂".to_owned(),
@@ -2416,6 +2394,7 @@ mod tests {
                 pinned: false,
                 id: 12,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: "receipt".to_owned(),
@@ -2443,6 +2422,7 @@ mod tests {
                 pinned: false,
                 id: 13,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: String::new(),
@@ -2691,6 +2671,7 @@ mod tests {
                 pinned: false,
                 id,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: format!("message-{id:02}"),
@@ -2725,6 +2706,7 @@ mod tests {
                 pinned: false,
                 id: 30,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: "new-one\nnew-two\nnew-three".to_owned(),
@@ -2767,6 +2749,7 @@ mod tests {
                 pinned: false,
                 id: 99,
                 chat_id: 7,
+                sender_username: None,
                 sender: "Alice".to_owned(),
                 reply_to: None,
                 text: format!("oldest\n{}newest", "filler\n".repeat(66_000)),

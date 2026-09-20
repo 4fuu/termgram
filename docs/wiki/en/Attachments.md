@@ -6,8 +6,10 @@
 
 Use `:attach /absolute/path` in an open chat. Multiple paths can be quoted using
 your platform's argument syntax; local `file:` URLs also work. Paths are parsed
-by Yazi, without executing a shell or expanding variables. Plain terminal paste
-in the conversation enters the composer as text by default, including paths.
+by Yazi, without executing a shell or expanding variables. Ordinary text stays in the composer. Pasted paths ending in a recognized image
+extension are checked in the background; when every path has a readable image
+header, they become draft attachments. Quoted paths, spaces and local file URLs
+work. Set `attachments.auto_attach_images = false` to keep these paths as text.
 
 Files are added to that chat's draft in the background, without uploading.
 The composer shows the count. Open `:attachments` or press Ctrl-O in the composer
@@ -36,7 +38,7 @@ changed files to review their new content. Upload copies are removed when their
 transfer finishes or is cancelled. Adding files to one chat and switching chats
 while preparation runs does not move the result to the new conversation.
 
-To stage recognizable pasted paths automatically, opt in through Lua:
+To also stage other pasted file types automatically, opt in through Lua:
 
 ```lua
 attachments = { auto_attach_paths = true },
@@ -48,16 +50,18 @@ remains text. Bindings use the `attachments` context and the actions `attach`,
 
 ## Paste from the clipboard
 
-Use `:paste`, Ctrl-V or Ctrl-Alt-V in the conversation/composer. In attachment
-review these shortcuts also add files, and `?` opens the effective key list.
-With no detected terminal MIME capability, the native clipboard reads a file list first, preserving every original file
-within the draft limit. If there is no file list, an image becomes a PNG draft
-asset; ordinary text is inserted at the saved cursor. Nothing is sent until you
-send from the composer. Lua action: `paste_clipboard`.
+Use `:paste`, Ctrl-V, Alt-V or Ctrl-Alt-V in the conversation/composer.
+Cmd-V also works when the terminal forwards it (Lua notation: `<D-v>`). In
+attachment review these shortcuts also add files, and `?` opens the effective key
+list. Local shortcuts read the native clipboard: readable files first, then image
+data, then text. Unreadable file lists can fall back to their image representation.
+Bitmaps become PNG draft assets. Nothing is sent until you send from the composer.
+Lua action: `paste_clipboard`.
 
 ```lua
 attachments = {
   auto_attach_paths = false,
+  auto_attach_images = true,
   clipboard_as_photo = true,
   terminal_clipboard = true,
 },
@@ -85,18 +89,22 @@ persisted drafts and in-process drafts still waiting for a background save.
 | WSL | Native first, then Windows PowerShell clipboard data and `wslpath`; child processes have output limits and a four-second timeout |
 | SSH / no desktop clipboard | A detected OSC 5522 terminal can supply images/text; otherwise use `:attach` with files readable on this host |
 
-Cmd-V and Ctrl-Shift-V are usually handled by the terminal. They may deliver
-text paths, or no image at all. Use `:paste` when the terminal captures the
-application shortcuts. Reading the native clipboard on an SSH host does not
-read the local desktop's clipboard. Cross-platform clipboard access depends on
-the desktop session and its permissions; no additional terminal input reader is used.
+On macOS, Ghostty 1.3.1's default Cmd-V forwards the key when there is no
+text-like clipboard content; Termgram handles that key with a native read. Finder
+copies arrive as escaped paths and use image-path detection. This follows the
+[Ghostty clipboard callback](https://github.com/ghostty-org/ghostty/blob/v1.3.1/macos/Sources/Ghostty/Ghostty.App.swift)
+and its [path conversion](https://github.com/ghostty-org/ghostty/blob/v1.3.1/macos/Sources/Helpers/Extensions/NSPasteboard%2BExtension.swift).
+Other terminals or custom bindings can consume Cmd-V without delivering an event;
+use Ctrl-V, Alt-V or `:paste` there. Cross-platform access depends on the desktop
+session and its permissions. No additional terminal input reader is used.
 
 ## Terminal MIME paste
 
-When the terminal positively reports OSC 5522 support, `:paste` and the clipboard
-shortcuts request its clipboard instead. The terminal's own paste shortcut can
-also supply a MIME paste event. Set `attachments.terminal_clipboard = false` to
-keep native reads and ordinary terminal text paste.
+Over SSH, `:paste` and clipboard shortcuts request the terminal host's clipboard
+when OSC 5522 support is detected. Local shortcuts prefer the native clipboard.
+The terminal's own paste shortcut can supply a MIME event in either environment.
+Set `attachments.terminal_clipboard = false` to disable MIME negotiation while
+keeping native reads and ordinary terminal text paste.
 
 Files are preferred, followed by PNG/JPEG/WebP/GIF and plain UTF-8 text. Encoded
 images keep their original bytes in draft-owned files; they are not converted to

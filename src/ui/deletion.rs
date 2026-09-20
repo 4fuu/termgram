@@ -30,14 +30,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         || "Loading message and available scopes…".to_owned(),
         |plan| {
             let message = &plan.message;
-            let body = if message.text.is_empty() {
-                message
-                    .attachment
-                    .as_ref()
-                    .map_or("Message", |file| file.display_name())
-            } else {
-                &message.text
-            };
+            let body = message.preview_text();
             format!(
                 "{} · {}\n{}",
                 message.sender,

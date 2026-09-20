@@ -8,6 +8,7 @@ pub mod config;
 pub mod deletion;
 pub mod drafts;
 pub mod editing;
+pub mod entities;
 pub mod event;
 pub mod folders;
 pub mod forwarding;

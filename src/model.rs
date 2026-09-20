@@ -111,6 +111,8 @@ pub struct Mention {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Message {
+    #[serde(default)]
+    pub entities: Vec<crate::entities::Entity>,
     #[serde(skip)]
     pub notification: Option<crate::notifications::Metadata>,
     #[serde(default)]
@@ -204,6 +206,27 @@ impl Chat {
 }
 
 impl Message {
+    #[must_use]
+    pub fn has_spoilers(&self) -> bool {
+        self.entities.iter().any(|entity| {
+            entity.kind == crate::entities::Kind::Spoiler && entity.valid_for(&self.text)
+        })
+    }
+
+    /// Summary surfaces never reveal spoilers, even after an explicit reveal
+    /// in the transcript. Copy and edit intentionally use the complete text.
+    #[must_use]
+    pub fn preview_text(&self) -> String {
+        if self.text.is_empty() {
+            self.attachment
+                .as_ref()
+                .map_or("Message", Attachment::display_name)
+                .to_owned()
+        } else {
+            crate::entities::conceal(&self.text, &self.entities).into_owned()
+        }
+    }
+
     pub(crate) fn acknowledge_contents(&mut self, channel: Option<ChatId>, ids: &[i32]) {
         if channel.map_or(self.chat_id > -1_000_000_000_000, |id| self.chat_id == id)
             && ids.contains(&self.id)
@@ -223,13 +246,30 @@ impl Message {
 
 #[must_use]
 pub fn sanitize_terminal_text(value: &str) -> String {
+    sanitize_text_with_offsets(value, |_, _| {})
+}
+
+/// Report valid raw UTF-16 boundaries and their sanitized UTF-8 positions. A
+/// surrogate's midpoint is never reported; stripped controls have zero width.
+pub(crate) fn sanitize_text_with_offsets(
+    value: &str,
+    mut boundary: impl FnMut(usize, usize),
+) -> String {
     let mut clean = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
+    let mut units = 0;
+    boundary(0, 0);
     while let Some(character) = chars.next() {
+        units += character.len_utf16();
         if character == '\u{1b}' {
+            boundary(units, clean.len());
             if chars.peek() == Some(&'[') {
                 chars.next();
+                units += 1;
+                boundary(units, clean.len());
                 for next in chars.by_ref() {
+                    units += next.len_utf16();
+                    boundary(units, clean.len());
                     if ('@'..='~').contains(&next) {
                         break;
                     }
@@ -243,6 +283,7 @@ pub fn sanitize_terminal_text(value: &str) -> String {
             character if character.is_control() => {}
             character => clean.push(character),
         }
+        boundary(units, clean.len());
     }
     clean
 }

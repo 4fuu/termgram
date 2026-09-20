@@ -723,7 +723,7 @@ impl Store {
                             chat.unread = chat.unread.saturating_add(1);
                         }
                         if latest {
-                            chat.last_message.clone_from(&message.text);
+                            chat.last_message = message.preview_text();
                             chat.last_message_id = Some(message.id);
                             chat.last_activity = Some(message.timestamp);
                         }
@@ -1041,6 +1041,7 @@ mod tests {
 
     fn message(id: i32, text: &str) -> Message {
         Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,
@@ -1628,6 +1629,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2]
         );
+        let mut spoiler = message(2, "second");
+        spoiler.entities.push(crate::entities::Entity {
+            range: 0..6,
+            kind: crate::entities::Kind::Spoiler,
+        });
+        store
+            .apply(&[NetworkEvent::MessageUpdated(spoiler.clone())])
+            .await
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(&path).await.unwrap();
+        assert_eq!(store.snapshot().await.unwrap().1[0].last_message, "▨▨▨▨▨▨");
+        let restored = store.history_after(42, 1, 80).await.unwrap();
+        assert_eq!(restored[0].entities, spoiler.entities);
+        assert_eq!(restored[0].text, "second");
         store
             .apply(&[NetworkEvent::ReadMarked {
                 chat_id: 42,

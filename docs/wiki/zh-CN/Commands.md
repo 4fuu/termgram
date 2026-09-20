@@ -43,6 +43,8 @@
 | `save` | 预览并将所选消息原生转发到当前账号的 Saved Messages |
 | `saved` | 打开 Saved Messages，即使它尚未出现在最近聊天中 |
 | `reply` | 回复明确选中的消息 |
+| `spoiler` | 揭示或隐藏选中消息的剧透 |
+| `quote` | 展开或收起可折叠引用 |
 | `preview` | 放大选中的图片或贴纸 |
 | `reveal` | 必要时下载，并在 Finder、Explorer 或文件管理器中定位附件 |
 | `pins` | 浏览当前会话的置顶消息 |

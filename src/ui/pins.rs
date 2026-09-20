@@ -41,14 +41,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             .messages
             .iter()
             .map(|message| {
-                let text = if message.text.is_empty() {
-                    message
-                        .attachment
-                        .as_ref()
-                        .map_or("Message", |attachment| attachment.display_name())
-                } else {
-                    &message.text
-                };
+                let text = message.preview_text();
                 ListItem::new(truncate_cells(
                     &sanitize_terminal_line(&format!("#{} {}: {text}", message.id, message.sender)),
                     usize::from(rows[0].width.saturating_sub(2)),

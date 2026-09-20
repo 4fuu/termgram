@@ -210,6 +210,27 @@ fn selected_context(app: &AppState) -> Option<String> {
         if app.message_actions(message).get(app.selected_action) == Some(&MessageAction::Reply) {
             hints.push(format!("{} original", hint("open")));
         }
+        match app.message_actions(message).get(app.selected_action) {
+            Some(MessageAction::Spoilers) => hints.push(format!(
+                "{} {} spoiler",
+                hint("open"),
+                if app.spoilers_revealed(message) {
+                    "hide"
+                } else {
+                    "reveal"
+                }
+            )),
+            Some(MessageAction::ExpandQuote) => hints.push(format!(
+                "{} {} quote",
+                hint("open"),
+                if app.quotes_expanded(message) {
+                    "collapse"
+                } else {
+                    "expand"
+                }
+            )),
+            _ => {}
+        }
         if let Some(attachment) = &message.attachment {
             if attachment.supports_preview() {
                 hints.push(format!("{} preview", hint("preview")));

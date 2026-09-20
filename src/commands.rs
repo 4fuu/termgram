@@ -105,6 +105,22 @@ macro_rules! command {
 
 pub static COMMANDS: &[Spec] = &[
     command!(
+        "spoiler",
+        None,
+        "",
+        Kind::Action(Action::Spoilers),
+        Message,
+        ""
+    ),
+    command!(
+        "quote",
+        None,
+        "",
+        Kind::Action(Action::ExpandQuote),
+        Message,
+        ""
+    ),
+    command!(
         "forward",
         None,
         "<chat or saved>",

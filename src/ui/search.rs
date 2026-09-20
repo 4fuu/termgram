@@ -227,14 +227,7 @@ fn result_row(message: &crate::model::Message, app: &AppState, width: usize) -> 
                 .timestamp
                 .with_timezone(&Local)
                 .format("%m-%d %H:%M"),
-            crate::model::sanitize_terminal_line(if message.text.is_empty() {
-                message
-                    .attachment
-                    .as_ref()
-                    .map_or("Message", |media| media.display_name())
-            } else {
-                &message.text
-            })
+            crate::model::sanitize_terminal_line(&message.preview_text())
         ),
         width,
     ))

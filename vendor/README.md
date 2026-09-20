@@ -240,3 +240,18 @@ sender's notification state, and silent messages/sound-none remain quiet. Server
 preview preferences apply independently. This is an original typed-RPC adapter,
 not copied GPL source. Resolved settings expire and are invalidated by live
 updates; notification-only metadata is never serialized into the message cache.
+
+## Message entity rendering references
+
+Telegram entity offsets use UTF-16 on the original text. Termgram converts them
+while sanitizing to safe UTF-8, keeping this conversion separate from its cached
+domain model and Ratatui renderer. The shared grapheme wrapper now returns source
+ranges to retain styles and code whitespace. This is an extension of Termgram's
+existing wrapper, not a copied Markdown renderer.
+
+Reviewed Codex `codex-rs/tui/src/wrapping.rs` and `markdown_render.rs` at
+`78245b47af2a7aafcabe025828ceecca69db4df1` for source-offset projection, styled spans,
+quote prefixes and code whitespace. No Codex code or runtime was copied. The
+existing Ratatui and unicode-segmentation dependencies supply styles and grapheme
+boundaries. Telegram's entity protocol supplies spoiler and collapsed-quote
+semantics: https://core.telegram.org/api/entities.

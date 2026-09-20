@@ -416,13 +416,7 @@ impl App {
             let metadata = last.notification.as_ref().expect("live candidate metadata");
             let show_preview =
                 self.keymap.notifications.previews && settings.chat.previews && !metadata.protected;
-            let excerpt = if last.text.is_empty() {
-                last.attachment
-                    .as_ref()
-                    .map_or("New message", |file| file.display_name())
-            } else {
-                &last.text
-            };
+            let excerpt = last.preview_text();
             let body = if show_preview {
                 format!("{}: {}", last.sender, excerpt)
             } else {
@@ -544,6 +538,7 @@ mod tests {
             outgoing: false,
             delivery: Delivery::Sent,
             mention: None,
+            entities: Vec::new(),
             notification: Some(Metadata {
                 sender: Some(90),
                 silent: false,

@@ -3,6 +3,7 @@ mod chats;
 mod commands;
 mod deletion;
 mod editing;
+mod entities;
 mod forwarding;
 mod icons;
 mod pins;
@@ -11,6 +12,7 @@ mod search;
 mod staging;
 mod statusline;
 mod transcript;
+mod wrapping;
 use chrono::Local;
 use qrcode::{Color as QrColor, QrCode};
 use ratatui::Frame;
@@ -22,6 +24,7 @@ use ratatui::widgets::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+use wrapping::wrap_cells;
 
 use crate::app::{AppState, AuthPhase, Focus, Mode, QrRenderMode, Screen};
 use crate::config::DownloadBehavior;
@@ -550,7 +553,7 @@ fn render_conversation(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
             icons::Icons(app.keymap.nerd_font).pin(),
             app.keymap.hint(Context::Conversation, "pins"),
             count.map_or(String::new(), |n| format!(" ({n})")),
-            crate::model::sanitize_terminal_line(&message.text),
+            crate::model::sanitize_terminal_line(&message.preview_text()),
         );
         frame.render_widget(
             Paragraph::new(truncate_cells(&label, usize::from(inner.width)))
@@ -1317,42 +1320,6 @@ fn truncate_cells(value: &str, max: usize) -> String {
     result
 }
 
-fn wrap_cells(value: &str, max: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    for source_line in value.split('\n') {
-        let mut current = String::new();
-        let mut current_width = 0_usize;
-        for word in source_line.split_inclusive(char::is_whitespace) {
-            let word_width = UnicodeWidthStr::width(word);
-            if current_width.saturating_add(word_width) > max && !current.is_empty() {
-                lines.push(current.trim_end().to_owned());
-                current.clear();
-                current_width = 0;
-            }
-            if word_width > max {
-                for grapheme in word.graphemes(true) {
-                    let grapheme_width = UnicodeWidthStr::width(grapheme);
-                    if current_width.saturating_add(grapheme_width) > max && !current.is_empty() {
-                        lines.push(current);
-                        current = String::new();
-                        current_width = 0;
-                    }
-                    current.push_str(grapheme);
-                    current_width = current_width.saturating_add(grapheme_width);
-                }
-            } else {
-                current.push_str(word);
-                current_width = current_width.saturating_add(word_width);
-            }
-        }
-        lines.push(current.trim_end().to_owned());
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
-}
-
 fn spinner(tick: u64) -> &'static str {
     const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
     let index = usize::try_from(tick % u64::try_from(FRAMES.len()).unwrap_or(1)).unwrap_or(0);
@@ -1413,6 +1380,135 @@ mod tests {
 
     fn populated_app() -> AppState {
         populated_app_with_settings(Settings::default())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn entities_keep_styles_and_require_explicit_spoiler_and_quote_actions() {
+        use crate::{
+            app::MessageAction,
+            entities::{Entity, Kind},
+            event::NetworkEvent,
+        };
+        use ratatui::style::Modifier;
+        use yazi_term::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = populated_app();
+        app.sidebar_hidden = true;
+        app.focus = Focus::Conversation;
+        app.narrow_conversation = true;
+        app.selected_message = Some(11);
+        let mut message = app.active_messages()[0].clone();
+        message.text =
+            "Bold 🙂\n  let answer = 42;  \nquote-one\nquote-two\nquote-three\nquote-four\nSECRET"
+                .to_owned();
+        let quote = message.text.find("quote-one").unwrap();
+        let secret = message.text.find("SECRET").unwrap();
+        let code = message.text.find("  let").unwrap();
+        message.entities = vec![
+            Entity {
+                range: 0..4,
+                kind: Kind::Bold,
+            },
+            Entity {
+                range: 0..4,
+                kind: Kind::Italic,
+            },
+            Entity {
+                range: code..quote,
+                kind: Kind::Pre {
+                    language: "rust".to_owned(),
+                },
+            },
+            Entity {
+                range: quote..secret,
+                kind: Kind::Quote { collapsed: true },
+            },
+            Entity {
+                range: secret..message.text.len(),
+                kind: Kind::Spoiler,
+            },
+        ];
+        message.links = vec![MessageLink {
+            label: "SECRET".to_owned(),
+            url: "https://secret.example".to_owned(),
+        }];
+        let encoded = serde_json::to_string(&message).unwrap();
+        let restored: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.entities, message.entities);
+        assert!(!restored.preview_text().contains("SECRET"));
+        let mut old: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        old.as_object_mut().unwrap().remove("entities");
+        assert!(
+            serde_json::from_value::<Message>(old)
+                .unwrap()
+                .entities
+                .is_empty()
+        );
+        app.handle_network(NetworkEvent::MessageUpdated(message.clone()));
+        assert!(!app.chats[0].last_message.contains("SECRET"));
+        for width in [40, 100] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let text: String = buffer
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(!text.contains("SECRET") && !text.contains("secret.example"));
+            assert!(!text.contains("quote-three"));
+            assert!(text.contains("│   let answer = 42;  "));
+            let bold_row = (0..32)
+                .find(|&y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains("Bold")
+                })
+                .unwrap();
+            let bold = (0..width)
+                .find(|&x| buffer[(x, bold_row)].symbol() == "B")
+                .unwrap();
+            assert!(
+                buffer[(bold, bold_row)]
+                    .modifier
+                    .contains(Modifier::BOLD | Modifier::ITALIC)
+            );
+            let row = (0..32)
+                .find(|&y| (0..width).any(|x| buffer[(x, y)].symbol() == "▨"))
+                .unwrap();
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 6,
+                row,
+                modifiers: Modifiers::empty(),
+            });
+            assert!(app.spoilers_revealed(app.inspected_message().unwrap()));
+            assert!(render_text_mut(&mut app, width, 32).contains("SECRET"));
+            app.handle_action(KeyAction::Enter);
+            assert!(!app.spoilers_revealed(app.inspected_message().unwrap()));
+        }
+        app.selected_action = app
+            .message_actions(&message)
+            .iter()
+            .position(|action| *action == MessageAction::ExpandQuote)
+            .unwrap();
+        app.handle_action(KeyAction::Enter);
+        assert!(render_text_mut(&mut app, 100, 32).contains("quote-four"));
+        app.handle_key(&yazi_term::event::KeyEvent::new(
+            yazi_term::event::KeyCode::Char(':'),
+            Modifiers::empty(),
+        ));
+        for ch in "spoiler".chars() {
+            app.handle_action(KeyAction::Character(ch));
+        }
+        assert!(app.handle_action(KeyAction::Enter).is_empty());
+        assert!(app.spoilers_revealed(app.inspected_message().unwrap()));
+        // A live edit cannot inherit permission to reveal different content.
+        message.text.push('!');
+        app.handle_network(NetworkEvent::MessageUpdated(message));
+        assert!(!app.spoilers_revealed(app.inspected_message().unwrap()));
+        assert!(!render_text_mut(&mut app, 100, 32).contains("SECRET"));
     }
 
     #[test]
@@ -1889,6 +1985,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,
@@ -2254,6 +2351,7 @@ mod tests {
         let mut app = populated_app();
         app.messages.get_mut(&7).unwrap().extend([
             Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,
@@ -2278,6 +2376,7 @@ mod tests {
                 buttons: Vec::new(),
             },
             Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,
@@ -2523,6 +2622,7 @@ mod tests {
         let mut app = populated_app();
         let messages = (0_i32..30)
             .map(|id| Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,
@@ -2554,6 +2654,7 @@ mod tests {
             .get_mut(&7)
             .expect("active history")
             .push(Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,
@@ -2593,6 +2694,7 @@ mod tests {
         app.messages.insert(
             7,
             vec![Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,

@@ -51,6 +51,32 @@ and its active action have distinct markers. Full author names wrap. Messages
 have alternating backgrounds and no empty separator row by default; time, optional
 IDs, delivery and media state are shown in the bottom bar.
 
+## Read formatted messages
+
+Telegram bold, italic, underline and strikethrough formatting is preserved,
+including nested styles and Unicode emoji. Inline code is highlighted; code
+blocks keep indentation and trailing spaces and show their language when given.
+Quotes have an indented rail. Code and text wrap to the available terminal width.
+Custom emoji keep Telegram's Unicode fallback; the terminal does not play their
+animation. Literal Markdown in an ordinary message stays literal.
+
+Spoilers start covered with visible placeholders. Click their message row, or
+select the spoiler action with `g n` / `g p` and press Enter, to reveal or hide
+them. `:spoiler` does the same for the selected message. Telegram's collapsible
+quotes start with at most three rows; click the quote or press Enter on its action
+to expand/collapse it, or use `:quote`. The bottom bar shows the current action.
+Reply navigation retains its own action and click area.
+
+Reveals are local to this account and process, and reset when the text or its
+formatting changes. Reply excerpts, chat previews, search results, pinned-message
+summaries, forwarding/deletion previews and notifications always cover spoilers.
+A message's link rows remain hidden until its spoilers are revealed, including
+hidden link targets. Explicit copy/edit still uses the full original text.
+Formatting is cached with messages; older cached entries acquire it when fetched
+again. Termgram reads server entities; creating formatted text in the composer
+is not part of this revision. Lua can bind `spoilers` and `expand_quote` in the
+`conversation` context.
+
 ## Compose and reply
 
 Click the composer or press `i` to write. From the chat list, `i` continues the

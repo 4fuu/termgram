@@ -42,16 +42,7 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
             .filter(|sender| !sender.eq_ignore_ascii_case("unknown"))
             .unwrap_or("Original message");
         let excerpt = original.map_or_else(String::new, |message| {
-            if message.text.is_empty() {
-                message
-                    .attachment
-                    .as_ref()
-                    .map_or_else(String::new, |attachment| {
-                        attachment.display_name().to_owned()
-                    })
-            } else {
-                crate::model::sanitize_terminal_line(&message.text)
-            }
+            crate::model::sanitize_terminal_line(&message.preview_text())
         });
         let label = if excerpt.is_empty() {
             format!("↩ {author}")
@@ -102,8 +93,18 @@ pub(super) fn render(message: &Message, width: usize, app: &AppState) -> Rendere
         }
     }
     if !message.text.is_empty() || message.attachment.is_none() {
-        for part in wrap_cells(&message.text, body_width) {
-            lines.push(Line::from(vec![gutter(selected), Span::raw(part)]));
+        for mut row in super::entities::render(message, body_width, app) {
+            let action = row
+                .action
+                .and_then(|action| actions.iter().position(|candidate| *candidate == action));
+            if let Some(index) = action {
+                action_rows.push((lines.len(), index));
+            }
+            row.line.spans.insert(
+                0,
+                action_gutter(selected, selected && action == Some(app.selected_action)),
+            );
+            lines.push(row.line);
         }
     }
     let body_height = lines.len();

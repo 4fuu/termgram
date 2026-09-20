@@ -1,5 +1,6 @@
 mod deletion;
 mod editing;
+mod entities;
 mod folders;
 mod forwarding;
 mod local;
@@ -2394,6 +2395,10 @@ fn private_chat_id(value: &str) -> Result<ChatId> {
 fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Message> {
     let chat_id = peer_id(message)?;
     let media = message.media();
+    let (text, entities) = entities::map(
+        message.text(),
+        message.fmt_entities().map_or(&[], Vec::as_slice),
+    );
     let (sender, reply_sender) = if message.outgoing() {
         let sender = "You".to_owned();
         let reply_sender = username_or_sender(message.sender().and_then(Peer::username), &sender);
@@ -2404,6 +2409,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
     let reply_to = reply_info(message, chat_id, cache);
     cache_message_sender(cache, chat_id, message.id(), reply_sender);
     Ok(Message {
+        entities,
         notification: Some(crate::notifications::Metadata {
             sender: message
                 .sender_id()
@@ -2425,7 +2431,7 @@ fn map_message(message: &TelegramMessage, cache: &mut WorkerCache) -> Result<Mes
         // Telegram stores the Unicode fallback for custom-emoji entities in
         // the raw message string. Keep that text instead of trying to render
         // the custom document in a terminal.
-        text: sanitized_message_text(message),
+        text,
         timestamp: message.date(),
         outgoing: message.outgoing(),
         delivery: if message.outgoing()
@@ -2620,11 +2626,11 @@ fn peer_id(message: &TelegramMessage) -> Result<ChatId> {
 
 fn message_preview(message: &TelegramMessage) -> String {
     let media = message.media();
-    message_preview_with_media(&sanitized_message_text(message), media.as_ref())
-}
-
-fn sanitized_message_text(message: &TelegramMessage) -> String {
-    sanitize_terminal_text(message.text())
+    let (text, entities) = entities::map(
+        message.text(),
+        message.fmt_entities().map_or(&[], Vec::as_slice),
+    );
+    message_preview_with_media(&crate::entities::conceal(&text, &entities), media.as_ref())
 }
 
 fn message_links(message: &TelegramMessage) -> Vec<MessageLink> {
@@ -3083,6 +3089,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 7, 41, "Alice".to_owned());
         let mut message = Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,
@@ -3146,6 +3153,7 @@ mod tests {
         let mut cache = WorkerCache::default();
         cache_message_sender(&mut cache, 8, 41, "Other chat".to_owned());
         let mut message = Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,

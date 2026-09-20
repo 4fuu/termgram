@@ -181,6 +181,7 @@ binding can become visible again.
 | `first_unread`, `mark_read`, `mark_unread` | Jump to the first unread message; explicitly read the chat or set Telegram’s unread reminder |
 | `mentions` | Browse Telegram unread mentions and replies to you |
 | `compose`, `send`, `newline` | Enter a draft or reply to the explicit conversation selection / send / newline |
+| `spoilers`, `expand_quote` | Reveal/hide spoilers and expand/collapse quotes in the conversation |
 | `preview` | Expand a selected image or sticker; `preview` context controls the expanded view |
 | `home`, `end`, `left`, `right`, `backspace`, `delete`, `clear`, `delete_word` | Editors |
 | `filter`, `refresh`, `chat_info` | Navigation; title filter, lists refresh, IDs |

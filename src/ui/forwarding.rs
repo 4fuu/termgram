@@ -37,14 +37,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         || "Loading original message…".to_owned(),
         |plan| {
             let message = &plan.message;
-            let body = if message.text.is_empty() {
-                message
-                    .attachment
-                    .as_ref()
-                    .map_or("Message", |media| media.display_name())
-            } else {
-                &message.text
-            };
+            let body = message.preview_text();
             format!("{}\n{}", message.sender, body)
         },
     );

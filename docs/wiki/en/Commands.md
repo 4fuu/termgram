@@ -47,6 +47,8 @@ to disk. Multiline paste cannot execute a series of commands.
 | `save` | Review a native forward of the selected message to this account’s Saved Messages |
 | `saved` | Open Saved Messages, including when absent from the recent chat list |
 | `reply` | Reply to an explicitly selected message |
+| `spoiler` | Reveal/hide the selected message’s spoilers |
+| `quote` | Expand/collapse its expandable quotes |
 | `preview` | Expand a selected image or sticker |
 | `reveal` | Download if needed and reveal the selected attachment in Finder, Explorer or the file manager |
 | `pins` | Browse the open conversation's pinned messages |

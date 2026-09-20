@@ -85,6 +85,8 @@ actions! {
     OpenLink => ("open_link", "Open the selected link"),
     NextAction => ("next_action", "Select the next message action"),
     PreviousAction => ("previous_action", "Select the previous message action"),
+    Spoilers => ("spoilers", "Reveal or hide the selected message’s spoilers"),
+    ExpandQuote => ("expand_quote", "Expand or collapse the selected message’s quote"),
     Reveal => ("reveal", "Reveal the selected file in the system file manager"),
     Redraw => ("redraw", "Redraw the terminal"),
     Home => ("home", "Move to the start of the input"),

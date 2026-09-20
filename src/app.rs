@@ -8,6 +8,7 @@ mod composition;
 mod deletion;
 mod drafts;
 mod editing;
+mod entities;
 mod forwarding;
 mod message_pins;
 mod notifications;
@@ -66,6 +67,8 @@ pub enum AttachmentState {
 pub enum MessageAction {
     Attachment,
     Reply,
+    Spoilers,
+    ExpandQuote,
     Link(usize),
     Button(usize),
 }
@@ -239,6 +242,7 @@ pub struct App {
     /// Action within the selected message. Messages may contain several links
     /// and inline bot buttons, so selection cannot be message-only.
     pub selected_action: usize,
+    text_visibility: BTreeMap<(ChatId, i32), entities::Visibility>,
     pub filter: TextInput,
     pub search: search::State,
     pub commands: commands::State,
@@ -357,6 +361,7 @@ impl Default for App {
             messages: BTreeMap::new(),
             selected_message: None,
             selected_action: 0,
+            text_visibility: BTreeMap::new(),
             filter: TextInput::new(),
             search: search::State::default(),
             commands: commands::State::default(),
@@ -846,6 +851,10 @@ impl App {
             Action::NextAction => return self.select_actionable_message(true),
             Action::PreviousAction => return self.select_actionable_message(false),
             Action::Reveal => return self.reveal_selected_attachment(),
+            Action::Spoilers | Action::ExpandQuote => {
+                self.toggle_text_details(*run == Action::Spoilers);
+                return Vec::new();
+            }
             Action::Noop => return Vec::new(),
             _ => {}
         }
@@ -1112,11 +1121,17 @@ impl App {
                             .iter()
                             .find(|message| message.id == message_id)
                             .is_some_and(|message| {
-                                self.message_actions(message).get(self.selected_action)
-                                    == Some(&MessageAction::Reply)
+                                matches!(
+                                    self.message_actions(message).get(self.selected_action),
+                                    Some(
+                                        MessageAction::Reply
+                                            | MessageAction::Spoilers
+                                            | MessageAction::ExpandQuote
+                                    )
+                                )
                             })
                     {
-                        return self.navigate_to_selected_reply();
+                        return self.activate_selected_message();
                     }
                     return Vec::new();
                 }
@@ -1994,7 +2009,20 @@ impl App {
         {
             actions.push(MessageAction::Attachment);
         }
-        actions.extend((0..message.links.len()).map(MessageAction::Link));
+        if message.has_spoilers() {
+            actions.push(MessageAction::Spoilers);
+        }
+        if message.entities.iter().any(|entity| {
+            matches!(
+                entity.kind,
+                crate::entities::Kind::Quote { collapsed: true }
+            ) && entity.valid_for(&message.text)
+        }) {
+            actions.push(MessageAction::ExpandQuote);
+        }
+        if !message.has_spoilers() || self.spoilers_revealed(message) {
+            actions.extend((0..message.links.len()).map(MessageAction::Link));
+        }
         actions.extend(
             message
                 .buttons
@@ -2781,6 +2809,7 @@ impl App {
         let local_id = self.next_pending_id;
         self.next_pending_id = self.next_pending_id.checked_sub(1).unwrap_or(-1);
         let pending = Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,
@@ -2834,6 +2863,7 @@ impl App {
             };
             let item_reply = if index == 0 { reply_to.take() } else { None };
             let pending = Message {
+                entities: Vec::new(),
                 notification: None,
                 mention: None,
                 edited_at: None,
@@ -3020,6 +3050,10 @@ impl App {
         }
         if action == MessageAction::Reply {
             return self.navigate_to_selected_reply();
+        }
+        if matches!(action, MessageAction::Spoilers | MessageAction::ExpandQuote) {
+            self.toggle_text_details(action == MessageAction::Spoilers);
+            return Vec::new();
         }
         if let MessageAction::Link(index) = action {
             let Some(link) = message.links.get(index) else {
@@ -3290,6 +3324,11 @@ impl App {
             ));
             return Vec::new();
         };
+        if message.has_spoilers() && !self.spoilers_revealed(&message) {
+            self.status_message =
+                Some("Reveal the message's spoilers before opening links".to_owned());
+            return Vec::new();
+        }
         let links = &message.links;
         let selected = self
             .message_actions(&message)
@@ -3655,7 +3694,7 @@ impl App {
                         .last_activity
                         .is_none_or(|timestamp| message.timestamp >= timestamp)
                 {
-                    chat.last_message.clone_from(&message.text);
+                    chat.last_message = message.preview_text();
                     chat.last_message_id = Some(message.id);
                     chat.last_activity = Some(message.timestamp);
                 }
@@ -3718,6 +3757,7 @@ impl App {
         sanitize_message(&mut message);
         let chat_id = message.chat_id;
         let outgoing = message.outgoing;
+        let preview = message.preview_text();
         let text = message.text.clone();
         let reply_to = message.reply_to.as_ref().map(|reply| reply.message_id);
         let timestamp = message.timestamp;
@@ -3778,7 +3818,7 @@ impl App {
         {
             let chat = &mut self.chats[chat_index];
             if message_id < 0 || chat.last_message_id.is_none_or(|last| message_id >= last) {
-                chat.last_message = text;
+                chat.last_message = preview;
                 if message_id > 0 {
                     chat.last_message_id = Some(message_id);
                 }
@@ -4141,7 +4181,8 @@ impl App {
             }
             self.reveal_after_download.remove(&(chat_id, message_id));
         }
-        let preview = message.text.clone();
+        let text = message.text.clone();
+        let preview = message.preview_text();
         let timestamp = message.timestamp;
         let reply_to = message.reply_to.as_ref().map(|reply| reply.message_id);
         let reconciled_local_id = {
@@ -4152,7 +4193,7 @@ impl App {
                 .flatten()
         };
         if let Some(local_id) = reconciled_local_id {
-            self.clear_reconciled_retry(chat_id, local_id, &preview, reply_to);
+            self.clear_reconciled_retry(chat_id, local_id, &text, reply_to);
         }
         let preserved = (self.active_chat_id == Some(chat_id))
             .then_some(self.selected_message)
@@ -4717,6 +4758,7 @@ mod tests {
 
     fn message(id: i32, chat_id: i64, text: &str, outgoing: bool) -> Message {
         Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,
@@ -7002,6 +7044,7 @@ mod tests {
     #[test]
     fn optimistic_attachments_reconcile_by_identity_not_empty_caption() {
         let first = Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,
@@ -7026,6 +7069,7 @@ mod tests {
             buttons: Vec::new(),
         };
         let second = Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,
@@ -7039,6 +7083,7 @@ mod tests {
             ..first.clone()
         };
         let server = Message {
+            entities: Vec::new(),
             notification: None,
             mention: None,
             edited_at: None,

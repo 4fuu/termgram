@@ -1,6 +1,6 @@
 {
     "version": "0.1.20",
-    "description": "A focused, keyboard-first Telegram client for the terminal",
+    "description": "Focused, keyboard-first Telegram client for the terminal",
     "homepage": "https://github.com/iebb/termgram",
     "license": "MIT",
     "notes": "Official release binaries include the project's Telegram application credentials; sign in with your Telegram account after starting tg.",

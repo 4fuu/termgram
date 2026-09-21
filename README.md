@@ -92,38 +92,3 @@ See [development and architecture](docs/wiki/en/Development.md),
 The [Wiki source](docs/wiki/README.md) is reviewed alongside code changes and
 provides English and Simplified Chinese pages. Local working plans live in the
 Git-ignored `dev-notes/` directory.
-
-### Maintaining Homebrew
-
-After publishing a stable release, update the version, all four archive URLs,
-and their SHA-256 values in `Formula/termgram.rb` from the release's
-`SHA256SUMS`. The unqualified `macos` archive is Apple silicon; `linux` is
-x86_64. Commit the formula update here so `brew update` can pick it up. The
-release workflow does not update the formula automatically, and Homebrew
-follows the stable version pinned in the formula rather than prereleases.
-
-Run `brew style Formula/termgram.rb`. To test local edits, copy the formula to
-`$(brew --repository iebb/termgram)/Formula/termgram.rb`, then run:
-
-```sh
-brew reinstall iebb/termgram/termgram
-brew test iebb/termgram/termgram
-```
-
-The formula tests version output, help, and invalid-argument handling without
-signing in to Telegram.
-
-### Maintaining Scoop
-
-Update the manifest together with the formula. Set `version` to the stable
-release version and update both archive URLs and their SHA-256 values in
-`bucket/termgram.json` from the release's `SHA256SUMS`. The `64bit` entry uses
-the unqualified `windows` archive; `arm64` uses `windows-aarch64`. Commit the
-manifest update here so `scoop update` can pick it up. The release workflow
-does not update the manifest automatically, and Scoop follows the stable
-version pinned in the manifest rather than prereleases.
-
-Validate the JSON with `jq --exit-status . bucket/termgram.json`. To test local
-edits, add this repository as a Scoop bucket in a checkout where the change is
-on disk, then run `scoop install termgram`; the manifest's `checkver` and
-`autoupdate` templates must resolve the same assets.

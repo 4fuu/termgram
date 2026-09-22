@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Regenerate the Homebrew formula and the Scoop manifest for one stable release.
 
-Run from the repository root after the release assets and their SHA256SUMS are
-prepared. The generated files must match the formats reviewed in the repository;
+Use the SHA256SUMS downloaded from the published release, never a local rebuild.
+The generated files must match the formats reviewed in the repository;
 a stable release is required because Homebrew and Scoop follow stable versions.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,17 +161,20 @@ def scoop_manifest(version: str, checksums: dict[str, str]) -> dict[str, object]
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit(f"usage: {Path(sys.argv[0]).name} <version> <SHA256SUMS>")
-    version = sys.argv[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("version")
+    parser.add_argument("checksums", type=Path)
+    parser.add_argument("--output-dir", type=Path, default=ROOT)
+    args = parser.parse_args()
+    version = args.version
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise SystemExit("version must contain three numeric components")
-    checksums = read_checksums(version, Path(sys.argv[2]))
+    checksums = read_checksums(version, args.checksums)
 
-    (ROOT / "Formula").mkdir(exist_ok=True)
-    (ROOT / "bucket").mkdir(exist_ok=True)
-    (ROOT / "Formula/termgram.rb").write_text(formula(version, checksums))
-    (ROOT / "bucket/termgram.json").write_text(
+    (args.output_dir / "Formula").mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "bucket").mkdir(exist_ok=True)
+    (args.output_dir / "Formula/termgram.rb").write_text(formula(version, checksums))
+    (args.output_dir / "bucket/termgram.json").write_text(
         json.dumps(scoop_manifest(version, checksums), indent=4) + "\n"
     )
 

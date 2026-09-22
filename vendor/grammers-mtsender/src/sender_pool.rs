@@ -385,7 +385,6 @@ impl SenderPoolRunner {
         attempts: &[ServerAddr],
     ) -> Result<Sender<transport::Full, mtp::Encrypted>, InvocationError> {
         for (index, addr) in attempts.iter().enumerate() {
-            let proxied = matches!(addr, ServerAddr::Proxied { .. });
             let attempt = async {
                 if let Some(auth_key) = dc_option.auth_key {
                     connect_with_auth(transport(), addr.clone(), auth_key)
@@ -395,7 +394,9 @@ impl SenderPoolRunner {
                     connect(transport(), addr.clone()).await
                 }
             };
-            let result = if proxied {
+
+            #[cfg(feature = "proxy")]
+            let result = if matches!(addr, ServerAddr::Proxied { .. }) {
                 match tokio::time::timeout(PROXY_CONNECT_TIMEOUT, attempt).await {
                     Ok(result) => result,
                     Err(_) => Err(InvocationError::Io(std::io::Error::new(
@@ -406,12 +407,19 @@ impl SenderPoolRunner {
             } else {
                 attempt.await
             };
+
+            #[cfg(not(feature = "proxy"))]
+            let result = attempt.await;
+
             match result {
                 Ok(sender) => return Ok(sender),
                 Err(error) => {
-                    let fallback = proxied
+                    #[cfg(feature = "proxy")]
+                    let fallback = matches!(addr, ServerAddr::Proxied { .. })
                         && matches!(error, InvocationError::Io(_))
                         && index + 1 < attempts.len();
+                    #[cfg(not(feature = "proxy"))]
+                    let fallback = false;
                     if !fallback {
                         return Err(error);
                     }
@@ -599,11 +607,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     #[cfg(feature = "proxy")]
     fn proxy_attempts_fall_back_only_when_enabled() {
+        use super::*;
         let address = std::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 443));
         let params = ConnectionParams::default();
 

@@ -173,10 +173,13 @@ and `canDeleteForEveryone` at the revision recorded above; no source is copied.
 
 `grammers-mtsender/src/configuration.rs` adds `proxy_fallback` behind the
 existing `proxy` feature: when enabled, `src/sender_pool.rs` tries the
-configured SOCKS5 proxy first with a ten-second timeout and then the same
-datacenter address directly, falling back only on I/O errors or that timeout.
-Without the flag, a configured proxy is used exclusively. Reapply when
-upgrading the crate or once upstream accepts an equivalent option.
+configured proxy first with a ten-second timeout and then the same datacenter
+address directly, falling back only on I/O errors or that timeout. Without
+the flag, a configured proxy is used exclusively. `src/net/tcp.rs` additionally
+accepts `http://` proxy URLs and negotiates a plain HTTP CONNECT tunnel
+(`Proxy-Authorization: Basic` included, response validated, no extra
+dependencies); upstream only accepts `socks5`. Reapply when upgrading the
+crate or once upstream accepts an equivalent option.
 
 Message text copying calls the existing arboard 3.6.1 dependency. The persistent
 Linux owner and native/terminal fallback behavior follow Codex

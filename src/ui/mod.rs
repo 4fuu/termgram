@@ -1160,7 +1160,7 @@ fn wrapped_height(message: &str, width: u16) -> u16 {
     clamp_u16(wrap_cells(message, usize::from(width.max(1))).len())
 }
 
-/// Centered SOCKS5 proxy editor shown over any pre-connection screen.
+/// Centered proxy editor shown over any pre-connection screen.
 fn render_proxy_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let Some(input) = app.proxy_edit() else {
         return;
@@ -1188,7 +1188,7 @@ fn render_proxy_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Termgram · SOCKS5 proxy ");
+        .title(" Termgram · Proxy ");
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let chunks = Layout::vertical([
@@ -1200,7 +1200,7 @@ fn render_proxy_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     .split(inner);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled("SOCKS5 proxy", Style::default().bold())),
+            Line::from(Span::styled("Proxy", Style::default().bold())),
             Line::from(Span::styled(detail, Style::default().fg(MUTED))),
         ])
         .wrap(Wrap { trim: true }),
@@ -1215,9 +1215,9 @@ fn render_proxy_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn proxy_dialog_detail() -> String {
-    let mut detail =
-        "SOCKS5 URL, for example socks5://127.0.0.1:9050. Leave empty to connect directly."
-            .to_owned();
+    let mut detail = "SOCKS5 or HTTP proxy URL, for example socks5://127.0.0.1:9050 or \
+                      http://127.0.0.1:3128. Leave empty to connect directly."
+        .to_owned();
     if crate::config::proxy_env_override().is_some() {
         detail.push_str(
             " TERMGRAM_PROXY overrides this setting and never falls back to a direct connection.",
@@ -2901,11 +2901,11 @@ mod tests {
         app.handle_action(KeyAction::Character('p'));
 
         let output = render_text(&app, 80, 24);
-        assert!(output.contains("SOCKS5 proxy"), "{output}");
+        assert!(output.contains("SOCKS5 or HTTP proxy URL"), "{output}");
         assert!(output.contains("Leave empty"), "{output}");
-        assert!(output.contains("Phone number"), "{output}");
+        assert!(output.contains("Sign in"), "{output}");
 
-        app.status_message = Some("Invalid proxy: the scheme must be socks5".to_owned());
+        app.status_message = Some("Invalid proxy: the scheme must be socks5 or http".to_owned());
         let output = render_text(&app, 80, 24);
         assert!(output.contains("Invalid proxy"), "{output}");
 

@@ -29,9 +29,14 @@ pub struct ConnectionParams {
     pub lang_code: String,
     /// URL of the proxy to use. Requires the `proxy` feature to be enabled.
     ///
-    /// The scheme must be `socks5`. Username and password are optional, e.g.:
+    /// The scheme must be `socks5` or `http`. Username and password are
+    /// optional, e.g.:
     /// - socks5://127.0.0.1:1234
     /// - socks5://username:password@example.com:5678
+    /// - http://proxy.local:3128
+    ///
+    /// The `http` scheme negotiates an HTTP CONNECT tunnel through the proxy;
+    /// MTProto traffic inside it stays end-to-end encrypted as usual.
     ///
     /// Both a host and port must be provided. If a domain is used for the host, its address will be looked up,
     /// and the first IP address found will be used. If a different IP address should be used, consider resolving

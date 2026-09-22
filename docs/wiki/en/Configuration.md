@@ -104,12 +104,12 @@ server used for media transfers. The bar does not infer DC from geography.
 
 ## Proxy
 
-Termgram connects through a SOCKS5 proxy when one is configured. Press `p` on
-the sign-in, connecting or fatal screen to open the proxy editor, or edit the
-saved value later from the same screens. The editor validates
-`socks5://host:port` (credentials are optional) and saves it to
-`settings.conf`. Saving restarts the Telegram connection; an empty value
-connects directly.
+Termgram connects through a SOCKS5 or HTTP proxy when one is configured. Press
+`p` on the sign-in, connecting or fatal screen to open the proxy editor, or
+edit the saved value later from the same screens. The editor validates
+`socks5://host:port` or `http://host:port` (credentials are optional; HTTP
+proxies use a CONNECT tunnel) and saves it to `settings.conf`. Saving restarts
+the Telegram connection; an empty value connects directly.
 
 A saved proxy is preferred for every connection. If the proxy is unreachable,
 Termgram automatically falls back to a direct connection after a bounded
@@ -169,7 +169,7 @@ described in [Synchronization](Synchronization.md).
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | Source-build application credentials; environment or `.env` takes precedence over embedded values |
 | `TERMGRAM_SESSION` | Override Account 1 session path; other slots derive from it |
 | `TERMGRAM_CONFIG` | Override the Lua file; set in the shell before starting |
-| `TERMGRAM_PROXY` | SOCKS5 proxy URL such as `socks5://127.0.0.1:9050`; strict, see [Proxy](#proxy) |
+| `TERMGRAM_PROXY` | SOCKS5 or HTTP proxy URL such as `socks5://127.0.0.1:9050`; strict, see [Proxy](#proxy) |
 | `TERMGRAM_TMUX_PASSTHROUGH=1` | Opt into terminal passthrough setup; see [Terminal](Terminal.md) |
 
 Lua is loaded before the credentials `.env`, so `TERMGRAM_CONFIG` must already

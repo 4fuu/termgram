@@ -85,7 +85,7 @@ impl DownloadBehavior {
 /// Small, non-sensitive preferences stored in Termgram's platform config
 /// directory. Telegram credentials and sessions are deliberately excluded.
 ///
-/// The SOCKS5 proxy URL may embed a username and password, so [`Debug`]
+/// The proxy URL may embed a username and password, so [`Debug`]
 /// redacts the value instead of deriving it.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Settings {
@@ -100,7 +100,7 @@ pub struct Settings {
     pub active_account: u8,
     /// Number of local session slots created by the user.
     pub account_count: u8,
-    /// SOCKS5 proxy URL, empty for direct connections. A saved proxy is
+    /// SOCKS5 or HTTP proxy URL, empty for direct connections. A saved proxy is
     /// preferred for every connection and falls back to a direct connection
     /// when unreachable. `TERMGRAM_PROXY` overrides it without fallback.
     pub proxy: String,
@@ -329,7 +329,7 @@ pub(crate) fn write_preferences(path: &Path, contents: &[u8]) -> Result<()> {
 /// An ordered proxy route for Telegram connections.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyRoute {
-    /// SOCKS5 proxy URL, including a required port.
+    /// SOCKS5 or HTTP CONNECT proxy URL, including a required port.
     pub url: String,
     /// Whether a failed proxy connection may fall back to a direct one.
     ///
@@ -346,16 +346,17 @@ pub struct ProxyResolution {
     pub warning: Option<String>,
 }
 
-/// Validate a SOCKS5 proxy URL the way the Telegram connection accepts it.
+/// Validate a SOCKS5 or HTTP CONNECT proxy URL the way the Telegram
+/// connection accepts it.
 ///
 /// # Errors
 ///
-/// Returns a human-readable reason when the value is not a `socks5://` URL
-/// with a host and an explicit port.
+/// Returns a human-readable reason when the value is not a `socks5://` or
+/// `http://` URL with a host and an explicit port.
 pub fn validate_proxy(value: &str) -> Result<(), String> {
     let url = url::Url::parse(value).map_err(|error| error.to_string())?;
-    if url.scheme() != "socks5" {
-        return Err("the scheme must be socks5".to_owned());
+    if !matches!(url.scheme(), "socks5" | "http") {
+        return Err("the scheme must be socks5 or http".to_owned());
     }
     if url.host_str().is_none_or(str::is_empty) {
         return Err("a host is required".to_owned());
@@ -567,7 +568,7 @@ pub struct Config {
     pub state_path: PathBuf,
     /// Enable bounded background Ping observations for the Lua statusline.
     pub measure_latency: bool,
-    /// SOCKS5 proxy used for every connection, resolved from the environment
+    /// Proxy used for every connection, resolved from the environment
     /// and saved preferences. `None` connects directly.
     pub proxy: Option<ProxyRoute>,
 }
@@ -1124,10 +1125,12 @@ mod tests {
     }
 
     #[test]
-    fn proxy_validation_requires_socks5_host_and_port() {
+    fn proxy_validation_requires_supported_scheme_host_and_port() {
         assert!(validate_proxy("socks5://127.0.0.1:9050").is_ok());
         assert!(validate_proxy("socks5://user:pass@example.com:5678").is_ok());
-        assert!(validate_proxy("http://127.0.0.1:9050").is_err());
+        assert!(validate_proxy("http://127.0.0.1:3128").is_ok());
+        assert!(validate_proxy("http://user:pass@example.com:8080").is_ok());
+        assert!(validate_proxy("https://127.0.0.1:3128").is_err());
         assert!(validate_proxy("socks5://127.0.0.1").is_err());
         assert!(validate_proxy("not a url").is_err());
     }
@@ -1171,7 +1174,7 @@ mod tests {
             proxy: "socks5://127.0.0.1:9050".to_owned(),
             ..Settings::default()
         };
-        let resolved = resolve_proxy_with(Some("http://10.0.0.1:1080".to_owned()), &saved);
+        let resolved = resolve_proxy_with(Some("https://10.0.0.1:1080".to_owned()), &saved);
         assert!(resolved.proxy.is_none());
         assert!(resolved.warning.is_some());
     }

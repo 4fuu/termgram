@@ -304,7 +304,7 @@ pub struct App {
     /// Ignore late prompts from an authentication attempt after the user has
     /// explicitly restarted it, until the worker confirms the phone phase.
     auth_restart_pending: bool,
-    /// Open SOCKS5 proxy editor. Keys route to it from any screen until it
+    /// Open the proxy editor. Keys route to it from any screen until it
     /// closes, so early screens can reconfigure the connection.
     proxy_edit: Option<TextInput>,
     drafts: BTreeMap<crate::drafts::Key, crate::drafts::Draft>,
@@ -503,7 +503,7 @@ impl App {
         self.settings_selection
     }
 
-    /// The open SOCKS5 proxy editor, when the shortcut opened it.
+    /// The open proxy editor, when the shortcut opened it.
     #[must_use]
     pub fn proxy_edit(&self) -> Option<&TextInput> {
         self.proxy_edit.as_ref()
@@ -2429,7 +2429,7 @@ impl App {
         Vec::new()
     }
 
-    /// Open the SOCKS5 proxy editor prefilled with the saved preference.
+    /// Open the proxy editor prefilled with the saved preference.
     fn open_proxy_editor(&mut self) -> Vec<TelegramCommand> {
         self.proxy_edit = Some(TextInput::from_value(self.settings.proxy.trim()));
         self.status_message = None;
@@ -10077,7 +10077,7 @@ mod tests {
         let mut app = App::new();
         app.screen = Screen::Auth(AuthPhase::Phone);
         app.handle_action(KeyAction::Character('p'));
-        for character in "http://10.0.0.1:1080".chars() {
+        for character in "https://10.0.0.1:1080".chars() {
             app.handle_action(KeyAction::Character(character));
         }
 
